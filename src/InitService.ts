@@ -4,10 +4,18 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 
-const GITIGNORE = `.env
-logs/
-worktrees/
-`;
+const gitignoreFor = (options: {
+  readonly isolatedCodexHome: boolean;
+  readonly codeGraph: boolean;
+}): string =>
+  [
+    ".env",
+    "logs/",
+    "worktrees/",
+    ...(options.isolatedCodexHome ? ["codex-home/"] : []),
+    ...(options.codeGraph ? ["cache/codegraph/"] : []),
+    "",
+  ].join("\n");
 
 /**
  * Filename of the setup prompt scaffolded for the `custom` issue tracker.
@@ -27,6 +35,10 @@ export interface TemplateMetadata {
    * `npx tsx .sandcastle/main.ts` doesn't crash with ERR_MODULE_NOT_FOUND.
    */
   dependencies?: readonly string[];
+  /** Reuse another template's files before applying profile-specific rewrites. */
+  sourceTemplate?: string;
+  /** Agent required by a provider-specific template. */
+  requiredAgent?: string;
 }
 
 const TEMPLATES: TemplateMetadata[] = [
@@ -54,6 +66,14 @@ const TEMPLATES: TemplateMetadata[] = [
     description:
       "Plans parallelizable issues, executes with per-branch review, merges",
     dependencies: ["zod"],
+  },
+  {
+    name: "codex-afk",
+    description:
+      "Parallel planner/reviewer with isolated ChatGPT OAuth and branch-local CodeGraph",
+    dependencies: ["zod"],
+    sourceTemplate: "parallel-planner-with-review",
+    requiredAgent: "codex",
   },
 ];
 
@@ -712,7 +732,229 @@ const getTemplateDir = (
         new Error(`Unknown template: "${templateName}". Available: ${names}`),
       );
     }
-    return join(getTemplatesDir(), templateName);
+    return join(getTemplatesDir(), template!.sourceTemplate ?? templateName);
+  });
+
+const CODEX_CHATGPT_CONFIG = `cli_auth_credentials_store = "file"
+forced_login_method = "chatgpt"
+`;
+
+const CODEX_CHATGPT_ENV_EXAMPLE = `# Codex authenticates with an isolated ChatGPT subscription login.
+# Run \`sandcastle init --profile codex-afk\` interactively, or run:
+# CODEX_HOME=.sandcastle/codex-home codex login
+`;
+
+const validateCodeGraphVersion = (version: string): string => {
+  if (!/^[0-9A-Za-z][0-9A-Za-z._+-]*$/.test(version)) {
+    throw new Error(`Invalid CodeGraph version: "${version}"`);
+  }
+  return version;
+};
+
+const addCodeGraphToContainerfile = (
+  containerfile: string,
+  version: string,
+): string => {
+  const install = "RUN npm install -g @openai/codex";
+  if (!containerfile.includes(install)) {
+    throw new Error("The codex-afk template requires the Codex Dockerfile.");
+  }
+  const withRuntimeTools = containerfile.replace(
+    "{{ISSUE_TRACKER_TOOLS}}",
+    `# Baseline tools used by Codex recovery and CodeGraph navigation
+RUN apt-get update && apt-get install -y \\
+  build-essential \\
+  python3 \\
+  python-is-python3 \\
+  ripgrep \\
+  && rm -rf /var/lib/apt/lists/*
+
+{{ISSUE_TRACKER_TOOLS}}`,
+  );
+  const installWithCodeGraph = `${install} @colbymchenry/codegraph@${validateCodeGraphVersion(version)}`;
+  return withRuntimeTools.replace(
+    install,
+    `${installWithCodeGraph}
+RUN codex --version && codegraph version && python --version`,
+  );
+};
+
+const replaceRequired = (
+  content: string,
+  search: string,
+  replacement: string,
+): string => {
+  if (!content.includes(search)) {
+    throw new Error(`codex-afk template anchor is missing: ${search}`);
+  }
+  return content.replace(search, replacement);
+};
+
+const rewriteCodexAfkMain = (
+  configDir: string,
+  mainFilename: string,
+  model: string,
+): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const mainPath = join(configDir, mainFilename);
+    let content = yield* fs
+      .readFileString(mainPath)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+
+    // rewriteMainTs has already converted the template's placeholder factory
+    // to Codex. Collapse only those original call sites before injecting the
+    // shared provider factory below.
+    content = content.replace(/sandcastle\.codex\([^)]+\)/g, "codexAgent()");
+
+    content = replaceRequired(
+      content,
+      'import { z } from "zod";',
+      `import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { z } from "zod";`,
+    );
+
+    const runtime = `const BASE_BRANCH = execFileSync("git", ["branch", "--show-current"], {
+  encoding: "utf8",
+}).trim();
+
+if (!BASE_BRANCH) {
+  throw new Error("Sandcastle requires a named Git branch, not detached HEAD.");
+}
+
+const CODEX_HOME_HOST = ".sandcastle/codex-home";
+const CODEX_HOME_SANDBOX = "/home/agent/.codex";
+const CODEX_CONFIG_HOST = \`\${CODEX_HOME_HOST}/config.toml\`;
+const CODEGRAPH_CACHE_ROOT_HOST = ".sandcastle/cache/codegraph";
+const CODEGRAPH_SEED_DATABASE_HOST = ".codegraph/codegraph.db";
+const CODEGRAPH_CACHE_SANDBOX = "/home/agent/workspace/.codegraph";
+
+mkdirSync(CODEX_HOME_HOST, { recursive: true, mode: 0o700 });
+chmodSync(CODEX_HOME_HOST, 0o700);
+if (!existsSync(CODEX_CONFIG_HOST)) {
+  writeFileSync(
+    CODEX_CONFIG_HOST,
+    'cli_auth_credentials_store = "file"\\nforced_login_method = "chatgpt"\\n',
+    { mode: 0o600 },
+  );
+}
+chmodSync(CODEX_CONFIG_HOST, 0o600);
+
+const codeGraphSyncCommand =
+  "if test -f .codegraph/codegraph.db; then codegraph sync --quiet .; else codegraph init .; fi";
+
+const codexSandbox = (branch: string) =>
+  docker({
+    mounts: [
+      { hostPath: CODEX_HOME_HOST, sandboxPath: CODEX_HOME_SANDBOX },
+      {
+        hostPath: sandcastle.prepareCodeGraphCache({
+          cacheRoot: CODEGRAPH_CACHE_ROOT_HOST,
+          branch,
+          seedDatabase: CODEGRAPH_SEED_DATABASE_HOST,
+        }),
+        sandboxPath: CODEGRAPH_CACHE_SANDBOX,
+      },
+    ],
+    env: { HOME: "/home/agent", CODEX_HOME: CODEX_HOME_SANDBOX },
+  });
+
+const codexAgent = (effort: "low" | "medium" | "high" | "xhigh" = "high") =>
+  sandcastle.codex(${JSON.stringify(model)}, {
+    effort,
+    sessionStorage: {
+      hostSessionsDir: \`\${CODEX_HOME_HOST}/sessions\`,
+      sandboxSessionsDir: \`\${CODEX_HOME_SANDBOX}/sessions\`,
+    },
+  });
+
+async function syncCodeGraph(sandbox: sandcastle.Sandbox): Promise<void> {
+  const result = await sandbox.exec(codeGraphSyncCommand);
+  if (result.exitCode !== 0) {
+    throw new Error(\`CodeGraph sync failed: \${result.stderr || result.stdout}\`);
+  }
+}`;
+
+    content = replaceRequired(
+      content,
+      "const MAX_ITERATIONS = 10;",
+      `const MAX_ITERATIONS = 10;\n${runtime}`,
+    );
+    content = replaceRequired(
+      content,
+      `const hooks = {
+  sandbox: { onSandboxReady: [{ command: "npm install" }] },
+};`,
+      `const hooks = {
+  sandbox: {
+    onSandboxReady: [
+      { command: "npm install" },
+      { command: "codex login status" },
+      { command: codeGraphSyncCommand, timeoutMs: 120_000 },
+    ],
+  },
+};`,
+    );
+
+    content = replaceRequired(
+      content,
+      "sandbox: docker(),",
+      "sandbox: codexSandbox(BASE_BRANCH),",
+    );
+    content = replaceRequired(
+      content,
+      "sandbox: docker(),",
+      "sandbox: codexSandbox(issue.branch),",
+    );
+    content = replaceRequired(
+      content,
+      "sandbox: docker(),",
+      "sandbox: codexSandbox(BASE_BRANCH),",
+    );
+    content = replaceRequired(
+      content,
+      "if (implement.commits.length > 0) {\n          const review",
+      "if (implement.commits.length > 0) {\n          await syncCodeGraph(sandbox);\n          const review",
+    );
+
+    yield* fs
+      .writeFileString(mainPath, content)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+  });
+
+const addCodeGraphPromptGuidance = (
+  configDir: string,
+): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const promptPath = join(configDir, "implement-prompt.md");
+    const content = yield* fs
+      .readFileString(promptPath)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+    const guidance = `## CODEGRAPH NAVIGATION
+
+Use the synchronized branch-local index before broad text searches:
+
+\`\`\`bash
+codegraph explore "{{ISSUE_TITLE}}"
+codegraph query "<relevant symbol>"
+codegraph impact "<public symbol being changed>"
+\`\`\`
+
+Use \`codegraph node\` for caller/callee context and \`codegraph affected\`
+to select focused tests. Fall back to \`rg\` and direct file reads for exact
+wire text, configuration, and graph misses. CodeGraph is navigation evidence, not correctness evidence;
+tests and executable feedback gates establish correctness.
+`;
+    const updated = replaceRequired(
+      content,
+      "# EXPLORATION\n\n",
+      `# EXPLORATION\n\n${guidance}\n`,
+    );
+    yield* fs
+      .writeFileString(promptPath, updated)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
   });
 
 const COMPILED_FILE_EXTENSIONS = [
@@ -983,6 +1225,10 @@ export interface ScaffoldOptions {
   createLabel?: boolean;
   issueTracker?: IssueTrackerEntry;
   sandboxProvider?: SandboxProviderEntry;
+  /** Authentication mode for Codex. ChatGPT uses a project-isolated OAuth home. */
+  agentAuth?: "api-key" | "chatgpt";
+  /** Pinned @colbymchenry/codegraph version used by the codex-afk image. */
+  codeGraphVersion?: string;
 }
 
 export interface ScaffoldResult {
@@ -1026,9 +1272,35 @@ export const scaffold = (
       createLabel = true,
       issueTracker = ISSUE_TRACKER_REGISTRY[0]!, // default: github-issues
       sandboxProvider = SANDBOX_PROVIDER_REGISTRY[0]!, // default: docker
+      agentAuth = templateName === "codex-afk" ? "chatgpt" : "api-key",
+      codeGraphVersion = "1.5.0",
     } = options;
     const fs = yield* FileSystem.FileSystem;
     const configDir = join(repoDir, ".sandcastle");
+    const selectedTemplate = TEMPLATES.find((t) => t.name === templateName);
+    const isCodexAfk = templateName === "codex-afk";
+    const resolvedCodeGraphVersion = isCodexAfk
+      ? yield* Effect.try({
+          try: () => validateCodeGraphVersion(codeGraphVersion),
+          catch: (error) =>
+            error instanceof Error ? error : new Error(`${error}`),
+        })
+      : codeGraphVersion;
+
+    if (selectedTemplate?.requiredAgent !== undefined) {
+      if (selectedTemplate.requiredAgent !== agent.name) {
+        yield* Effect.fail(
+          new Error(
+            `Template "${templateName}" requires agent "${selectedTemplate.requiredAgent}".`,
+          ),
+        );
+      }
+    }
+    if (agentAuth === "chatgpt" && agent.name !== "codex") {
+      yield* Effect.fail(
+        new Error('Agent auth "chatgpt" is only supported by the Codex agent.'),
+      );
+    }
 
     const exists = yield* fs
       .exists(configDir)
@@ -1048,9 +1320,29 @@ export const scaffold = (
       .pipe(Effect.mapError((e) => new Error(e.message)));
 
     const templateDir = yield* getTemplateDir(templateName);
+    const isolatedCodexHome = agentAuth === "chatgpt";
+
+    if (isolatedCodexHome) {
+      const codexHome = join(configDir, "codex-home");
+      const codexConfig = join(codexHome, "config.toml");
+      yield* fs
+        .makeDirectory(codexHome, { recursive: true })
+        .pipe(Effect.mapError((e) => new Error(e.message)));
+      yield* fs
+        .chmod(codexHome, 0o700)
+        .pipe(Effect.mapError((e) => new Error(e.message)));
+      yield* fs
+        .writeFileString(codexConfig, CODEX_CHATGPT_CONFIG)
+        .pipe(Effect.mapError((e) => new Error(e.message)));
+      yield* fs
+        .chmod(codexConfig, 0o600)
+        .pipe(Effect.mapError((e) => new Error(e.message)));
+    }
 
     // Build .env.example from agent + issue tracker env blocks
-    const envExampleParts = [agent.envExample];
+    const envExampleParts = [
+      isolatedCodexHome ? CODEX_CHATGPT_ENV_EXAMPLE : agent.envExample,
+    ];
     if (issueTracker.envExample) {
       envExampleParts.push(issueTracker.envExample);
     }
@@ -1061,11 +1353,22 @@ export const scaffold = (
         fs
           .writeFileString(
             join(configDir, sandboxProvider.containerfileName),
-            agent.dockerfileTemplate,
+            isCodexAfk
+              ? addCodeGraphToContainerfile(
+                  agent.dockerfileTemplate,
+                  resolvedCodeGraphVersion,
+                )
+              : agent.dockerfileTemplate,
           )
           .pipe(Effect.mapError((e) => new Error(e.message))),
         fs
-          .writeFileString(join(configDir, ".gitignore"), GITIGNORE)
+          .writeFileString(
+            join(configDir, ".gitignore"),
+            gitignoreFor({
+              isolatedCodexHome,
+              codeGraph: isCodexAfk,
+            }),
+          )
           .pipe(Effect.mapError((e) => new Error(e.message))),
         fs
           .writeFileString(join(configDir, ".env.example"), envExampleContent)
@@ -1084,12 +1387,20 @@ export const scaffold = (
       mainFilename,
     );
 
+    if (isCodexAfk) {
+      yield* rewriteCodexAfkMain(configDir, mainFilename, model);
+    }
+
     // Replace issue tracker template arguments in all text files (must run before label stripping)
     yield* substituteTemplateArgs(configDir, issueTracker);
 
     // Strip --label Sandcastle from prompt files when the user declined label creation
     if (!createLabel) {
       yield* rewritePromptFiles(configDir);
+    }
+
+    if (isCodexAfk) {
+      yield* addCodeGraphPromptGuidance(configDir);
     }
 
     // For the custom issue tracker, drop the setup prompt the user feeds to

@@ -45,6 +45,7 @@ export {
 export type { HostSessionLookup } from "./SessionStore.js";
 export type { SandboxHooks } from "./SandboxLifecycle.js";
 export type { MountConfig } from "./MountConfig.js";
+export { codeGraphCacheKey, prepareCodeGraphCache } from "./CodeGraphCache.js";
 export { Output, StructuredOutputError } from "./Output.js";
 export type {
   OutputDefinition,

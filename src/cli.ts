@@ -34,6 +34,7 @@ import type {
   SandboxProviderEntry,
 } from "./InitService.js";
 import { ConfigDirError, InitError } from "./errors.js";
+import { ensureCodexSubscriptionLogin } from "./CodexSubscription.js";
 import { VERSION } from "./version.js";
 
 // --- Shared options ---
@@ -82,6 +83,41 @@ const requireConfigDir = (
   });
 
 // --- Init command ---
+
+interface InitProfile {
+  readonly name: string;
+  readonly agent: string;
+  readonly model: string;
+  readonly template: string;
+  readonly sandbox: string;
+  readonly issueTracker: string;
+  readonly createLabel: boolean;
+  readonly buildImage: boolean;
+  readonly installTemplateDeps: boolean;
+  readonly codexLogin: boolean;
+  readonly codeGraphVersion: string;
+}
+
+const INIT_PROFILES: readonly InitProfile[] = [
+  {
+    name: "codex-afk",
+    agent: "codex",
+    model: "gpt-5.6-sol",
+    template: "codex-afk",
+    sandbox: "docker",
+    issueTracker: "github-issues",
+    createLabel: false,
+    buildImage: true,
+    installTemplateDeps: true,
+    codexLogin: true,
+    codeGraphVersion: "1.5.0",
+  },
+];
+
+const profileOption = Options.text("profile").pipe(
+  Options.withDescription("Preset init choices (available: codex-afk)"),
+  Options.optional,
+);
 
 const templateOption = Options.text("template").pipe(
   Options.withDescription(
@@ -144,6 +180,20 @@ const installTemplateDepsOption = Options.choice("install-template-deps", [
   Options.optional,
 );
 
+const codexLoginOption = Options.choice("codex-login", ["true", "false"]).pipe(
+  Options.withDescription(
+    "Whether to authenticate the isolated Codex home with a ChatGPT subscription",
+  ),
+  Options.optional,
+);
+
+const codeGraphVersionOption = Options.text("codegraph-version").pipe(
+  Options.withDescription(
+    "Pinned @colbymchenry/codegraph version for the codex-afk image",
+  ),
+  Options.optional,
+);
+
 /**
  * Translate an `Options.choice("flag", ["true", "false"]).optional` value into
  * a tri-state boolean. None when the flag was absent; otherwise the parsed bool.
@@ -156,6 +206,7 @@ const choiceToTriBool = (
 const initCommand = Command.make(
   "init",
   {
+    profile: profileOption,
     imageName: imageNameOption,
     template: templateOption,
     agent: agentOption,
@@ -165,8 +216,11 @@ const initCommand = Command.make(
     createLabel: createLabelOption,
     buildImage: buildImageOption,
     installTemplateDeps: installTemplateDepsOption,
+    codexLogin: codexLoginOption,
+    codeGraphVersion: codeGraphVersionOption,
   },
   ({
+    profile: profileFlag,
     imageName: imageNameFlag,
     template,
     agent: agentFlag,
@@ -176,11 +230,26 @@ const initCommand = Command.make(
     createLabel: createLabelFlag,
     buildImage: buildImageFlag,
     installTemplateDeps: installTemplateDepsFlag,
+    codexLogin: codexLoginFlag,
+    codeGraphVersion: codeGraphVersionFlag,
   }) =>
     Effect.gen(function* () {
       const d = yield* Display;
       const cwd = process.cwd();
       const imageName = resolveImageName(imageNameFlag, cwd);
+      let profile: InitProfile | undefined;
+      if (profileFlag._tag === "Some") {
+        profile = INIT_PROFILES.find(
+          (entry) => entry.name === profileFlag.value,
+        );
+        if (!profile) {
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown profile "${profileFlag.value}". Available: ${INIT_PROFILES.map((entry) => entry.name).join(", ")}`,
+            }),
+          );
+        }
+      }
 
       // Early validation of CLI flags before interactive prompts
       const templates = listTemplates();
@@ -224,10 +293,29 @@ const initCommand = Command.make(
         }
       }
 
-      const createLabelChoice = choiceToTriBool(createLabelFlag);
-      const buildImageChoice = choiceToTriBool(buildImageFlag);
-      const installTemplateDepsChoice = choiceToTriBool(
+      const profileChoice = (
+        flag: Option.Option<"true" | "false">,
+        fallback: boolean | undefined,
+      ): Option.Option<boolean> => {
+        const explicit = choiceToTriBool(flag);
+        if (explicit._tag === "Some") return explicit;
+        return fallback === undefined ? Option.none() : Option.some(fallback);
+      };
+      const createLabelChoice = profileChoice(
+        createLabelFlag,
+        profile?.createLabel,
+      );
+      const buildImageChoice = profileChoice(
+        buildImageFlag,
+        profile?.buildImage,
+      );
+      const installTemplateDepsChoice = profileChoice(
         installTemplateDepsFlag,
+        profile?.installTemplateDeps,
+      );
+      const codexLoginChoice = profileChoice(
+        codexLoginFlag,
+        profile?.codexLogin,
       );
 
       const isInteractive = process.stdin.isTTY === true;
@@ -269,13 +357,15 @@ const initCommand = Command.make(
       // Resolve agent: CLI flag > interactive select
       const agents = listAgents();
       let selectedAgent: AgentEntry;
-      if (agentFlag._tag === "Some") {
-        const entry = getAgent(agentFlag.value);
+      const requestedAgent =
+        agentFlag._tag === "Some" ? agentFlag.value : profile?.agent;
+      if (requestedAgent !== undefined) {
+        const entry = getAgent(requestedAgent);
         if (!entry) {
           const names = agents.map((a) => a.name).join(", ");
           yield* Effect.fail(
             new InitError({
-              message: `Unknown agent "${agentFlag.value}". Available: ${names}`,
+              message: `Unknown agent "${requestedAgent}". Available: ${names}`,
             }),
           );
         }
@@ -307,13 +397,15 @@ const initCommand = Command.make(
       const selectedModel =
         modelFlag._tag === "Some"
           ? modelFlag.value
-          : selectedAgent.defaultModel;
+          : (profile?.model ?? selectedAgent.defaultModel);
 
       // Resolve sandbox provider: CLI flag > interactive select (no default — user must choose)
       const sandboxProviders = listSandboxProviders();
       let selectedSandboxProvider: SandboxProviderEntry;
-      if (sandboxFlag._tag === "Some") {
-        selectedSandboxProvider = getSandboxProvider(sandboxFlag.value)!;
+      const requestedSandbox =
+        sandboxFlag._tag === "Some" ? sandboxFlag.value : profile?.sandbox;
+      if (requestedSandbox !== undefined) {
+        selectedSandboxProvider = getSandboxProvider(requestedSandbox)!;
       } else {
         if (!isInteractive) {
           yield* failIfNonInteractive("--sandbox");
@@ -340,8 +432,12 @@ const initCommand = Command.make(
       // Resolve issue tracker: CLI flag > interactive select (already validated above)
       const issueTrackers = listIssueTrackers();
       let selectedIssueTracker: IssueTrackerEntry;
-      if (issueTrackerFlag._tag === "Some") {
-        selectedIssueTracker = getIssueTracker(issueTrackerFlag.value)!;
+      const requestedIssueTracker =
+        issueTrackerFlag._tag === "Some"
+          ? issueTrackerFlag.value
+          : profile?.issueTracker;
+      if (requestedIssueTracker !== undefined) {
+        selectedIssueTracker = getIssueTracker(requestedIssueTracker)!;
       } else {
         if (!isInteractive) {
           yield* failIfNonInteractive("--issue-tracker");
@@ -368,8 +464,10 @@ const initCommand = Command.make(
 
       // Resolve template: CLI flag > interactive select (already validated above)
       let selectedTemplate: string;
-      if (template._tag === "Some") {
-        selectedTemplate = template.value;
+      const requestedTemplate =
+        template._tag === "Some" ? template.value : profile?.template;
+      if (requestedTemplate !== undefined) {
+        selectedTemplate = requestedTemplate;
       } else {
         if (!isInteractive) {
           yield* failIfNonInteractive("--template");
@@ -426,6 +524,11 @@ const initCommand = Command.make(
           createLabel: shouldCreateLabel,
           issueTracker: selectedIssueTracker,
           sandboxProvider: selectedSandboxProvider,
+          agentAuth: selectedTemplate === "codex-afk" ? "chatgpt" : "api-key",
+          codeGraphVersion:
+            codeGraphVersionFlag._tag === "Some"
+              ? codeGraphVersionFlag.value
+              : profile?.codeGraphVersion,
         }).pipe(
           Effect.mapError(
             (e) =>
@@ -435,6 +538,29 @@ const initCommand = Command.make(
           ),
         ),
       );
+
+      if (selectedTemplate === "codex-afk") {
+        const shouldLogin = yield* resolveConfirmFlag({
+          choice: codexLoginChoice,
+          flag: "--codex-login",
+          promptMessage:
+            "Authenticate the isolated Codex home with your ChatGPT subscription now?",
+          cancelMessage: "Codex login selection cancelled.",
+        });
+        if (shouldLogin) {
+          yield* Effect.try({
+            try: () => ensureCodexSubscriptionLogin(cwd),
+            catch: (error) =>
+              new InitError({
+                message: error instanceof Error ? error.message : `${error}`,
+              }),
+          });
+          yield* d.status(
+            "Codex ChatGPT subscription is available in the isolated project home.",
+            "success",
+          );
+        }
+      }
 
       // Detect the host package manager so the zod offer below and the next
       // steps below both use the right install command.

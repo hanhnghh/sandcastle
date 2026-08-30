@@ -1,9 +1,10 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import ts from "typescript";
 import {
   scaffold,
   getNextStepsLines,
@@ -47,6 +48,75 @@ const runScaffold = (repoDir: string, options?: Partial<ScaffoldOptions>) =>
 // ---------------------------------------------------------------------------
 
 describe("InitService scaffold", () => {
+  it("scaffolds the codex-afk profile runtime with isolated OAuth and CodeGraph", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: codexAgent,
+      model: "gpt-5.4",
+      templateName: "codex-afk",
+      agentAuth: "chatgpt",
+      codeGraphVersion: "1.5.0",
+    });
+
+    const configDir = join(dir, ".sandcastle");
+    const [dockerfile, envExample, gitignore, main, codexConfig, prompt] =
+      await Promise.all([
+        readFile(join(configDir, "Dockerfile"), "utf8"),
+        readFile(join(configDir, ".env.example"), "utf8"),
+        readFile(join(configDir, ".gitignore"), "utf8"),
+        readFile(join(configDir, "main.mts"), "utf8"),
+        readFile(join(configDir, "codex-home", "config.toml"), "utf8"),
+        readFile(join(configDir, "implement-prompt.md"), "utf8"),
+      ]);
+
+    expect(dockerfile).toContain("@colbymchenry/codegraph@1.5.0");
+    expect(dockerfile).toContain("python-is-python3");
+    expect(dockerfile).toContain("ripgrep");
+    expect(dockerfile).toContain("codegraph version");
+    expect(envExample).not.toContain("OPENAI_KEY=");
+    expect(envExample).toContain("ChatGPT subscription");
+    expect(gitignore).toContain("codex-home/");
+    expect(gitignore).toContain("cache/codegraph/");
+    expect(codexConfig).toContain('cli_auth_credentials_store = "file"');
+    expect(codexConfig).toContain('forced_login_method = "chatgpt"');
+    expect((await stat(join(configDir, "codex-home"))).mode & 0o777).toBe(
+      0o700,
+    );
+    expect(
+      (await stat(join(configDir, "codex-home", "config.toml"))).mode & 0o777,
+    ).toBe(0o600);
+
+    expect(main).toContain('CODEX_HOME_HOST = ".sandcastle/codex-home"');
+    expect(main).toContain("hostSessionsDir");
+    expect(main).toContain("prepareCodeGraphCache");
+    expect(main).toContain("codegraph sync");
+    expect(main).toContain("codegraph init");
+    expect(prompt).toContain('codegraph explore "{{ISSUE_TITLE}}"');
+    expect(prompt).toContain("codegraph impact");
+    expect(prompt).toContain("navigation evidence, not correctness evidence");
+    const syntaxErrors = ts
+      .transpileModule(main, {
+        compilerOptions: { module: ts.ModuleKind.ESNext },
+        reportDiagnostics: true,
+      })
+      .diagnostics?.filter(
+        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+      );
+    expect(syntaxErrors).toEqual([]);
+  });
+
+  it("rejects an unsafe CodeGraph version before writing scaffold files", async () => {
+    const dir = await makeDir();
+    await expect(
+      runScaffold(dir, {
+        agent: codexAgent,
+        templateName: "codex-afk",
+        codeGraphVersion: "1.5.0; touch escaped",
+      }),
+    ).rejects.toThrow("Invalid CodeGraph version");
+    await expect(stat(join(dir, ".sandcastle"))).rejects.toThrow();
+  });
+
   it("uses agent dockerfileTemplate for Dockerfile (with templateArgs substitution)", async () => {
     const dir = await makeDir();
     await runScaffold(dir);

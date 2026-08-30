@@ -63,6 +63,41 @@ await run({
 });
 ```
 
+### Codex subscription AFK profile
+
+Use the `codex-afk` init profile for a Docker-based parallel planner,
+implementer, reviewer, and merger that authenticates with a ChatGPT
+subscription and keeps CodeGraph indexes isolated by Git branch:
+
+```bash
+npx @ai-hero/sandcastle init --profile codex-afk
+```
+
+The profile creates `.sandcastle/codex-home` with file-backed ChatGPT OAuth,
+logs in through the host Codex CLI, installs a pinned CodeGraph CLI in the
+sandbox image, and mounts a separate `.codegraph` database for each branch.
+Credentials, Codex sessions, and branch indexes are ignored by Git. The
+generated runtime checks `codex login status` and initializes or incrementally
+syncs CodeGraph before each sandbox begins.
+
+For automation, the interactive operations can be controlled explicitly:
+
+```bash
+npx @ai-hero/sandcastle init \
+  --profile codex-afk \
+  --codex-login false \
+  --build-image false \
+  --install-template-deps false \
+  --codegraph-version 1.5.0
+```
+
+When login is skipped, authenticate later without touching the normal
+`~/.codex` home:
+
+```bash
+CODEX_HOME=.sandcastle/codex-home codex login
+```
+
 ## Sandbox Providers
 
 Sandcastle uses a `SandboxProvider` to create isolated environments. The `sandbox` option on `run()`, `interactive()`, and `createSandbox()` accepts any provider, including `noSandbox()` — opt in to running the agent directly on the host when container isolation is undesired. Built-in providers:
