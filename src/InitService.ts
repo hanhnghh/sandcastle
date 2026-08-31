@@ -806,10 +806,20 @@ const rewriteCodexAfkMain = (
     // to Codex. Collapse only those original call sites before injecting the
     // shared provider factory below.
     content = content.replace(/sandcastle\.codex\([^)]+\)/g, "codexAgent()");
+    content = replaceRequired(
+      content,
+      `name: "reviewer",
+            maxIterations: 1,
+            agent: codexAgent(),`,
+      `name: "reviewer",
+            maxIterations: 1,
+            agent: codexAgent("xhigh"),`,
+    );
 
     content = replaceRequired(
       content,
-      'import { z } from "zod";',
+      `import { execFileSync } from "node:child_process";
+import { z } from "zod";`,
       `import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { z } from "zod";`,
@@ -826,6 +836,8 @@ if (!BASE_BRANCH) {
 const CODEX_HOME_HOST = ".sandcastle/codex-home";
 const CODEX_HOME_SANDBOX = "/home/agent/.codex";
 const CODEX_CONFIG_HOST = \`\${CODEX_HOME_HOST}/config.toml\`;
+const CODING_STANDARDS_HOST = ".sandcastle/CODING_STANDARDS.md";
+const CODING_STANDARDS_SANDBOX = "/home/agent/CODING_STANDARDS.md";
 const CODEGRAPH_CACHE_ROOT_HOST = ".sandcastle/cache/codegraph";
 const CODEGRAPH_SEED_DATABASE_HOST = ".codegraph/codegraph.db";
 const CODEGRAPH_CACHE_SANDBOX = "/home/agent/workspace/.codegraph";
@@ -848,6 +860,11 @@ const codexSandbox = (branch: string) =>
   docker({
     mounts: [
       { hostPath: CODEX_HOME_HOST, sandboxPath: CODEX_HOME_SANDBOX },
+      {
+        hostPath: CODING_STANDARDS_HOST,
+        sandboxPath: CODING_STANDARDS_SANDBOX,
+        readonly: true,
+      },
       {
         hostPath: sandcastle.prepareCodeGraphCache({
           cacheRoot: CODEGRAPH_CACHE_ROOT_HOST,
@@ -891,6 +908,7 @@ async function syncCodeGraph(sandbox: sandcastle.Sandbox): Promise<void> {
     onSandboxReady: [
       { command: "npm install" },
       { command: "codex login status" },
+      { command: "test -r /home/agent/CODING_STANDARDS.md" },
       { command: codeGraphSyncCommand, timeoutMs: 120_000 },
     ],
   },
@@ -928,10 +946,6 @@ const addCodeGraphPromptGuidance = (
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const promptPath = join(configDir, "implement-prompt.md");
-    const content = yield* fs
-      .readFileString(promptPath)
-      .pipe(Effect.mapError((e) => new Error(e.message)));
     const guidance = `## CODEGRAPH NAVIGATION
 
 Use the synchronized branch-local index before broad text searches:
@@ -947,14 +961,24 @@ to select focused tests. Fall back to \`rg\` and direct file reads for exact
 wire text, configuration, and graph misses. CodeGraph is navigation evidence, not correctness evidence;
 tests and executable feedback gates establish correctness.
 `;
-    const updated = replaceRequired(
-      content,
-      "# EXPLORATION\n\n",
-      `# EXPLORATION\n\n${guidance}\n`,
-    );
-    yield* fs
-      .writeFileString(promptPath, updated)
-      .pipe(Effect.mapError((e) => new Error(e.message)));
+    for (const filename of ["implement-prompt.md", "review-prompt.md"]) {
+      const promptPath = join(configDir, filename);
+      const content = yield* fs
+        .readFileString(promptPath)
+        .pipe(Effect.mapError((e) => new Error(e.message)));
+      const withStandardsMount = content.replaceAll(
+        "@.sandcastle/CODING_STANDARDS.md",
+        "/home/agent/CODING_STANDARDS.md",
+      );
+      const updated = replaceRequired(
+        withStandardsMount,
+        "# EXPLORATION\n\n",
+        `# EXPLORATION\n\n${guidance}\n`,
+      );
+      yield* fs
+        .writeFileString(promptPath, updated)
+        .pipe(Effect.mapError((e) => new Error(e.message)));
+    }
   });
 
 const COMPILED_FILE_EXTENSIONS = [

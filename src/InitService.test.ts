@@ -105,6 +105,42 @@ describe("InitService scaffold", () => {
     expect(syntaxErrors).toEqual([]);
   });
 
+  it("scaffolds a spec-aware Codex reviewer with isolated standards and CodeGraph", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: codexAgent,
+      model: "gpt-5.6-sol",
+      templateName: "codex-afk",
+      agentAuth: "chatgpt",
+    });
+
+    const [main, prompt] = await Promise.all([
+      readFile(join(dir, ".sandcastle", "main.mts"), "utf8"),
+      readFile(join(dir, ".sandcastle", "review-prompt.md"), "utf8"),
+    ]);
+
+    expect(main).toContain(
+      'CODING_STANDARDS_HOST = ".sandcastle/CODING_STANDARDS.md"',
+    );
+    expect(main).toContain(
+      'CODING_STANDARDS_SANDBOX = "/home/agent/CODING_STANDARDS.md"',
+    );
+    expect(main).toContain("sandboxPath: CODING_STANDARDS_SANDBOX");
+    expect(main).toContain("readonly: true");
+    expect(main).toContain('agent: codexAgent("xhigh")');
+    expect(main).toContain("TASK_ID: issue.id");
+    expect(main).toContain("ISSUE_TITLE: issue.title");
+
+    expect(prompt).toContain("{{TASK_ID}}");
+    expect(prompt).toContain("{{ISSUE_TITLE}}");
+    expect(prompt).toContain("/home/agent/CODING_STANDARDS.md");
+    expect(prompt).toContain(
+      'codegraph impact "<public symbol being changed>"',
+    );
+    expect(prompt).toContain("acceptance criterion");
+    expect(prompt).toContain("git diff --check");
+  });
+
   it("rejects an unsafe CodeGraph version before writing scaffold files", async () => {
     const dir = await makeDir();
     await expect(
@@ -1038,6 +1074,30 @@ describe("InitService scaffold", () => {
     ).rejects.toThrow("nonexistent");
   });
 
+  it.each(["parallel-planner", "parallel-planner-with-review"])(
+    "%s scaffolds a safe planner eligibility contract",
+    async (templateName) => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "plan-prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("candidate inventory, not proof of readiness");
+      expect(prompt).toContain("Parent specs, PRDs, epics, tracking tasks");
+      expect(prompt).toContain("explicit blocker");
+      expect(prompt).toContain("maximal mutually parallel-safe batch");
+      expect(prompt).toContain("deterministically select one");
+      expect(prompt).toContain("return an empty `issues` array");
+      expect(prompt).toContain("ineligible or blocked task");
+      expect(prompt).not.toContain("single highest-priority candidate");
+      expect(prompt).not.toContain(
+        "already been filtered to issues ready for work",
+      );
+    },
+  );
+
   describe("parallel-planner template", () => {
     it("produces main.mts, plan-prompt.md, implement-prompt.md, merge-prompt.md", async () => {
       const dir = await makeDir();
@@ -1288,6 +1348,23 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("{{BRANCH}}");
     });
 
+    it("scaffolds the tracer-bullet TDD implementer contract", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "implement-prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("# REQUIREMENT LEDGER");
+      expect(prompt).toContain("# EXECUTION — TRACER-BULLET TDD");
+      expect(prompt).toContain("**RED**");
+      expect(prompt).toContain("public seam");
+      expect(prompt).toContain("authoritative gate");
+      expect(prompt).toContain("<promise>BLOCKED</promise>");
+      expect(prompt).not.toContain("codegraph explore");
+    });
+
     it("review-prompt.md contains {{BRANCH}} prompt argument", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner-with-review" });
@@ -1309,6 +1386,25 @@ describe("InitService scaffold", () => {
       );
       expect(prompt).toContain("{{BRANCHES}}");
       expect(prompt).toContain("{{ISSUES}}");
+    });
+
+    it("scaffolds a cumulative merge gate from an immutable batch base", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const [main, prompt] = await Promise.all([
+        readFile(join(dir, ".sandcastle", "main.mts"), "utf-8"),
+        readFile(join(dir, ".sandcastle", "merge-prompt.md"), "utf-8"),
+      ]);
+      expect(main).toContain('const batchBaseSha = execFileSync("git"');
+      expect(main).toContain("BATCH_BASE_SHA: batchBaseSha");
+      expect(prompt).toContain("{{BATCH_BASE_SHA}}");
+      expect(prompt).toContain(
+        "git diff --name-only {{BATCH_BASE_SHA}}...HEAD",
+      );
+      expect(prompt).toContain("affected-package authoritative gate");
+      expect(prompt).toContain("Close tasks only after the cumulative gate");
+      expect(prompt).not.toContain("npm run typecheck");
     });
 
     it("parallel-planner-with-review appears in listTemplates()", () => {
