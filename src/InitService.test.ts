@@ -1,6 +1,6 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -139,6 +139,365 @@ describe("InitService scaffold", () => {
     );
     expect(prompt).toContain("acceptance criterion");
     expect(prompt).toContain("git diff --check");
+  });
+
+  it("scaffolds an executable Node/npm feedback profile for Codex AFK", async () => {
+    const dir = await makeDir();
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({
+        scripts: {
+          test: "vitest run",
+          typecheck: "tsgo --noEmit",
+          build: "tsup",
+        },
+      }),
+    );
+    await writeFile(
+      join(dir, "package-lock.json"),
+      JSON.stringify({ name: "fixture", lockfileVersion: 3 }),
+    );
+    await writeFile(join(dir, "CONTRIBUTING.md"), "# Contributing\n");
+
+    await runScaffold(dir, {
+      agent: codexAgent,
+      model: "gpt-5.6-sol",
+      templateName: "codex-afk",
+      agentAuth: "chatgpt",
+    });
+
+    const configDir = join(dir, ".sandcastle");
+    const [project, feedback, standards, bootstrap, verifyPackage, verifyAll] =
+      await Promise.all([
+        readFile(join(configDir, "project.json"), "utf8"),
+        readFile(join(configDir, "FEEDBACK_LOOPS.md"), "utf8"),
+        readFile(join(configDir, "CODING_STANDARDS.md"), "utf8"),
+        readFile(join(configDir, "scripts", "bootstrap.sh"), "utf8"),
+        readFile(join(configDir, "scripts", "verify-package.sh"), "utf8"),
+        readFile(join(configDir, "scripts", "verify-affected.sh"), "utf8"),
+      ]);
+
+    expect(JSON.parse(project)).toEqual({
+      schemaVersion: 1,
+      projectType: "node",
+      packageManager: "npm",
+      bootstrap: { command: "npm ci" },
+      cache: {
+        hostPath: ".sandcastle/cache/npm",
+        sandboxPath: "/home/agent/.npm",
+      },
+      rootPackage: {
+        cwd: ".",
+        focusedTestHint: "npm test -- <affected-test-files> --run",
+        authoritativeGates: ["npm run typecheck", "npm test", "npm run build"],
+      },
+    });
+    expect(feedback).toContain("# Feedback Loops");
+    expect(feedback).toContain("npm ci");
+    expect(feedback).toContain("npm run typecheck");
+    expect(feedback).toContain("scripts/verify-affected.sh");
+    expect(standards).toContain("## Detected Sources of Truth");
+    expect(standards).toContain("`CONTRIBUTING.md`");
+    expect(bootstrap).toContain("npm ci");
+    expect(verifyPackage).toContain("npm run typecheck");
+    expect(verifyPackage).toContain("npm test");
+    expect(verifyPackage).toContain("npm run build");
+    expect(verifyAll).toContain('git diff --name-only "$base_sha"...HEAD');
+    expect(verifyAll).toContain('"$script_dir/verify-package.sh" root');
+    expect(
+      (await stat(join(configDir, "scripts", "bootstrap.sh"))).mode & 0o777,
+    ).toBe(0o755);
+    expect(
+      (await stat(join(configDir, "scripts", "verify-package.sh"))).mode &
+        0o777,
+    ).toBe(0o755);
+    expect(
+      (await stat(join(configDir, "scripts", "verify-affected.sh"))).mode &
+        0o777,
+    ).toBe(0o755);
+  });
+
+  it("scaffolds an executable Android/Gradle feedback profile for Codex AFK", async () => {
+    const dir = await makeDir();
+    await mkdir(join(dir, "app"));
+    await writeFile(
+      join(dir, "settings.gradle.kts"),
+      'rootProject.name = "fixture"\n',
+    );
+    await writeFile(join(dir, "gradlew"), "#!/usr/bin/env sh\n");
+    await writeFile(
+      join(dir, "app", "build.gradle.kts"),
+      `plugins { id("com.android.application") }
+
+android {
+  namespace = "dev.example.fixture"
+  compileSdk = 35
+}
+`,
+    );
+
+    await runScaffold(dir, {
+      agent: codexAgent,
+      model: "gpt-5.6-sol",
+      templateName: "codex-afk",
+      agentAuth: "chatgpt",
+    });
+
+    const configDir = join(dir, ".sandcastle");
+    const [project, feedback, bootstrap, verifyProject] = await Promise.all([
+      readFile(join(configDir, "project.json"), "utf8"),
+      readFile(join(configDir, "FEEDBACK_LOOPS.md"), "utf8"),
+      readFile(join(configDir, "scripts", "bootstrap.sh"), "utf8"),
+      readFile(join(configDir, "scripts", "verify-package.sh"), "utf8"),
+    ]);
+
+    expect(JSON.parse(project)).toEqual({
+      schemaVersion: 1,
+      projectType: "android",
+      buildTool: "gradle",
+      javaVersion: 17,
+      androidSdk: {
+        compileSdk: 35,
+        packages: [
+          "platform-tools",
+          "platforms;android-35",
+          "build-tools;35.0.0",
+        ],
+      },
+      bootstrap: { command: "./gradlew --no-daemon help" },
+      cache: {
+        hostPath: ".sandcastle/cache/gradle",
+        sandboxPath: "/home/agent/.gradle",
+      },
+      rootProject: {
+        cwd: ".",
+        focusedTestHint:
+          './gradlew :<module>:testDebugUnitTest --tests "<test-class>"',
+        authoritativeGates: [
+          "./gradlew test",
+          "./gradlew lint",
+          "./gradlew assembleDebug",
+        ],
+      },
+    });
+    expect(feedback).toContain("Android/Gradle");
+    expect(feedback).toContain("./gradlew --no-daemon help");
+    expect(feedback).toContain("./gradlew lint");
+    expect(feedback).toContain("do not require an emulator");
+    expect(bootstrap).toContain("./gradlew --no-daemon help");
+    expect(verifyProject).toContain("./gradlew test");
+    expect(verifyProject).toContain("./gradlew lint");
+    expect(verifyProject).toContain("./gradlew assembleDebug");
+  });
+
+  it("runs Android Codex AFK with an Android SDK image and isolated Gradle cache", async () => {
+    const dir = await makeDir();
+    await mkdir(join(dir, "app"));
+    await writeFile(
+      join(dir, "settings.gradle.kts"),
+      'rootProject.name = "fixture"\n',
+    );
+    await writeFile(join(dir, "gradlew"), "#!/usr/bin/env sh\n");
+    await writeFile(
+      join(dir, "app", "build.gradle.kts"),
+      'plugins { id("com.android.application") }\nandroid { compileSdk = 35 }\n',
+    );
+
+    await runScaffold(dir, {
+      agent: codexAgent,
+      model: "gpt-5.6-sol",
+      templateName: "codex-afk",
+      agentAuth: "chatgpt",
+    });
+
+    const configDir = join(dir, ".sandcastle");
+    const [main, dockerfile, gitignore] = await Promise.all([
+      readFile(join(configDir, "main.mts"), "utf8"),
+      readFile(join(configDir, "Dockerfile"), "utf8"),
+      readFile(join(configDir, ".gitignore"), "utf8"),
+    ]);
+
+    expect(dockerfile).toMatch(
+      /^ARG ANDROID_SANDBOX_PLATFORM=linux\/amd64\nFROM --platform=\$\{ANDROID_SANDBOX_PLATFORM\} node:22-bookworm/,
+    );
+    expect(dockerfile).toContain("openjdk-17-jdk-headless");
+    expect(dockerfile).toContain("ANDROID_SDK_ROOT=/opt/android-sdk");
+    expect(dockerfile).toContain("commandlinetools-linux-");
+    expect(dockerfile).toContain(
+      'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"',
+    );
+    expect(dockerfile).toContain("java -version");
+    expect(dockerfile).toContain("sdkmanager --version");
+    expect(main).toContain('GRADLE_CACHE_HOST = ".sandcastle/cache/gradle"');
+    expect(main).toContain('GRADLE_CACHE_SANDBOX = "/home/agent/.gradle"');
+    expect(main).toContain("sandboxPath: GRADLE_CACHE_SANDBOX");
+    expect(main).not.toContain("NPM_CACHE_HOST");
+    expect(gitignore).toContain("cache/gradle/");
+    expect(gitignore).not.toContain("cache/npm/");
+  });
+
+  it("detects a named Android module whose compile SDK comes from a version catalog", async () => {
+    const dir = await makeDir();
+    await mkdir(join(dir, "mobile"));
+    await mkdir(join(dir, "gradle"));
+    await writeFile(join(dir, "settings.gradle.kts"), 'include(":mobile")\n');
+    await writeFile(join(dir, "gradlew"), "#!/usr/bin/env sh\n");
+    await writeFile(
+      join(dir, "mobile", "build.gradle.kts"),
+      'plugins { id("com.android.library") }\nandroid { compileSdk = libs.versions.compileSdk.get().toInt() }\n',
+    );
+    await writeFile(
+      join(dir, "gradle", "libs.versions.toml"),
+      '[versions]\ncompileSdk = "36"\n',
+    );
+
+    await runScaffold(dir, {
+      agent: codexAgent,
+      model: "gpt-5.6-sol",
+      templateName: "codex-afk",
+      agentAuth: "chatgpt",
+    });
+
+    const project = JSON.parse(
+      await readFile(join(dir, ".sandcastle", "project.json"), "utf8"),
+    ) as { androidSdk: { compileSdk: number; packages: string[] } };
+    expect(project.androidSdk).toEqual({
+      compileSdk: 36,
+      packages: [
+        "platform-tools",
+        "platforms;android-36",
+        "build-tools;36.0.0",
+      ],
+    });
+  });
+
+  it("rejects a project outside the supported Codex AFK profiles before writing config", async () => {
+    const dir = await makeDir();
+    await writeFile(
+      join(dir, "pyproject.toml"),
+      '[project]\nname = "fixture"\n',
+    );
+
+    await expect(
+      runScaffold(dir, {
+        agent: codexAgent,
+        model: "gpt-5.6-sol",
+        templateName: "codex-afk",
+        agentAuth: "chatgpt",
+      }),
+    ).rejects.toThrow("supports Node/npm or Android/Gradle");
+    await expect(stat(join(dir, ".sandcastle"))).rejects.toThrow();
+  });
+
+  it("does not misclassify a Spring/Gradle project as Android", async () => {
+    const dir = await makeDir();
+    await writeFile(
+      join(dir, "settings.gradle.kts"),
+      'rootProject.name = "backend"\n',
+    );
+    await writeFile(join(dir, "gradlew"), "#!/usr/bin/env sh\n");
+    await writeFile(
+      join(dir, "build.gradle.kts"),
+      'plugins { id("org.springframework.boot") version "3.5.0" }\n',
+    );
+
+    await expect(
+      runScaffold(dir, {
+        agent: codexAgent,
+        model: "gpt-5.6-sol",
+        templateName: "codex-afk",
+        agentAuth: "chatgpt",
+      }),
+    ).rejects.toThrow("supports Node/npm or Android/Gradle");
+    await expect(stat(join(dir, ".sandcastle"))).rejects.toThrow();
+  });
+
+  it("runs Codex AFK with sandbox-native npm bootstrap and read-only feedback", async () => {
+    const dir = await makeDir();
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run" } }),
+    );
+    await writeFile(
+      join(dir, "package-lock.json"),
+      JSON.stringify({ name: "fixture", lockfileVersion: 3 }),
+    );
+
+    await runScaffold(dir, {
+      agent: codexAgent,
+      model: "gpt-5.6-sol",
+      templateName: "codex-afk",
+      agentAuth: "chatgpt",
+    });
+
+    const configDir = join(dir, ".sandcastle");
+    const [main, dockerfile, gitignore] = await Promise.all([
+      readFile(join(configDir, "main.mts"), "utf8"),
+      readFile(join(configDir, "Dockerfile"), "utf8"),
+      readFile(join(configDir, ".gitignore"), "utf8"),
+    ]);
+
+    expect(main).toContain(
+      'FEEDBACK_LOOPS_HOST = ".sandcastle/FEEDBACK_LOOPS.md"',
+    );
+    expect(main).toContain(
+      'FEEDBACK_LOOPS_SANDBOX = "/home/agent/FEEDBACK_LOOPS.md"',
+    );
+    expect(main).toContain('NPM_CACHE_HOST = ".sandcastle/cache/npm"');
+    expect(main).toContain('NPM_CACHE_SANDBOX = "/home/agent/.npm"');
+    expect(main).toContain("sandboxPath: FEEDBACK_LOOPS_SANDBOX");
+    expect(main).toContain("sandboxPath: NPM_CACHE_SANDBOX");
+    expect(main).toContain(
+      '{ command: "bash .sandcastle/scripts/bootstrap.sh" }',
+    );
+    expect(main).toContain("const copyToWorktree: string[] = [];");
+    expect(main).not.toContain('{ command: "npm install" }');
+    expect(dockerfile).toContain("npm --version");
+    expect(gitignore).toContain("cache/npm/");
+  });
+
+  it("points Codex agents at separated standards and executable feedback gates", async () => {
+    const dir = await makeDir();
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({
+        scripts: { test: "vitest run", typecheck: "tsgo --noEmit" },
+      }),
+    );
+    await writeFile(
+      join(dir, "package-lock.json"),
+      JSON.stringify({ name: "fixture", lockfileVersion: 3 }),
+    );
+
+    await runScaffold(dir, {
+      agent: codexAgent,
+      model: "gpt-5.6-sol",
+      templateName: "codex-afk",
+      agentAuth: "chatgpt",
+    });
+
+    const configDir = join(dir, ".sandcastle");
+    const [implement, review, merge] = await Promise.all([
+      readFile(join(configDir, "implement-prompt.md"), "utf8"),
+      readFile(join(configDir, "review-prompt.md"), "utf8"),
+      readFile(join(configDir, "merge-prompt.md"), "utf8"),
+    ]);
+
+    for (const prompt of [implement, review, merge]) {
+      expect(prompt).toContain("/home/agent/CODING_STANDARDS.md");
+      expect(prompt).toContain("/home/agent/FEEDBACK_LOOPS.md");
+    }
+    expect(implement).toContain(
+      "authoritative gate from `/home/agent/FEEDBACK_LOOPS.md`",
+    );
+    expect(review).toContain("Run one authoritative gate from");
+    expect(merge).toContain(
+      'bash .sandcastle/scripts/verify-affected.sh "{{BATCH_BASE_SHA}}"',
+    );
+    expect(merge).toContain("executable cumulative gate");
+    expect(merge).not.toContain(
+      "Map those paths to affected packages or modules",
+    );
   });
 
   it("rejects an unsafe CodeGraph version before writing scaffold files", async () => {
@@ -734,6 +1093,15 @@ describe("InitService scaffold", () => {
       const joined = lines.join("\n");
       expect(joined).toContain("copyToWorktree");
       expect(joined).toContain("node_modules");
+    });
+
+    it("codex-afk next steps point at the generated project feedback profile", () => {
+      const joined = next("codex-afk", "main.mts").join("\n");
+      expect(joined).toContain("project.json");
+      expect(joined).toContain("FEEDBACK_LOOPS.md");
+      expect(joined).toContain("CODING_STANDARDS.md");
+      expect(joined).toContain("scripts/verify-affected.sh");
+      expect(joined).not.toContain('copyToWorktree: ["node_modules"]');
     });
 
     it("blank template includes a step to customize prompt.md", () => {

@@ -80,6 +80,35 @@ Credentials, Codex sessions, and branch indexes are ignored by Git. The
 generated runtime checks `codex login status` and initializes or incrementally
 syncs CodeGraph before each sandbox begins.
 
+The Codex AFK execution profile currently detects Node.js/npm and native
+Android/Gradle projects. Init generates:
+
+- `.sandcastle/project.json` as the machine-readable project profile;
+- `.sandcastle/FEEDBACK_LOOPS.md` with focused and authoritative commands;
+- a deterministic `.sandcastle/CODING_STANDARDS.md` draft listing detected
+  repository sources of truth;
+- executable bootstrap, package-verification, and cumulative merge-gate scripts
+  under `.sandcastle/scripts/`.
+
+For Node/npm, dependencies are installed inside the Linux sandbox with `npm ci`
+when a `package-lock.json` is present. Sandcastle mounts an isolated npm download
+cache instead of copying host `node_modules`, avoiding host/sandbox native-binary
+incompatibilities.
+
+For Android/Gradle, init detects the Gradle wrapper, Android plugin, and
+`compileSdk` from module build files or `gradle/libs.versions.toml`. The generated
+image includes JDK 17, Android command-line tools, and the required SDK platform;
+the runtime mounts an isolated Gradle cache. Default completion gates run unit
+tests, lint, and a debug assembly without an emulator. Instrumentation tests
+remain opt-in because they require an explicitly configured emulator or device.
+Android images target `linux/amd64`, including on Apple Silicon, because Google
+ships Linux Android build-tool binaries such as `aapt2` for x86_64.
+
+Review the generated standards and feedback files before the first AFK run.
+Projects using pnpm, Yarn, Bun, Python, or non-Android Gradle builds such as
+Spring Boot need a future project profile and currently fail init rather than
+receiving incorrect commands.
+
 For automation, the interactive operations can be controlled explicitly:
 
 ```bash
