@@ -91,6 +91,9 @@ describe("InitService scaffold", () => {
     expect(main).toContain("prepareCodeGraphCache");
     expect(main).toContain("codegraph sync");
     expect(main).toContain("codegraph init");
+    await expect(
+      stat(join(configDir, "github-planner-inventory.cjs")),
+    ).resolves.toBeDefined();
     expect(prompt).toContain('codegraph explore "{{ISSUE_TITLE}}"');
     expect(prompt).toContain("codegraph impact");
     expect(prompt).toContain("navigation evidence, not correctness evidence");
@@ -1386,7 +1389,7 @@ android {
       "utf-8",
     );
     expect(prompt).not.toContain("--label Sandcastle");
-    expect(prompt).toContain("gh issue list");
+    expect(prompt).toContain("github-planner-inventory.cjs");
   });
 
   it("sequential-reviewer implement-prompt.md strips --label Sandcastle when createLabel is false", async () => {
@@ -2299,10 +2302,13 @@ android {
         join(dir, ".sandcastle", "plan-prompt.md"),
         "utf-8",
       );
-      expect(planPrompt).toContain("gh issue list");
-      expect(planPrompt).toContain("labels");
-      expect(planPrompt).toContain("comments");
+      expect(planPrompt).not.toContain("gh issue list");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
+      expect(planPrompt).not.toContain("{{PLANNER_LIST_TASKS_COMMAND}}");
+      expect(planPrompt).toContain("github-planner-inventory.cjs");
+      await expect(
+        stat(join(dir, ".sandcastle", "github-planner-inventory.cjs")),
+      ).resolves.toBeDefined();
     });
 
     it("parallel-planner with beads produces plan-prompt with bd commands", async () => {
@@ -2319,6 +2325,9 @@ android {
       expect(planPrompt).toContain("bd ready --json");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
+      await expect(
+        stat(join(dir, ".sandcastle", "github-planner-inventory.cjs")),
+      ).rejects.toBeDefined();
     });
 
     it("parallel-planner main.mts uses id:string and TASK_ID", async () => {
@@ -2470,10 +2479,13 @@ android {
         join(dir, ".sandcastle", "plan-prompt.md"),
         "utf-8",
       );
-      expect(planPrompt).toContain("gh issue list");
-      expect(planPrompt).toContain("labels");
-      expect(planPrompt).toContain("comments");
+      expect(planPrompt).not.toContain("gh issue list");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
+      expect(planPrompt).not.toContain("{{PLANNER_LIST_TASKS_COMMAND}}");
+      expect(planPrompt).toContain("github-planner-inventory.cjs");
+      await expect(
+        stat(join(dir, ".sandcastle", "github-planner-inventory.cjs")),
+      ).resolves.toBeDefined();
     });
 
     it("parallel-planner-with-review with beads produces plan-prompt with bd commands", async () => {
@@ -2490,6 +2502,9 @@ android {
       expect(planPrompt).toContain("bd ready --json");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
+      await expect(
+        stat(join(dir, ".sandcastle", "github-planner-inventory.cjs")),
+      ).rejects.toBeDefined();
     });
 
     it("parallel-planner-with-review main.mts uses id:string and TASK_ID", async () => {

@@ -510,6 +510,7 @@ export interface IssueTrackerEntry {
   readonly label: string;
   readonly templateArgs: {
     readonly LIST_TASKS_COMMAND: string;
+    readonly PLANNER_LIST_TASKS_COMMAND: string;
     readonly VIEW_TASK_COMMAND: string;
     readonly CLOSE_TASK_COMMAND: string;
     readonly ISSUE_TRACKER_TOOLS: string;
@@ -557,6 +558,7 @@ const ISSUE_TRACKER_REGISTRY: IssueTrackerEntry[] = [
     label: "GitHub Issues",
     templateArgs: {
       LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --limit 100 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
+      PLANNER_LIST_TASKS_COMMAND: `node .sandcastle/github-planner-inventory.cjs --label Sandcastle`,
       VIEW_TASK_COMMAND: "gh issue view <ID>",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
       ISSUE_TRACKER_TOOLS: GITHUB_CLI_TOOLS,
@@ -571,6 +573,7 @@ GH_TOKEN=`,
     label: "Beads",
     templateArgs: {
       LIST_TASKS_COMMAND: "bd ready --json",
+      PLANNER_LIST_TASKS_COMMAND: "bd ready --json",
       VIEW_TASK_COMMAND: "bd show <ID>",
       CLOSE_TASK_COMMAND: `bd close <ID> --reason="Completed by Sandcastle"`,
       ISSUE_TRACKER_TOOLS: BEADS_TOOLS,
@@ -585,6 +588,7 @@ GH_TOKEN=`,
       // non-zero exit and surfaces stderr, so this is the single enforcement
       // point that keeps the scaffold broken until the user configures it.
       LIST_TASKS_COMMAND: CUSTOM_LIST_TASKS_SENTINEL,
+      PLANNER_LIST_TASKS_COMMAND: CUSTOM_LIST_TASKS_SENTINEL,
       // Inline text markers — replaced by the setup agent, never executed.
       VIEW_TASK_COMMAND: CUSTOM_VIEW_TASK_MARKER,
       CLOSE_TASK_COMMAND: CUSTOM_CLOSE_TASK_MARKER,
@@ -1771,6 +1775,32 @@ const copyTemplateFiles = (
     );
   });
 
+const scaffoldIssueTrackerFiles = (
+  configDir: string,
+  templateName: string,
+  issueTracker: IssueTrackerEntry,
+): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    if (
+      issueTracker.name !== "github-issues" ||
+      ![
+        "parallel-planner",
+        "parallel-planner-with-review",
+        "codex-afk",
+      ].includes(templateName)
+    ) {
+      return;
+    }
+
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs
+      .copyFile(
+        join(getTemplatesDir(), "github-planner-inventory.cjs"),
+        join(configDir, "github-planner-inventory.cjs"),
+      )
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+  });
+
 /**
  * Replace the agent factory and sandbox provider in a scaffolded main.ts.
  *
@@ -2164,6 +2194,8 @@ export const scaffold = (
       ],
       { concurrency: "unbounded" },
     );
+
+    yield* scaffoldIssueTrackerFiles(configDir, templateName, issueTracker);
 
     // Rewrite main file with the selected agent factory, model, and sandbox provider
     yield* rewriteMainTs(

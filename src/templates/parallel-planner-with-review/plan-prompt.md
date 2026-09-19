@@ -4,7 +4,7 @@ The configured task tracker returned the following open tasks:
 
 <issues-json>
 
-!`{{LIST_TASKS_COMMAND}}`
+!`{{PLANNER_LIST_TASKS_COMMAND}}`
 
 </issues-json>
 
@@ -22,9 +22,12 @@ these are true:
    criteria. Parent specs, PRDs, epics, tracking tasks, and meta tasks are never
    implementation candidates.
 2. Every explicit blocker or dependency is resolved. Recognize tracker-native
-   dependency fields and sections such as `Blocked by` or `Depends on`. If a
-   referenced task's state is not established by the inventory, inspect only
-   that task with `{{VIEW_TASK_COMMAND}}`, replacing `<ID>` with its ID.
+   dependency fields and sections such as `Blocked by` or `Depends on`. When a
+   candidate includes `blockers` and `explicitBlockersResolved`, those states
+   were resolved before planning: `false` means blocked and `true` means there
+   is no unresolved explicit dependency. Otherwise, if a referenced task's
+   state is absent, inspect only that task with `{{VIEW_TASK_COMMAND}}`,
+   replacing `<ID>` with its ID.
 3. It has no inferred dependency on another open task whose code, migration,
    public contract, infrastructure, or unresolved decision it requires.
 4. Its acceptance criteria can be completed without an unresolved product or
