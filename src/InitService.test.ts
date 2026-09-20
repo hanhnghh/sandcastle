@@ -94,6 +94,12 @@ describe("InitService scaffold", () => {
     await expect(
       stat(join(configDir, "github-planner-inventory.cjs")),
     ).resolves.toBeDefined();
+    await expect(
+      stat(join(configDir, "planner-batch.ts")),
+    ).resolves.toBeDefined();
+    await expect(
+      stat(join(configDir, "planner-inventory.sh")),
+    ).resolves.toBeDefined();
     expect(prompt).toContain('codegraph explore "{{ISSUE_TITLE}}"');
     expect(prompt).toContain("codegraph impact");
     expect(prompt).toContain("navigation evidence, not correctness evidence");
@@ -1384,12 +1390,12 @@ android {
       createLabel: false,
     });
 
-    const prompt = await readFile(
-      join(dir, ".sandcastle", "plan-prompt.md"),
+    const inventoryScript = await readFile(
+      join(dir, ".sandcastle", "planner-inventory.sh"),
       "utf-8",
     );
-    expect(prompt).not.toContain("--label Sandcastle");
-    expect(prompt).toContain("github-planner-inventory.cjs");
+    expect(inventoryScript).not.toContain("--label Sandcastle");
+    expect(inventoryScript).toContain("github-planner-inventory.cjs");
   });
 
   it("sequential-reviewer implement-prompt.md strips --label Sandcastle when createLabel is false", async () => {
@@ -1679,8 +1685,8 @@ android {
       );
       // Check planner maxIterations: 1 (near "planner" name)
       const plannerSection = mainTs.slice(
-        mainTs.indexOf('name: "planner"') - 200,
-        mainTs.indexOf('name: "planner"') + 200,
+        mainTs.indexOf("name: `planner-${attempt}`") - 200,
+        mainTs.indexOf("name: `planner-${attempt}`") + 200,
       );
       expect(plannerSection).toContain("maxIterations: 1");
 
@@ -2302,10 +2308,16 @@ android {
         join(dir, ".sandcastle", "plan-prompt.md"),
         "utf-8",
       );
+      const inventoryScript = await readFile(
+        join(dir, ".sandcastle", "planner-inventory.sh"),
+        "utf-8",
+      );
       expect(planPrompt).not.toContain("gh issue list");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
       expect(planPrompt).not.toContain("{{PLANNER_LIST_TASKS_COMMAND}}");
-      expect(planPrompt).toContain("github-planner-inventory.cjs");
+      expect(planPrompt).toContain("{{ISSUES_JSON}}");
+      expect(planPrompt).toContain("{{PLAN_FEEDBACK}}");
+      expect(inventoryScript).toContain("github-planner-inventory.cjs");
       await expect(
         stat(join(dir, ".sandcastle", "github-planner-inventory.cjs")),
       ).resolves.toBeDefined();
@@ -2322,7 +2334,11 @@ android {
         join(dir, ".sandcastle", "plan-prompt.md"),
         "utf-8",
       );
-      expect(planPrompt).toContain("bd ready --json");
+      const inventoryScript = await readFile(
+        join(dir, ".sandcastle", "planner-inventory.sh"),
+        "utf-8",
+      );
+      expect(inventoryScript).toContain("bd ready --json");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
       await expect(
@@ -2359,10 +2375,13 @@ android {
       );
       expect(main).toContain("Output.object");
       expect(main).toContain('tag: "plan"');
-      expect(main).toContain("plan.output.issues");
+      expect(main).toContain("const issues = plan.issues");
       expect(main).toContain('from "zod"');
       expect(main).toContain("z.object");
       expect(main).not.toContain("extractPlanIssues");
+      expect(main).toContain("validatePlannerBatch");
+      expect(main).toContain("MAX_PLANNER_ATTEMPTS = 3");
+      expect(main).toContain("PLAN_FEEDBACK: feedback");
     });
 
     it("parallel-planner implement-prompt uses TASK_ID placeholder", async () => {
@@ -2479,10 +2498,16 @@ android {
         join(dir, ".sandcastle", "plan-prompt.md"),
         "utf-8",
       );
+      const inventoryScript = await readFile(
+        join(dir, ".sandcastle", "planner-inventory.sh"),
+        "utf-8",
+      );
       expect(planPrompt).not.toContain("gh issue list");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
       expect(planPrompt).not.toContain("{{PLANNER_LIST_TASKS_COMMAND}}");
-      expect(planPrompt).toContain("github-planner-inventory.cjs");
+      expect(planPrompt).toContain("{{ISSUES_JSON}}");
+      expect(planPrompt).toContain("{{PLAN_FEEDBACK}}");
+      expect(inventoryScript).toContain("github-planner-inventory.cjs");
       await expect(
         stat(join(dir, ".sandcastle", "github-planner-inventory.cjs")),
       ).resolves.toBeDefined();
@@ -2499,7 +2524,11 @@ android {
         join(dir, ".sandcastle", "plan-prompt.md"),
         "utf-8",
       );
-      expect(planPrompt).toContain("bd ready --json");
+      const inventoryScript = await readFile(
+        join(dir, ".sandcastle", "planner-inventory.sh"),
+        "utf-8",
+      );
+      expect(inventoryScript).toContain("bd ready --json");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
       await expect(
@@ -2536,10 +2565,13 @@ android {
       );
       expect(main).toContain("Output.object");
       expect(main).toContain('tag: "plan"');
-      expect(main).toContain("plan.output.issues");
+      expect(main).toContain("const issues = plan.issues");
       expect(main).toContain('from "zod"');
       expect(main).toContain("z.object");
       expect(main).not.toContain("extractPlanIssues");
+      expect(main).toContain("validatePlannerBatch");
+      expect(main).toContain("MAX_PLANNER_ATTEMPTS = 3");
+      expect(main).toContain("PLAN_FEEDBACK: feedback");
     });
 
     it("parallel-planner-with-review implement-prompt does not contain close-issue instruction", async () => {

@@ -4,7 +4,7 @@ The configured task tracker returned the following open tasks:
 
 <issues-json>
 
-!`{{PLANNER_LIST_TASKS_COMMAND}}`
+{{ISSUES_JSON}}
 
 </issues-json>
 
@@ -43,6 +43,11 @@ combine tasks whose likely implementations overlap enough in files, migrations,
 schemas, shared interfaces, generated artifacts, or ownership to create a
 material merge or integration risk.
 
+Related domain language is not sufficient evidence of a conflict. Predict
+concrete repository paths or module roots for every candidate. README files,
+documentation, environment examples, and package-manager lockfiles alone are
+incidental overlap and must not prevent parallel execution.
+
 When eligible tasks conflict with each other, deterministically select one and
 defer the others to a later planning cycle. Prefer explicit tracker priority;
 when priority is absent or tied, prefer the lowest numeric task ID, then lexical
@@ -54,14 +59,27 @@ accumulated progress when the same task is planned again.
 
 # OUTPUT
 
-Output only the selected batch as JSON wrapped in `<plan>` tags:
+Return one decision for every candidate in the inventory. Allowed dispositions
+are `selected`, `blocked`, `not-implementation`, `unresolved-decision`, and
+`parallel-conflict`. Every decision needs a concise reason and concrete
+`likelyAreas`. A `parallel-conflict` must list selected issue IDs in
+`conflictsWith`; their material `likelyAreas` must overlap.
+
+The previous attempt's validation result is:
+
+<plan-feedback>
+{{PLAN_FEEDBACK}}
+</plan-feedback>
+
+Output only the selected batch and complete decision ledger as JSON wrapped in
+`<plan>` tags:
 
 <plan>
-{"issues": [{"id": "42", "title": "Fix auth bug", "branch": "sandcastle/issue-42"}]}
+{"issues":[{"id":"42","title":"Fix auth bug","branch":"sandcastle/issue-42"}],"decisions":[{"id":"42","disposition":"selected","reason":"Independent implementation slice","likelyAreas":["apps/api"]},{"id":"43","disposition":"parallel-conflict","reason":"Both change the same API contract","likelyAreas":["packages/contracts"],"conflictsWith":["42"]}]}
 </plan>
 
 If no task is eligible, return an empty `issues` array. Never select an
 ineligible or blocked task, parent spec, PRD, epic, tracking task, or meta task
 as a fallback. Always emit the tags, including for the empty plan:
 
-<plan>{"issues": []}</plan>
+<plan>{"issues":[],"decisions":[...]}</plan>

@@ -1779,20 +1779,44 @@ const scaffoldIssueTrackerFiles = (
   configDir: string,
   templateName: string,
   issueTracker: IssueTrackerEntry,
+  createLabel: boolean,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    if (
-      issueTracker.name !== "github-issues" ||
-      ![
-        "parallel-planner",
-        "parallel-planner-with-review",
-        "codex-afk",
-      ].includes(templateName)
-    ) {
+    const plannerTemplate = [
+      "parallel-planner",
+      "parallel-planner-with-review",
+      "codex-afk",
+    ].includes(templateName);
+    if (!plannerTemplate) {
       return;
     }
 
     const fs = yield* FileSystem.FileSystem;
+    const inventoryCommand = createLabel
+      ? issueTracker.templateArgs.PLANNER_LIST_TASKS_COMMAND
+      : issueTracker.templateArgs.PLANNER_LIST_TASKS_COMMAND.replace(
+          / --label Sandcastle/g,
+          "",
+        );
+    const inventoryScript = `#!/usr/bin/env bash
+set -euo pipefail
+${inventoryCommand}
+`;
+
+    yield* fs
+      .writeFileString(join(configDir, "planner-inventory.sh"), inventoryScript)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+    yield* fs
+      .chmod(join(configDir, "planner-inventory.sh"), 0o755)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+    yield* fs
+      .copyFile(
+        join(getTemplatesDir(), "planner-batch.ts"),
+        join(configDir, "planner-batch.ts"),
+      )
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+
+    if (issueTracker.name !== "github-issues") return;
     yield* fs
       .copyFile(
         join(getTemplatesDir(), "github-planner-inventory.cjs"),
@@ -2195,7 +2219,12 @@ export const scaffold = (
       { concurrency: "unbounded" },
     );
 
-    yield* scaffoldIssueTrackerFiles(configDir, templateName, issueTracker);
+    yield* scaffoldIssueTrackerFiles(
+      configDir,
+      templateName,
+      issueTracker,
+      createLabel,
+    );
 
     // Rewrite main file with the selected agent factory, model, and sandbox provider
     yield* rewriteMainTs(
