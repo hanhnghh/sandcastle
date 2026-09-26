@@ -73,6 +73,13 @@ const hooks = {
 // platform-specific binaries and any packages added since the last copy.
 const copyToWorktree = ["node_modules"];
 
+// The host records the map independently of the optional dashboard process.
+// In a second terminal: npx sandcastle dashboard
+const agentMap = await sandcastle.createAgentMap({
+  cwd: process.cwd(),
+  name: "Parallel planner with review",
+});
+
 const loadPlannerInventory = (): unknown[] =>
   JSON.parse(
     execFileSync("bash", [".sandcastle/planner-inventory.sh"], {
@@ -80,27 +87,42 @@ const loadPlannerInventory = (): unknown[] =>
     }),
   ) as unknown[];
 
-async function planNextBatch() {
+async function planNextBatch(batch: number) {
   const inventory = loadPlannerInventory();
   let feedback = "No previous validation failure.";
 
   for (let attempt = 1; attempt <= MAX_PLANNER_ATTEMPTS; attempt++) {
-    const result = await sandcastle.run({
-      hooks,
-      sandbox: docker(),
-      name: `planner-${attempt}`,
-      maxIterations: 1,
-      agent: sandcastle.claudeCode("claude-opus-4-8"),
-      promptFile: "./.sandcastle/plan-prompt.md",
-      promptArgs: {
-        ISSUES_JSON: JSON.stringify(inventory),
-        PLAN_FEEDBACK: feedback,
-      },
-      output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
-    });
-
     try {
-      validatePlannerBatch(inventory, result.output);
+      const result = await agentMap.track(
+        {
+          batch,
+          role: "planner",
+          title: `Plan attempt ${attempt}`,
+          branch: "",
+        },
+        async (logging) => {
+          const result = await sandcastle.run({
+            logging,
+            hooks,
+            sandbox: docker(),
+            name: `planner-${attempt}`,
+            maxIterations: 1,
+            agent: sandcastle.claudeCode("claude-opus-4-8"),
+            promptFile: "./.sandcastle/plan-prompt.md",
+            promptArgs: {
+              ISSUES_JSON: JSON.stringify(inventory),
+              PLAN_FEEDBACK: feedback,
+            },
+            output: sandcastle.Output.object({
+              tag: "plan",
+              schema: planSchema,
+            }),
+          });
+
+          validatePlannerBatch(inventory, result.output);
+          return result;
+        },
+      );
       return result.output;
     } catch (error) {
       feedback = error instanceof Error ? error.message : String(error);
@@ -115,165 +137,215 @@ async function planNextBatch() {
 // Main loop
 // ---------------------------------------------------------------------------
 
-for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-  console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
+async function executeWorkflow() {
+  for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
+    console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
-  // -------------------------------------------------------------------------
-  // Phase 1: Plan
-  //
-  // The planning agent (opus, for deeper reasoning) reads the open issue list,
-  // builds a dependency graph, and selects the issues that can be worked in
-  // parallel right now (i.e., no blocking dependencies on other open issues).
-  //
-  // It outputs a <plan> JSON block — Output.object parses and validates it.
-  // -------------------------------------------------------------------------
-  const plan = await planNextBatch();
-  const issues = plan.issues;
+    // -------------------------------------------------------------------------
+    // Phase 1: Plan
+    //
+    // The planning agent (opus, for deeper reasoning) reads the open issue list,
+    // builds a dependency graph, and selects the issues that can be worked in
+    // parallel right now (i.e., no blocking dependencies on other open issues).
+    //
+    // It outputs a <plan> JSON block — Output.object parses and validates it.
+    // -------------------------------------------------------------------------
+    const plan = await planNextBatch(iteration);
+    await agentMap.recordPlan(iteration, plan);
+    const issues = plan.issues;
 
-  if (issues.length === 0) {
-    // No unblocked work — either everything is done or everything is blocked.
-    console.log("No unblocked issues to work on. Exiting.");
-    break;
-  }
-
-  console.log(
-    `Planning complete. ${issues.length} issue(s) to work in parallel:`,
-  );
-  for (const issue of issues) {
-    console.log(`  ${issue.id}: ${issue.title} → ${issue.branch}`);
-  }
-
-  // -------------------------------------------------------------------------
-  // Phase 2: Execute + Review
-  //
-  // For each issue, create a sandbox via createSandbox() so the implementer
-  // and reviewer share the same sandbox instance per branch. The implementer
-  // runs first; if it produces commits, the reviewer runs in the same sandbox.
-  //
-  // Promise.allSettled means one failing pipeline doesn't cancel the others.
-  // -------------------------------------------------------------------------
-
-  const settled = await Promise.allSettled(
-    issues.map(async (issue) => {
-      const sandbox = await sandcastle.createSandbox({
-        branch: issue.branch,
-        sandbox: docker(),
-        hooks,
-        copyToWorktree,
-      });
-
-      try {
-        // Run the implementer
-        const implement = await sandbox.run({
-          name: "implementer",
-          maxIterations: 100,
-          agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-          promptFile: "./.sandcastle/implement-prompt.md",
-          promptArgs: {
-            TASK_ID: issue.id,
-            ISSUE_TITLE: issue.title,
-            BRANCH: issue.branch,
-          },
-        });
-
-        // Only review if the implementer produced commits
-        if (implement.commits.length > 0) {
-          const review = await sandbox.run({
-            name: "reviewer",
-            maxIterations: 1,
-            agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-            promptFile: "./.sandcastle/review-prompt.md",
-            promptArgs: {
-              TASK_ID: issue.id,
-              ISSUE_TITLE: issue.title,
-              BRANCH: issue.branch,
-            },
-          });
-
-          // Merge commits from both runs so the merge phase sees all of them.
-          // Each sandbox.run() only returns commits from its own run.
-          return {
-            ...review,
-            commits: [...implement.commits, ...review.commits],
-          };
-        }
-
-        return implement;
-      } finally {
-        await sandbox.close();
-      }
-    }),
-  );
-
-  // Log any agents that threw (network error, sandbox crash, etc.).
-  for (const [i, outcome] of settled.entries()) {
-    if (outcome.status === "rejected") {
-      console.error(
-        `  ✗ ${issues[i]!.id} (${issues[i]!.branch}) failed: ${outcome.reason}`,
-      );
+    if (issues.length === 0) {
+      // No unblocked work — either everything is done or everything is blocked.
+      console.log("No unblocked issues to work on. Exiting.");
+      break;
     }
+
+    console.log(
+      `Planning complete. ${issues.length} issue(s) to work in parallel:`,
+    );
+    for (const issue of issues) {
+      console.log(`  ${issue.id}: ${issue.title} → ${issue.branch}`);
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 2: Execute + Review
+    //
+    // For each issue, create a sandbox via createSandbox() so the implementer
+    // and reviewer share the same sandbox instance per branch. The implementer
+    // runs first; if it produces commits, the reviewer runs in the same sandbox.
+    //
+    // Promise.allSettled means one failing pipeline doesn't cancel the others.
+    // -------------------------------------------------------------------------
+
+    const settled = await Promise.allSettled(
+      issues.map(async (issue) => {
+        let sandbox: sandcastle.Sandbox | undefined;
+        try {
+          // Include sandbox setup in the observed implementer phase.
+          const implement = await agentMap.track(
+            {
+              batch: iteration,
+              role: "implementer",
+              issueId: issue.id,
+              title: issue.title,
+              branch: issue.branch,
+            },
+            async (logging) => {
+              sandbox = await sandcastle.createSandbox({
+                branch: issue.branch,
+                sandbox: docker(),
+                hooks,
+                copyToWorktree,
+              });
+
+              return sandbox.run({
+                logging,
+                name: "implementer",
+                maxIterations: 100,
+                agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+                promptFile: "./.sandcastle/implement-prompt.md",
+                promptArgs: {
+                  TASK_ID: issue.id,
+                  ISSUE_TITLE: issue.title,
+                  BRANCH: issue.branch,
+                },
+              });
+            },
+          );
+
+          // Only review if the implementer produced commits
+          if (sandbox && implement.commits.length > 0) {
+            const review = await agentMap.track(
+              {
+                batch: iteration,
+                role: "reviewer",
+                issueId: issue.id,
+                title: issue.title,
+                branch: issue.branch,
+              },
+              (logging) =>
+                sandbox!.run({
+                  logging,
+                  name: "reviewer",
+                  maxIterations: 1,
+                  agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+                  promptFile: "./.sandcastle/review-prompt.md",
+                  promptArgs: {
+                    TASK_ID: issue.id,
+                    ISSUE_TITLE: issue.title,
+                    BRANCH: issue.branch,
+                  },
+                }),
+            );
+
+            // Merge commits from both runs so the merge phase sees all of them.
+            // Each sandbox.run() only returns commits from its own run.
+            return {
+              ...review,
+              commits: [...implement.commits, ...review.commits],
+            };
+          }
+
+          return implement;
+        } finally {
+          await sandbox?.close();
+        }
+      }),
+    );
+
+    // Log any agents that threw (network error, sandbox crash, etc.).
+    for (const [i, outcome] of settled.entries()) {
+      if (outcome.status === "rejected") {
+        console.error(
+          `  ✗ ${issues[i]!.id} (${issues[i]!.branch}) failed: ${outcome.reason}`,
+        );
+      }
+    }
+
+    // Only pass branches that actually produced commits to the merge phase.
+    // An agent that ran successfully but made no commits has nothing to merge.
+    const completedIssues = settled
+      .map((outcome, i) => ({ outcome, issue: issues[i]! }))
+      .filter(
+        (entry) =>
+          entry.outcome.status === "fulfilled" &&
+          entry.outcome.value.commits.length > 0,
+      )
+      .map((entry) => entry.issue);
+
+    const completedBranches = completedIssues.map((i) => i.branch);
+
+    console.log(
+      `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
+    );
+    for (const branch of completedBranches) {
+      console.log(`  ${branch}`);
+    }
+
+    if (completedBranches.length === 0) {
+      // All agents ran but none made commits — nothing to merge this cycle.
+      console.log("No commits produced. Nothing to merge.");
+      await agentMap.finishBatch(iteration);
+      continue;
+    }
+
+    // Immutable baseline for validating the entire integrated batch. Capturing
+    // this before the merger starts prevents per-branch checks from missing
+    // incompatibilities that only appear after multiple branches are combined.
+    const batchBaseSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    // -------------------------------------------------------------------------
+    // Phase 3: Merge
+    //
+    // One agent merges all completed branches into the current branch,
+    // resolving any conflicts and running tests to confirm everything works.
+    //
+    // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
+    // uses to know which branches to merge and which issues to close.
+    // -------------------------------------------------------------------------
+    await agentMap.track(
+      {
+        batch: iteration,
+        role: "merger",
+        title: "Integrate batch",
+        branch: "",
+      },
+      (logging) =>
+        sandcastle.run({
+          logging,
+          hooks,
+          sandbox: docker(),
+          name: "merger",
+          maxIterations: 1,
+          agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+          promptFile: "./.sandcastle/merge-prompt.md",
+          promptArgs: {
+            // A markdown list of branch names, one per line.
+            BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
+            // A markdown list of issue IDs and titles, one per line.
+            ISSUES: completedIssues
+              .map((i) => `- ${i.id}: ${i.title}`)
+              .join("\n"),
+            // The integration commit before any branch in this batch is merged.
+            BATCH_BASE_SHA: batchBaseSha,
+          },
+        }),
+    );
+
+    await agentMap.finishBatch(iteration);
+
+    console.log("\nBranches merged.");
   }
 
-  // Only pass branches that actually produced commits to the merge phase.
-  // An agent that ran successfully but made no commits has nothing to merge.
-  const completedIssues = settled
-    .map((outcome, i) => ({ outcome, issue: issues[i]! }))
-    .filter(
-      (entry) =>
-        entry.outcome.status === "fulfilled" &&
-        entry.outcome.value.commits.length > 0,
-    )
-    .map((entry) => entry.issue);
-
-  const completedBranches = completedIssues.map((i) => i.branch);
-
-  console.log(
-    `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
-  );
-  for (const branch of completedBranches) {
-    console.log(`  ${branch}`);
-  }
-
-  if (completedBranches.length === 0) {
-    // All agents ran but none made commits — nothing to merge this cycle.
-    console.log("No commits produced. Nothing to merge.");
-    continue;
-  }
-
-  // Immutable baseline for validating the entire integrated batch. Capturing
-  // this before the merger starts prevents per-branch checks from missing
-  // incompatibilities that only appear after multiple branches are combined.
-  const batchBaseSha = execFileSync("git", ["rev-parse", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
-
-  // -------------------------------------------------------------------------
-  // Phase 3: Merge
-  //
-  // One agent merges all completed branches into the current branch,
-  // resolving any conflicts and running tests to confirm everything works.
-  //
-  // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
-  // uses to know which branches to merge and which issues to close.
-  // -------------------------------------------------------------------------
-  await sandcastle.run({
-    hooks,
-    sandbox: docker(),
-    name: "merger",
-    maxIterations: 1,
-    agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-    promptFile: "./.sandcastle/merge-prompt.md",
-    promptArgs: {
-      // A markdown list of branch names, one per line.
-      BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
-      // A markdown list of issue IDs and titles, one per line.
-      ISSUES: completedIssues.map((i) => `- ${i.id}: ${i.title}`).join("\n"),
-      // The integration commit before any branch in this batch is merged.
-      BATCH_BASE_SHA: batchBaseSha,
-    },
-  });
-
-  console.log("\nBranches merged.");
+  console.log("\nAll done.");
 }
 
-console.log("\nAll done.");
+try {
+  await executeWorkflow();
+  await agentMap.finish("completed");
+} catch (error) {
+  await agentMap.finish("failed");
+  throw error;
+}

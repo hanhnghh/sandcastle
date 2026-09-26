@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
+import { InitError } from "./errors.js";
 
 const gitignoreFor = (options: {
   readonly isolatedCodexHome: boolean;
@@ -12,6 +13,7 @@ const gitignoreFor = (options: {
   [
     ".env",
     "logs/",
+    "runs/",
     "worktrees/",
     ...(options.isolatedCodexHome ? ["codex-home/"] : []),
     ...(options.codeGraph ? ["cache/codegraph/"] : []),
@@ -1454,14 +1456,20 @@ const rewriteCodexAfkMain = (
     // to Codex. Collapse only those original call sites before injecting the
     // shared provider factory below.
     content = content.replace(/sandcastle\.codex\([^)]+\)/g, "codexAgent()");
+    const reviewerCall =
+      /name: "reviewer",\s*maxIterations: 1,\s*agent: codexAgent\(\),/.exec(
+        content,
+      )?.[0];
+    if (!reviewerCall)
+      return yield* Effect.fail(
+        new InitError({
+          message: "codex-afk reviewer factory anchor is missing",
+        }),
+      );
     content = replaceRequired(
       content,
-      `name: "reviewer",
-            maxIterations: 1,
-            agent: codexAgent(),`,
-      `name: "reviewer",
-            maxIterations: 1,
-            agent: codexAgent("xhigh"),`,
+      reviewerCall,
+      reviewerCall.replace("codexAgent()", 'codexAgent("xhigh")'),
     );
 
     content = replaceRequired(
@@ -1595,10 +1603,18 @@ async function syncCodeGraph(sandbox: sandcastle.Sandbox): Promise<void> {
       "sandbox: docker(),",
       "sandbox: codexSandbox(BASE_BRANCH),",
     );
+    const reviewStart =
+      /if \(sandbox && implement\.commits\.length > 0\) \{\s*/.exec(
+        content,
+      )?.[0];
+    if (!reviewStart)
+      return yield* Effect.fail(
+        new InitError({ message: "codex-afk reviewer sync anchor is missing" }),
+      );
     content = replaceRequired(
       content,
-      "if (implement.commits.length > 0) {\n          const review",
-      "if (implement.commits.length > 0) {\n          await syncCodeGraph(sandbox);\n          const review",
+      reviewStart,
+      `${reviewStart}await syncCodeGraph(sandbox);\n${reviewStart.match(/\s*$/)?.[0] ?? ""}`,
     );
     content = replaceRequired(
       content,

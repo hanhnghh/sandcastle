@@ -30,6 +30,11 @@ const runCli = (args: string, cwd: string) =>
   execAsync(`node ${cliPath} ${args}`, { cwd });
 
 describe("sandcastle CLI", () => {
+  it("offers a dashboard command with host directory and port options", async () => {
+    const { stdout } = await runCli("dashboard --help", process.cwd());
+    expect(stdout).toContain("--port");
+    expect(stdout).toContain("--cwd");
+  });
   it("shows help with --help flag", async () => {
     const { stdout } = await runCli("--help", process.cwd());
     expect(stdout).toContain("sandcastle");

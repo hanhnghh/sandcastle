@@ -36,6 +36,7 @@ import type {
 import { ConfigDirError, InitError } from "./errors.js";
 import { ensureCodexSubscriptionLogin } from "./CodexSubscription.js";
 import { VERSION } from "./version.js";
+import { DashboardError, startDashboard } from "./AgentMap.js";
 
 // --- Shared options ---
 
@@ -807,6 +808,39 @@ const podmanCommand = Command.make("podman", {}, () =>
 
 // --- Root command ---
 
+const dashboardCommand = Command.make(
+  "dashboard",
+  {
+    port: Options.integer("port").pipe(
+      Options.withDefault(4317),
+      Options.withDescription("Loopback HTTP port (0 chooses a free port)"),
+    ),
+    cwd: Options.text("cwd").pipe(
+      Options.withDefault("."),
+      Options.withDescription("Host project directory"),
+    ),
+  },
+  ({ port, cwd }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* Effect.acquireRelease(
+          Effect.tryPromise({
+            try: () => startDashboard({ cwd, port }),
+            catch: (cause) =>
+              new DashboardError({ message: "Cannot start dashboard", cause }),
+          }),
+          (server) => Effect.promise(() => server.close()),
+        );
+        yield* Effect.sync(() =>
+          console.log(
+            `Agent map: ${server.url}\nRead-only dashboard. Press Ctrl+C to close.`,
+          ),
+        );
+        yield* Effect.never;
+      }),
+    ),
+);
+
 const rootCommand = Command.make("sandcastle", {}, () =>
   Effect.gen(function* () {
     const d = yield* Display;
@@ -816,7 +850,12 @@ const rootCommand = Command.make("sandcastle", {}, () =>
 );
 
 export const sandcastle = rootCommand.pipe(
-  Command.withSubcommands([initCommand, dockerCommand, podmanCommand]),
+  Command.withSubcommands([
+    initCommand,
+    dockerCommand,
+    podmanCommand,
+    dashboardCommand,
+  ]),
 );
 
 export const cli = Command.run(sandcastle, {

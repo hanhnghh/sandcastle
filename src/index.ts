@@ -1,4 +1,11 @@
 export { run } from "./run.js";
+export { createAgentMap, startDashboard } from "./AgentMap.js";
+export type {
+  AgentMap,
+  AgentMapPlan,
+  AgentMapTask,
+  DashboardServer,
+} from "./AgentMap.js";
 export type {
   RunOptions,
   RunResult,

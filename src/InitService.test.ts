@@ -48,6 +48,28 @@ const runScaffold = (repoDir: string, options?: Partial<ScaffoldOptions>) =>
 // ---------------------------------------------------------------------------
 
 describe("InitService scaffold", () => {
+  it("includes agent-map recording and ignored history in a new reviewed workflow", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+    const main = await readFile(join(dir, ".sandcastle", "main.mts"), "utf8");
+    const gitignore = await readFile(
+      join(dir, ".sandcastle", ".gitignore"),
+      "utf8",
+    );
+    expect(main).toContain("sandcastle.createAgentMap");
+    expect(main).toContain("agentMap.recordPlan");
+    expect(main).toContain("agentMap.track");
+    expect(main).toContain('agentMap.finish("failed")');
+    expect(gitignore).toContain("runs/");
+    expect(
+      ts
+        .transpileModule(main, {
+          compilerOptions: { module: ts.ModuleKind.ESNext },
+          reportDiagnostics: true,
+        })
+        .diagnostics?.filter((d) => d.category === ts.DiagnosticCategory.Error),
+    ).toEqual([]);
+  });
   it("scaffolds the codex-afk profile runtime with isolated OAuth and CodeGraph", async () => {
     const dir = await makeDir();
     await runScaffold(dir, {
@@ -1633,7 +1655,7 @@ android {
       );
       expect(mainTs).toContain("createSandbox");
       expect(mainTs).toContain("sandbox.run");
-      expect(mainTs).toContain("sandbox.close");
+      expect(mainTs).toContain("sandbox?.close");
     });
 
     it("main.mts runs implementer then reviewer sequentially within each sandbox", async () => {
@@ -1658,7 +1680,7 @@ android {
         "utf-8",
       );
       // Reviewer result must be captured, not discarded
-      expect(mainTs).toContain("const review = await sandbox.run");
+      expect(mainTs).toContain("const review = await agentMap.track");
       // Commits from both implementer and reviewer must be merged
       expect(mainTs).toContain("implement.commits");
       expect(mainTs).toContain("review.commits");

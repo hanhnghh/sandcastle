@@ -127,6 +127,87 @@ When login is skipped, authenticate later without touching the normal
 CODEX_HOME=.sandcastle/codex-home codex login
 ```
 
+## Local agent map
+
+Open the read-only dashboard in a second host terminal:
+
+```bash
+npx sandcastle dashboard
+# Agent map: http://127.0.0.1:4317
+# To observe a different project or choose a port:
+npx sandcastle dashboard --cwd /path/to/project --port 4318
+```
+
+The dashboard requires Node.js, not Docker. Agents still use their configured
+sandbox providers. No Docker socket or agent login is needed by the dashboard.
+New `parallel-planner-with-review` and `codex-afk` scaffolds record automatically.
+Existing running processes and old configurations are not retroactively
+instrumented; update the package and add the recording API before the next run.
+
+The map groups planner attempts, parallel issue pipelines (implementer followed
+by reviewer), and the batch merger. Select a node for recent text/tool activity,
+branch, commits, captured session ID and usage when reported. Planner decisions
+explain selected, blocked and deferred candidates. These are workflow edges,
+not a claim that one agent spawned another provider-native subagent.
+
+Snapshots live under `.sandcastle/runs/` and remain available after a restart.
+New scaffolds ignore that directory; add `runs/` to `.sandcastle/.gitignore` in
+existing projects. The dashboard polls every 1.5 seconds; recordings heartbeat
+every 2 seconds. After 15 seconds without a heartbeat, an unfinished recording
+appears interrupted (including while the host sleeps). This is observation,
+not execution resume. Stop/retry/resume controls are intentionally absent.
+
+For custom workflows, wrap the existing agent call and forward `logging`:
+
+```typescript
+const map = await sandcastle.createAgentMap({
+  cwd: process.cwd(),
+  name: "My workflow",
+});
+try {
+  // For reviewed issue batches: await map.recordPlan(batchNumber, validatedPlan).
+  await map.track(
+    {
+      batch: 1,
+      role: "implementer",
+      issueId: "42",
+      title: "Add search",
+      branch: "sandcastle/issue-42",
+      provider: "codex",
+      model: "your-model",
+    },
+    (logging) =>
+      sandcastle.run({
+        agent: sandcastle.codex("your-model"),
+        sandbox: docker(),
+        branchStrategy: { type: "branch", branch: "sandcastle/issue-42" },
+        prompt:
+          "Implement issue #42 and emit <promise>COMPLETE</promise> when verified.",
+        logging,
+      }),
+  );
+  await map.finishBatch(1);
+  await map.finish("completed");
+} catch (error) {
+  await map.finish("failed");
+  throw error;
+}
+```
+
+Pass the same `logging` option to `sandbox.run()` when reusing a sandbox. Every
+`track` call preserves the callback's return value or rejection. A resolved call
+without a completion signal is shown as stopped, not successful (planner
+callbacks instead succeed by validating their structured plan before returning).
+`BLOCKED` is distinct from `COMPLETE`. `finish` describes the orchestration
+session's end, not proof that every backlog issue was delivered.
+
+Activity is limited to the last 150 entries per node, each at most 4,000
+characters. Raw provider events are not served. Common credential patterns are
+filtered in snapshots, but arbitrary agent text may still contain sensitive
+content; full run logs remain on disk. Keep recordings private. Usage is the
+last reported iteration snapshot, not cumulative billing or context percentage;
+missing usage/model data is displayed as unavailable rather than estimated.
+
 ## Sandbox Providers
 
 Sandcastle uses a `SandboxProvider` to create isolated environments. The `sandbox` option on `run()`, `interactive()`, and `createSandbox()` accepts any provider, including `noSandbox()` — opt in to running the agent directly on the host when container isolation is undesired. Built-in providers:
