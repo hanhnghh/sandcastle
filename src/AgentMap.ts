@@ -24,14 +24,32 @@ const decisionSchema = z.object({
   likelyAreas: z.array(z.string()),
   conflictsWith: z.array(z.string()).optional(),
 });
+const agentRoles = ["planner", "implementer", "reviewer", "merger"] as const;
+const roleSchema = z.enum(agentRoles);
+const nodeStatusSchema = z.enum([
+  "queued",
+  "running",
+  "completed",
+  "blocked",
+  "stopped",
+  "failed",
+  "skipped",
+  "interrupted",
+]);
+const sessionStatusSchema = z.enum([
+  "running",
+  "completed",
+  "failed",
+  "interrupted",
+]);
 const nodeSchema = z.object({
   id: z.string(),
   batch: z.number(),
-  role: z.string(),
+  role: roleSchema,
   title: z.string(),
   issueId: z.string().optional(),
   branch: z.string(),
-  status: z.string(),
+  status: nodeStatusSchema,
   startedAt: z.string().optional(),
   endedAt: z.string().optional(),
   model: z.string().optional(),
@@ -55,6 +73,7 @@ const nodeSchema = z.object({
 });
 
 const resultSchema = z.object({
+  branch: z.string().optional(),
   completionSignal: z.string().optional(),
   commits: z.array(z.object({ sha: z.string() })).optional(),
   iterations: z
@@ -72,7 +91,7 @@ export interface AgentMapTask {
   /** One-based batch number. */
   readonly batch: number;
   /** Workflow role, not a provider-native subagent relationship. */
-  readonly role: "planner" | "implementer" | "reviewer" | "merger";
+  readonly role: (typeof agentRoles)[number];
   /** Tracker ID, absent for planner and merger. */
   readonly issueId?: string;
   /** Short task description. */
@@ -87,7 +106,7 @@ export interface AgentMapTask {
 const snapshotSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
-  status: z.string(),
+  status: sessionStatusSchema,
   startedAt: z.string(),
   updatedAt: z.string(),
   batches: z.array(
@@ -99,13 +118,25 @@ const snapshotSchema = z.object({
 /** Selected tasks and the planner's explanation for every candidate. */
 export interface AgentMapPlan {
   /** Tasks selected for this batch. */
-  readonly issues: readonly { id: string; title: string; branch: string }[];
+  readonly issues: readonly {
+    /** Tracker issue ID. */
+    id: string;
+    /** Short issue description. */
+    title: string;
+    /** Branch selected for implementation. */
+    branch: string;
+  }[];
   /** Decisions including blocked and deferred candidates. */
   readonly decisions: readonly {
+    /** Tracker issue ID. */
     id: string;
+    /** Planner classification, e.g. selected, blocked, parallel-conflict or unresolved-decision. */
     disposition: string;
+    /** Human-readable explanation of this selection or deferral. */
     reason: string;
+    /** Repository paths or subsystem names likely to change. */
     likelyAreas: readonly string[];
+    /** Tracker IDs of issues whose overlapping work prevents parallel execution. */
     conflictsWith?: readonly string[];
   }[];
 }
@@ -130,7 +161,7 @@ export interface AgentMap {
 const storeDirectory = (cwd: string) =>
   join(resolve(cwd), ".sandcastle", "runs");
 
-// Best-effort filtering of common credentials, before anything reaches disk.
+// Best-effort filtering of common credentials in snapshots (not full run logs).
 // Arbitrary agent text can still contain sensitive data: the dashboard is local-only.
 const redact = (text: string): string =>
   text
@@ -153,7 +184,6 @@ export const createAgentMap = (options: {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const directory = storeDirectory(options.cwd);
-      yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
       const now = new Date().toISOString();
       const state: z.infer<typeof snapshotSchema> = {
         id: randomUUID(),
@@ -167,6 +197,7 @@ export const createAgentMap = (options: {
       const lock = yield* Effect.makeSemaphore(1);
       const save = lock.withPermits(1)(
         Effect.gen(function* () {
+          yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
           state.updatedAt = new Date().toISOString();
           const file = join(directory, `${state.id}.json`);
           const temporary = `${file}.${randomUUID()}.tmp`;
@@ -176,11 +207,17 @@ export const createAgentMap = (options: {
           yield* fs.rename(temporary, file);
         }),
       );
-      yield* save;
       let warned = false;
+      let recordingAvailable = true;
       const publish = save.pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            recordingAvailable = true;
+          }),
+        ),
         Effect.catchAll(() =>
           Effect.sync(() => {
+            recordingAvailable = false;
             if (!warned)
               console.warn(
                 "Agent map recording unavailable; agent execution continues.",
@@ -189,6 +226,7 @@ export const createAgentMap = (options: {
           }),
         ),
       );
+      yield* publish;
       const heartbeat = setInterval(() => {
         void Effect.runPromise(publish);
       }, 2000);
@@ -217,7 +255,7 @@ export const createAgentMap = (options: {
                 })),
               });
               for (const issue of plan.issues) {
-                for (const role of ["implementer", "reviewer"]) {
+                for (const role of ["implementer", "reviewer"] as const) {
                   state.nodes.push({
                     id: `${batch}:${role}:${issue.id}`,
                     batch,
@@ -277,23 +315,31 @@ export const createAgentMap = (options: {
               yield* publish;
               const result = yield* Effect.tryPromise({
                 try: () =>
-                  execute({
-                    type: "file",
-                    path: join(directory, `${state.id}-${randomUUID()}.log`),
-                    onAgentStreamEvent: (event) => {
-                      if (event.type === "raw") return;
-                      active.activity.push({
-                        type: event.type,
-                        timestamp: event.timestamp.toISOString(),
-                        text: redact(
-                          event.type === "text"
-                            ? event.message
-                            : `${event.name}: ${event.formattedArgs}`,
-                        ),
-                      });
-                      if (active.activity.length > 150) active.activity.shift();
-                    },
-                  }),
+                  execute(
+                    recordingAvailable
+                      ? {
+                          type: "file",
+                          path: join(
+                            directory,
+                            `${state.id}-${randomUUID()}.log`,
+                          ),
+                          onAgentStreamEvent: (event) => {
+                            if (event.type === "raw") return;
+                            active.activity.push({
+                              type: event.type,
+                              timestamp: event.timestamp.toISOString(),
+                              text: redact(
+                                event.type === "text"
+                                  ? event.message
+                                  : `${event.name}: ${event.formattedArgs}`,
+                              ),
+                            });
+                            if (active.activity.length > 150)
+                              active.activity.shift();
+                          },
+                        }
+                      : { type: "stdout" },
+                  ),
                 catch: (cause) =>
                   new DashboardError({
                     message: "Agent execution failed",
@@ -315,9 +361,12 @@ export const createAgentMap = (options: {
                     ? "completed"
                     : "stopped";
                 if (parsed.success) {
+                  active.branch = parsed.data.branch || active.branch;
                   active.commits = parsed.data.commits?.map((c) => c.sha) ?? [];
                   const last = parsed.data.iterations?.at(-1);
-                  active.usage = last?.usage;
+                  active.usage = parsed.data.iterations
+                    ?.filter((iteration) => iteration.usage !== undefined)
+                    .at(-1)?.usage;
                   active.sessionId = last?.sessionId;
                 }
               }

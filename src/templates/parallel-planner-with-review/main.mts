@@ -87,18 +87,24 @@ const loadPlannerInventory = (): unknown[] =>
     }),
   ) as unknown[];
 
+const currentBranch = () =>
+  execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+
 async function planNextBatch(batch: number) {
   const inventory = loadPlannerInventory();
   let feedback = "No previous validation failure.";
 
   for (let attempt = 1; attempt <= MAX_PLANNER_ATTEMPTS; attempt++) {
+    let validationFailed = false;
     try {
       const result = await agentMap.track(
         {
           batch,
           role: "planner",
           title: `Plan attempt ${attempt}`,
-          branch: "",
+          branch: currentBranch(),
         },
         async (logging) => {
           const result = await sandcastle.run({
@@ -119,12 +125,19 @@ async function planNextBatch(batch: number) {
             }),
           });
 
-          validatePlannerBatch(inventory, result.output);
+          try {
+            validatePlannerBatch(inventory, result.output);
+          } catch (error) {
+            validationFailed = true;
+            throw error;
+          }
           return result;
         },
       );
       return result.output;
     } catch (error) {
+      // Observe execution errors, but only retry invalid plans as before.
+      if (!validationFailed) throw error;
       feedback = error instanceof Error ? error.message : String(error);
       console.warn(`Planner attempt ${attempt} rejected: ${feedback}`);
     }
@@ -310,7 +323,7 @@ async function executeWorkflow() {
         batch: iteration,
         role: "merger",
         title: "Integrate batch",
-        branch: "",
+        branch: currentBranch(),
       },
       (logging) =>
         sandcastle.run({

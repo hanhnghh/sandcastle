@@ -156,6 +156,9 @@ existing projects. The dashboard polls every 1.5 seconds; recordings heartbeat
 every 2 seconds. After 15 seconds without a heartbeat, an unfinished recording
 appears interrupted (including while the host sleeps). This is observation,
 not execution resume. Stop/retry/resume controls are intentionally absent.
+If recording storage is unavailable, the recorder warns once and keeps agent
+execution running, using terminal logging for subsequent agent calls until
+storage recovers. No dashboard history is guaranteed during that outage.
 
 For custom workflows, wrap the existing agent call and forward `logging`:
 

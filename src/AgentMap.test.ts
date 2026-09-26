@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { get } from "node:http";
@@ -318,4 +318,52 @@ it("preserves the original agent error and reports failure, while no completion 
       { status: "stopped" },
     ],
   });
+});
+
+it("uses the reported branch and last available usage when the final iteration omits usage", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "agent-map-"));
+  cleanup.push(() => rm(cwd, { recursive: true, force: true }));
+  const map = await createAgentMap({ cwd, name: "Metadata" });
+  cleanup.push(() => map.finish("completed"));
+  const server = await startDashboard({ cwd, port: 0 });
+  cleanup.push(server.close);
+  const usage = {
+    inputTokens: 12,
+    outputTokens: 3,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  };
+  await map.track(
+    { batch: 1, role: "planner", title: "Plan", branch: "main" },
+    async () => ({
+      branch: "integration",
+      iterations: [{ usage, sessionId: "first" }, { sessionId: "last" }],
+    }),
+  );
+  const snapshot = await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
+    r.json(),
+  );
+  expect(snapshot).toMatchObject({
+    nodes: [{ branch: "integration", usage, sessionId: "last" }],
+  });
+});
+
+it("continues executing without file logging when recording storage is unavailable", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "agent-map-"));
+  cleanup.push(() => rm(cwd, { recursive: true, force: true }));
+  await writeFile(join(cwd, ".sandcastle"), "not a directory");
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  cleanup.push(async () => warning.mockRestore());
+  const map = await createAgentMap({ cwd, name: "Unavailable storage" });
+  cleanup.push(() => map.finish("completed"));
+  const expected = { completionSignal: "<promise>COMPLETE</promise>" };
+  const result = await map.track(
+    { batch: 1, role: "implementer", title: "Still executes", branch: "main" },
+    async (logging) => {
+      expect(logging.type).toBe("stdout");
+      return expected;
+    },
+  );
+  expect(result).toBe(expected);
+  expect(warning).toHaveBeenCalledTimes(1);
 });
