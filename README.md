@@ -129,6 +129,11 @@ CODEX_HOME=.sandcastle/codex-home codex login
 
 ## Local agent map
 
+The GitHub Actions-inspired layout separates workflow navigation from a wide
+activity viewer. Choose a session and batch, filter agents by issue or status,
+then open **Logs** to search, copy, or download recent recorded activity.
+See the [dashboard guide](docs/agent-map.md) for navigation and retention limits.
+
 Open the read-only dashboard in a second host terminal:
 
 ```bash
