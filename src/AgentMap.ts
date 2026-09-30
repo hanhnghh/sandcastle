@@ -24,7 +24,13 @@ const decisionSchema = z.object({
   likelyAreas: z.array(z.string()),
   conflictsWith: z.array(z.string()).optional(),
 });
-const agentRoles = ["planner", "implementer", "reviewer", "merger"] as const;
+const agentRoles = [
+  "planner",
+  "implementer",
+  "reviewer",
+  "merger",
+  "readiness",
+] as const;
 const roleSchema = z.enum(agentRoles);
 const nodeStatusSchema = z.enum([
   "queued",
@@ -35,12 +41,14 @@ const nodeStatusSchema = z.enum([
   "failed",
   "skipped",
   "interrupted",
+  "unknown",
 ]);
 const sessionStatusSchema = z.enum([
   "running",
   "completed",
   "failed",
   "interrupted",
+  "unknown",
 ]);
 const nodeSchema = z.object({
   id: z.string(),
@@ -430,11 +438,12 @@ export const startDashboard = (options: {
               snapshot.status === "running" &&
               Date.now() - Date.parse(snapshot.updatedAt) > 15_000
             ) {
-              snapshot.status = "interrupted";
+              snapshot.status = "unknown";
               for (const node of snapshot.nodes)
-                if (node.status === "running") node.status = "interrupted";
+                if (node.status === "running") node.status = "unknown";
+              return { ...snapshot, heartbeat: "stale" as const };
             }
-            return snapshot;
+            return { ...snapshot, heartbeat: "fresh" as const };
           }),
         );
       const server = createServer((request, response) => {

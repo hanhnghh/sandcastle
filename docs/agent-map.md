@@ -21,7 +21,7 @@ the agents; restart the dashboard process after updating the package.
 - **Workflow** shows planning, parallel issue lanes, review and integration.
   Expand **Planner decisions** to understand selected or deferred work.
 - Find agents by title, issue, role or branch, or filter by status. **Needs
-  attention** includes failed, blocked, stopped and interrupted agents.
+  attention** includes failed, blocked, stopped, interrupted and unknown agents.
 - Select a sidebar job or workflow card to open its **Logs** tab. The URL keeps
   the session, job, batch and tab for reloads or links on the same host.
 - On narrow screens, expand **Agents** to browse jobs. On desktop the sidebar
@@ -38,6 +38,11 @@ selects messages, tool calls or a recorded agent error.
 updates do not pull you away from what you are reading. **Pause updates** pauses
 only the dashboard, never the agents. Connection failures retain the last
 snapshot and retry automatically.
+
+A recording without a heartbeat for 15 seconds is shown as **Unknown**, not
+confirmed dead. A sleeping host or blocked runner event loop can cause this.
+The map does not steal workflow ownership or launch replacement agents. Legacy
+recordings explicitly marked interrupted remain readable.
 
 **Copy visible** copies only currently filtered entries. **Download activity**
 exports all retained activity for that agent, regardless of the current filter.

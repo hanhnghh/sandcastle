@@ -150,7 +150,7 @@ Existing running processes and old configurations are not retroactively
 instrumented; update the package and add the recording API before the next run.
 
 The map groups planner attempts, parallel issue pipelines (implementer followed
-by reviewer), and the batch merger. Select a node for recent text/tool activity,
+by reviewer), the batch merger, and optional startup/post-merge readiness checks. Select a node for recent text/tool activity,
 branch, commits, captured session ID and usage when reported. Planner decisions
 explain selected, blocked and deferred candidates. These are workflow edges,
 not a claim that one agent spawned another provider-native subagent.
@@ -159,11 +159,35 @@ Snapshots live under `.sandcastle/runs/` and remain available after a restart.
 New scaffolds ignore that directory; add `runs/` to `.sandcastle/.gitignore` in
 existing projects. The dashboard polls every 1.5 seconds; recordings heartbeat
 every 2 seconds. After 15 seconds without a heartbeat, an unfinished recording
-appears interrupted (including while the host sleeps). This is observation,
+appears `unknown` with a stale heartbeat (including while the host sleeps).
+This does not prove that the runner or its agents died. This is observation,
 not execution resume. Stop/retry/resume controls are intentionally absent.
 If recording storage is unavailable, the recorder warns once and keeps agent
 execution running, using terminal logging for subsequent agent calls until
 storage recovers. No dashboard history is guaranteed during that outage.
+
+### Workflow recovery (opt in)
+
+Use `withWorkflowRecovery` to wrap a custom workflow in durable, verified
+checkpoints and an exclusive repository/target-branch owner. Restart with the
+same run ID and workflow version; verified steps are rechecked and reused.
+Uncertain attempts require read-only reconciliation, never blind retries.
+
+See [workflow recovery](docs/workflow-recovery.md) for the interface, Git/GitHub
+verification responsibilities and crash limitations. Existing scripts and live
+containers are not automatically adopted. Readiness policy stays project-owned.
+
+### Readiness after merge
+
+New reviewed/Codex AFK scaffolds include `.sandcastle/readiness.json`. Set an
+explicit GitHub repository and scope label to assess blocked issues before the
+first planner and after each completed merge. The default is **report-only**:
+no labels change. Automatic publication requires `mode: "apply"` and a trusted
+project-owned verifier; manual holds, stale contracts and incomplete verification
+stop unsafe promotions. Repository routing also applies to task reads/closure.
+
+See [readiness configuration and verifier contract](docs/readiness.md) before
+enabling it. This does not retrofit existing project configurations.
 
 For custom workflows, wrap the existing agent call and forward `logging`:
 

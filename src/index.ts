@@ -1,4 +1,26 @@
 export { run } from "./run.js";
+export { withWorkflowRecovery } from "./WorkflowRecovery.js";
+export type {
+  WorkflowRecoveryOptions,
+  RecoveryStep,
+  RecoveryWorkflow,
+} from "./WorkflowRecovery.js";
+export {
+  reassessGitHubReadiness,
+  loadGitHubReadinessInventory,
+} from "./Readiness.js";
+export type {
+  GitHubReadinessOptions,
+  GitHubReadinessInventoryOptions,
+  ReadinessSnapshot,
+  ReadinessIssue,
+  ReadinessDependency,
+  ReadinessAssessment,
+  ReadinessTrigger,
+  ReadinessVerificationInput,
+  ReadinessVerification,
+  ReadinessResult,
+} from "./Readiness.js";
 export { createAgentMap, startDashboard } from "./AgentMap.js";
 export type {
   AgentMap,

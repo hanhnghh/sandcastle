@@ -1474,9 +1474,9 @@ const rewriteCodexAfkMain = (
 
     content = replaceRequired(
       content,
-      `import { execFileSync } from "node:child_process";
+      `import { execFile } from "node:child_process";
 import { z } from "zod";`,
-      `import { execFileSync } from "node:child_process";
+      `import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { z } from "zod";`,
     );
@@ -1486,9 +1486,7 @@ import { z } from "zod";`,
       project.projectType === "android"
         ? ', ANDROID_HOME: "/opt/android-sdk", ANDROID_SDK_ROOT: "/opt/android-sdk"'
         : "";
-    const runtime = `const BASE_BRANCH = execFileSync("git", ["branch", "--show-current"], {
-  encoding: "utf8",
-}).trim();
+    const runtime = `const BASE_BRANCH = (await runHost("git", ["branch", "--show-current"])).trim();
 
 if (!BASE_BRANCH) {
   throw new Error("Sandcastle requires a named Git branch, not detached HEAD.");
@@ -1522,7 +1520,7 @@ mkdirSync(${cachePrefix}_CACHE_HOST, { recursive: true });
 const codeGraphSyncCommand =
   "if test -f .codegraph/codegraph.db; then codegraph sync --quiet .; else codegraph init .; fi";
 
-const codexSandbox = (branch: string) =>
+const codexSandbox = (branch: string, extraEnv: Record<string, string> = trackerEnvironment) =>
   docker({
     mounts: [
       { hostPath: CODEX_HOME_HOST, sandboxPath: CODEX_HOME_SANDBOX },
@@ -1546,7 +1544,7 @@ const codexSandbox = (branch: string) =>
         sandboxPath: CODEGRAPH_CACHE_SANDBOX,
       },
     ],
-    env: { HOME: "/home/agent", CODEX_HOME: CODEX_HOME_SANDBOX${sandboxProjectEnv} },
+    env: { HOME: "/home/agent", CODEX_HOME: CODEX_HOME_SANDBOX${sandboxProjectEnv}, ...extraEnv },
   });
 
 const codexAgent = (effort: "low" | "medium" | "high" | "xhigh" = "high") =>
@@ -1590,17 +1588,22 @@ async function syncCodeGraph(sandbox: sandcastle.Sandbox): Promise<void> {
 
     content = replaceRequired(
       content,
-      "sandbox: docker(),",
+      "sandbox: docker({ env: trackerEnvironment }),",
       "sandbox: codexSandbox(BASE_BRANCH),",
     );
     content = replaceRequired(
       content,
-      "sandbox: docker(),",
+      "sandbox: docker({ env: readinessEnvironment })",
+      "sandbox: codexSandbox(branch, readinessEnvironment)",
+    );
+    content = replaceRequired(
+      content,
+      "sandbox: docker({ env: trackerEnvironment }),",
       "sandbox: codexSandbox(issue.branch),",
     );
     content = replaceRequired(
       content,
-      "sandbox: docker(),",
+      "sandbox: docker({ env: trackerEnvironment }),",
       "sandbox: codexSandbox(BASE_BRANCH),",
     );
     const reviewStart =
@@ -1832,7 +1835,17 @@ ${inventoryCommand}
       )
       .pipe(Effect.mapError((e) => new Error(e.message)));
 
-    if (issueTracker.name !== "github-issues") return;
+    if (issueTracker.name !== "github-issues") {
+      const readinessPath = join(configDir, "readiness.json");
+      if (yield* fs.exists(readinessPath)) {
+        const config = JSON.parse(yield* fs.readFileString(readinessPath));
+        yield* fs.writeFileString(
+          readinessPath,
+          JSON.stringify({ ...config, mode: "disabled" }, null, 2) + "\n",
+        );
+      }
+      return;
+    }
     yield* fs
       .copyFile(
         join(getTemplatesDir(), "github-planner-inventory.cjs"),

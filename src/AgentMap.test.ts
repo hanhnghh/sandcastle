@@ -16,6 +16,51 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
+it("persists a distinct readiness phase and serves a dashboard that renders it", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "readiness-map-"));
+  cleanup.push(() => rm(cwd, { recursive: true, force: true }));
+  const map = await createAgentMap({ cwd, name: "Readiness" });
+  cleanup.push(() => map.finish("completed"));
+  await map.track(
+    {
+      batch: 1,
+      role: "readiness",
+      title: "Readiness / startup / report-only",
+      branch: "main",
+    },
+    async (logging) => {
+      if (logging.type === "file")
+        logging.onAgentStreamEvent?.({
+          type: "text",
+          message: "#20 blocked: live gate pending",
+          iteration: 1,
+          timestamp: new Date(),
+        });
+      return { completionSignal: "<promise>COMPLETE</promise>", commits: [] };
+    },
+  );
+  await map.finish("completed");
+  const server = await startDashboard({ cwd, port: 0 });
+  cleanup.push(server.close);
+  const snapshot = await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
+    r.json(),
+  );
+  expect(snapshot).toMatchObject({
+    nodes: [
+      expect.objectContaining({
+        role: "readiness",
+        status: "completed",
+        activity: expect.arrayContaining([
+          expect.objectContaining({ text: "#20 blocked: live gate pending" }),
+        ]),
+      }),
+    ],
+  });
+  const script = await fetch(`${server.url}/app.js`).then((r) => r.text());
+  expect(script).toContain("Readiness");
+  expect(script).toContain("n.role==='readiness'");
+});
+
 it("observes parallel agents, their activity and outcomes without confusing BLOCKED with success", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "agent-map-"));
   cleanup.push(() => rm(cwd, { recursive: true, force: true }));
@@ -193,7 +238,7 @@ it("serves a read-only browser map and rejects remote origins and file-path requ
   );
 });
 
-it("does not leave a crashed orchestrator looking live forever", async () => {
+it("reports stale heartbeat as unknown, not proof that an orchestrator died", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "agent-map-"));
   cleanup.push(() => rm(cwd, { recursive: true, force: true }));
   const map = await createAgentMap({ cwd, name: "Interrupted" });
@@ -205,7 +250,12 @@ it("does not leave a crashed orchestrator looking live forever", async () => {
   const snapshot = await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
     r.json(),
   );
-  expect(snapshot).toMatchObject({ status: "interrupted" });
+  expect(snapshot).toMatchObject({ status: "unknown", heartbeat: "stale" });
+  vi.useRealTimers();
+  const live = await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
+    r.json(),
+  );
+  expect(live).toMatchObject({ status: "running", heartbeat: "fresh" });
 });
 
 it("records real run() streaming and the provider's final usage without needing Docker", async () => {

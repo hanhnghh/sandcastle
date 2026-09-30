@@ -48,6 +48,51 @@ const runScaffold = (repoDir: string, options?: Partial<ScaffoldOptions>) =>
 // ---------------------------------------------------------------------------
 
 describe("InitService scaffold", () => {
+  it("scaffolds scoped report-only readiness before planning and after verified merge", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      templateName: "parallel-planner-with-review",
+      issueTracker: getIssueTracker("github-issues")!,
+    });
+    const config = JSON.parse(
+      await readFile(join(dir, ".sandcastle/readiness.json"), "utf8"),
+    );
+    expect(config).toMatchObject({
+      mode: "report-only",
+      repository: null,
+      scopeLabel: "Sandcastle",
+      holdLabels: ["readiness:hold"],
+      verifyCommand: null,
+    });
+    const main = await readFile(join(dir, ".sandcastle/main.mts"), "utf8");
+    expect(main.indexOf('await reassess(1, { kind: "startup" })')).toBeLessThan(
+      main.indexOf("const plan = await planNextBatch(iteration)"),
+    );
+    expect(main).toContain('kind: "post-merge"');
+    expect(main).toContain('role: "readiness"');
+    expect(main).toContain("sandcastle.loadGitHubReadinessInventory");
+    expect(main).toContain('GH_CONFIG_DIR: "/tmp/readiness-gh"');
+    expect(main).toContain('GH_ENTERPRISE_TOKEN: ""');
+    expect(main).toContain("git status --porcelain --untracked-files=all");
+    const prompt = await readFile(
+      join(dir, ".sandcastle/readiness-prompt.md"),
+      "utf8",
+    );
+    expect(prompt).toContain("Do not change GitHub");
+    expect(prompt).not.toContain("shopify-compose-page");
+  });
+  it("does not enable GitHub readiness for a non-GitHub tracker", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      templateName: "parallel-planner-with-review",
+      issueTracker: getIssueTracker("beads")!,
+    });
+    expect(
+      JSON.parse(
+        await readFile(join(dir, ".sandcastle/readiness.json"), "utf8"),
+      ),
+    ).toMatchObject({ mode: "disabled", repository: null });
+  });
   it("includes agent-map recording and ignored history in a new reviewed workflow", async () => {
     const dir = await makeDir();
     await runScaffold(dir, { templateName: "parallel-planner-with-review" });
@@ -1795,7 +1840,8 @@ android {
         readFile(join(dir, ".sandcastle", "main.mts"), "utf-8"),
         readFile(join(dir, ".sandcastle", "merge-prompt.md"), "utf-8"),
       ]);
-      expect(main).toContain('const batchBaseSha = execFileSync("git"');
+      expect(main).toContain('const batchBaseSha = (await runHost("git"');
+      expect(main).not.toContain("execFileSync");
       expect(main).toContain("BATCH_BASE_SHA: batchBaseSha");
       expect(prompt).toContain("{{BATCH_BASE_SHA}}");
       expect(prompt).toContain(

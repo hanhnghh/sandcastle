@@ -23,8 +23,10 @@
 
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { z } from "zod";
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 // @ts-expect-error scaffold copies the shared helper beside main.mts.
 import { validatePlannerBatch } from "./planner-batch.js";
 
@@ -62,6 +64,60 @@ const planSchema = z.object({
 const MAX_ITERATIONS = 10;
 const MAX_PLANNER_ATTEMPTS = 3;
 
+// Host commands must not block recording heartbeats or other pipeline callbacks.
+function runHost(
+  file: string,
+  args: string[],
+  options: { input?: string; timeout?: number } = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      file,
+      args,
+      {
+        encoding: "utf8",
+        timeout: options.timeout ?? 90_000,
+        maxBuffer: 32 * 1024 * 1024,
+      },
+      (error, stdout) => (error ? reject(error) : resolve(stdout)),
+    );
+    child.stdin?.on("error", () => {}); // A failed child is reported by the callback.
+    child.stdin?.end(options.input);
+  });
+}
+
+// Set an explicit fork repository and stable scope label before enabling.
+// Null repository leaves existing tracker workflows unchanged (no GitHub calls).
+const readiness = z
+  .object({
+    mode: z.enum(["disabled", "report-only", "apply"]),
+    repository: z
+      .string()
+      .regex(/^[\w.-]+\/[\w.-]+$/)
+      .nullable(),
+    scopeLabel: z.string().min(1),
+    readyLabel: z.string().min(1),
+    blockedLabel: z.string().min(1),
+    holdLabels: z.array(z.string().min(1)),
+    verifyCommand: z.array(z.string().min(1)).min(1).nullable(),
+  })
+  .strict()
+  .parse(JSON.parse(readFileSync(".sandcastle/readiness.json", "utf8")));
+const readinessEnabled =
+  readiness.mode !== "disabled" && readiness.repository !== null;
+const trackerEnvironment: Record<string, string> = readinessEnabled
+  ? { GH_REPO: readiness.repository! }
+  : {};
+// Host prompt commands and every execution sandbox must target the same fork.
+if (readinessEnabled) process.env.GH_REPO = readiness.repository!;
+const readinessEnvironment = {
+  GH_TOKEN: "",
+  GITHUB_TOKEN: "",
+  GH_ENTERPRISE_TOKEN: "",
+  GITHUB_ENTERPRISE_TOKEN: "",
+  GH_CONFIG_DIR: "/tmp/readiness-gh",
+};
+
 // Hooks run inside the sandbox before the agent starts each iteration.
 // npm install ensures the sandbox always has fresh dependencies.
 const hooks = {
@@ -80,20 +136,120 @@ const agentMap = await sandcastle.createAgentMap({
   name: "Parallel planner with review",
 });
 
-const loadPlannerInventory = (): unknown[] =>
-  JSON.parse(
-    execFileSync("bash", [".sandcastle/planner-inventory.sh"], {
-      encoding: "utf8",
-    }),
-  ) as unknown[];
+const loadPlannerInventory = async (): Promise<unknown[]> =>
+  readinessEnabled
+    ? sandcastle.loadGitHubReadinessInventory({
+        ...readiness,
+        repository: readiness.repository!,
+        cwd: process.cwd(),
+      })
+    : (JSON.parse(
+        await runHost("bash", [".sandcastle/planner-inventory.sh"]),
+      ) as unknown[]);
 
-const currentBranch = () =>
-  execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
+const currentBranch = async () =>
+  (await runHost("git", ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+
+async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
+  if (!readinessEnabled) return;
+  await agentMap.track(
+    {
+      batch,
+      role: "readiness",
+      title: `Readiness / ${trigger.kind} / ${readiness.mode}`,
+      branch: await currentBranch(),
+    },
+    async (logging) => {
+      const result = await sandcastle.reassessGitHubReadiness({
+        ...readiness,
+        mode: readiness.mode === "apply" ? "apply" : "report-only",
+        repository: readiness.repository!,
+        cwd: process.cwd(),
+        trigger,
+        verify: readiness.verifyCommand
+          ? async (input) =>
+              JSON.parse(
+                await runHost(
+                  readiness.verifyCommand![0]!,
+                  readiness.verifyCommand!.slice(1),
+                  {
+                    input: JSON.stringify(input),
+                    timeout: 300_000,
+                  },
+                ),
+              )
+          : undefined,
+        assess: async (snapshot) => {
+          // Fresh worktree, no bootstrap hooks, no tracker credentials.
+          const branch = `sandcastle/readiness-${randomUUID()}`;
+          const sandbox = await sandcastle.createSandbox({
+            branch,
+            sandbox: docker({ env: readinessEnvironment }),
+            copyToWorktree: [],
+          });
+          try {
+            const run = await sandbox.run({
+              logging,
+              name: "readiness",
+              maxIterations: 1,
+              agent: sandcastle.claudeCode("claude-opus-4-8"),
+              promptFile: "./.sandcastle/readiness-prompt.md",
+              promptArgs: {
+                READINESS_INPUT: JSON.stringify({ snapshot, trigger }),
+              },
+              completionSignal: [
+                "<promise>COMPLETE</promise>",
+                "<promise>BLOCKED</promise>",
+              ],
+            });
+            const status = await sandbox.exec(
+              "git status --porcelain --untracked-files=all",
+            );
+            if (
+              run.completionSignal !== "<promise>COMPLETE</promise>" ||
+              run.commits.length ||
+              status.exitCode !== 0 ||
+              status.stdout.trim()
+            ) {
+              throw new Error(
+                "Readiness assessment incomplete or modified its checkout; refusing publication",
+              );
+            }
+            const blocks = [
+              ...run.stdout.matchAll(/<readiness>([\s\S]*?)<\/readiness>/g),
+            ];
+            if (blocks.length !== 1)
+              throw new Error("Expected exactly one readiness result");
+            return JSON.parse(
+              blocks[0]![1]!.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""),
+            );
+          } finally {
+            await sandbox.close();
+          }
+        },
+      });
+      console.log(
+        `Readiness ${result.mode}: ${result.applied.length} issue(s) changed. Audit: ${result.auditPath}`,
+      );
+      if (logging.type === "file")
+        logging.onAgentStreamEvent?.({
+          type: "text",
+          message: JSON.stringify({
+            mode: result.mode,
+            decisions: result.assessment.decisions,
+            applied: result.applied,
+            auditPath: result.auditPath,
+          }),
+          timestamp: new Date(),
+          iteration: 1,
+        });
+      return { completionSignal: "<promise>COMPLETE</promise>", commits: [] };
+    },
+  );
+}
 
 async function planNextBatch(batch: number) {
-  const inventory = loadPlannerInventory();
+  const inventory = await loadPlannerInventory();
   let feedback = "No previous validation failure.";
 
   for (let attempt = 1; attempt <= MAX_PLANNER_ATTEMPTS; attempt++) {
@@ -104,13 +260,13 @@ async function planNextBatch(batch: number) {
           batch,
           role: "planner",
           title: `Plan attempt ${attempt}`,
-          branch: currentBranch(),
+          branch: await currentBranch(),
         },
         async (logging) => {
           const result = await sandcastle.run({
             logging,
             hooks,
-            sandbox: docker(),
+            sandbox: docker({ env: trackerEnvironment }),
             name: `planner-${attempt}`,
             maxIterations: 1,
             agent: sandcastle.claudeCode("claude-opus-4-8"),
@@ -151,6 +307,7 @@ async function planNextBatch(batch: number) {
 // ---------------------------------------------------------------------------
 
 async function executeWorkflow() {
+  await reassess(1, { kind: "startup" });
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
@@ -206,7 +363,7 @@ async function executeWorkflow() {
             async (logging) => {
               sandbox = await sandcastle.createSandbox({
                 branch: issue.branch,
-                sandbox: docker(),
+                sandbox: docker({ env: trackerEnvironment }),
                 hooks,
                 copyToWorktree,
               });
@@ -282,7 +439,9 @@ async function executeWorkflow() {
       .filter(
         (entry) =>
           entry.outcome.status === "fulfilled" &&
-          entry.outcome.value.commits.length > 0,
+          entry.outcome.value.commits.length > 0 &&
+          entry.outcome.value.completionSignal ===
+            "<promise>COMPLETE</promise>",
       )
       .map((entry) => entry.issue);
 
@@ -305,9 +464,7 @@ async function executeWorkflow() {
     // Immutable baseline for validating the entire integrated batch. Capturing
     // this before the merger starts prevents per-branch checks from missing
     // incompatibilities that only appear after multiple branches are combined.
-    const batchBaseSha = execFileSync("git", ["rev-parse", "HEAD"], {
-      encoding: "utf8",
-    }).trim();
+    const batchBaseSha = (await runHost("git", ["rev-parse", "HEAD"])).trim();
 
     // -------------------------------------------------------------------------
     // Phase 3: Merge
@@ -318,18 +475,18 @@ async function executeWorkflow() {
     // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
     // uses to know which branches to merge and which issues to close.
     // -------------------------------------------------------------------------
-    await agentMap.track(
+    const merge = await agentMap.track(
       {
         batch: iteration,
         role: "merger",
         title: "Integrate batch",
-        branch: currentBranch(),
+        branch: await currentBranch(),
       },
       (logging) =>
         sandcastle.run({
           logging,
           hooks,
-          sandbox: docker(),
+          sandbox: docker({ env: trackerEnvironment }),
           name: "merger",
           maxIterations: 1,
           agent: sandcastle.claudeCode("claude-sonnet-4-6"),
@@ -347,6 +504,18 @@ async function executeWorkflow() {
         }),
     );
 
+    if (merge.completionSignal !== "<promise>COMPLETE</promise>") {
+      throw new Error(
+        "Merge did not complete; readiness and the next planner are stopped",
+      );
+    }
+    await reassess(iteration, {
+      kind: "post-merge",
+      base: batchBaseSha,
+      branches: completedBranches,
+      issues: completedIssues.map((issue) => Number(issue.id)),
+      completionSignal: merge.completionSignal,
+    });
     await agentMap.finishBatch(iteration);
 
     console.log("\nBranches merged.");
