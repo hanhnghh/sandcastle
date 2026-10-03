@@ -1,0 +1,9 @@
+{
+  "mode": "report-only",
+  "repository": "hanhnghh/sandcastle",
+  "scopeLabel": "scope:operator-admin",
+  "readyLabel": "ready-for-agent",
+  "blockedLabel": "blocked",
+  "holdLabels": ["readiness:hold"],
+  "verifyCommand": null
+}

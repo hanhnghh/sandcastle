@@ -1,46 +1,54 @@
 # MISSION
 
-Complete GitHub issue #{{TASK_ID}} — {{ISSUE_TITLE}} — on branch `{{BRANCH}}`.
-Work autonomously to a verified commit. The issue is the scope boundary; the
+Complete task {{TASK_ID}} — {{ISSUE_TITLE}} — on branch `{{BRANCH}}`.
+Work autonomously to a verified commit. The task is the scope boundary; the
 repository and its existing public contracts are the source of implementation
 truth. Resolve questions from those sources before treating them as blockers.
 
-Load the issue exactly once at the start:
+Load the task at the start using `gh issue view <ID> --json number,title,body,labels,comments`. Replace
+`<ID>` in that command with `{{TASK_ID}}`. If the task references a parent spec
+or PRD, read only the sections it names plus sections strictly necessary to
+interpret an acceptance criterion. Work on this task only. Preserve unrelated
+working-tree changes and accumulated branch progress. Do not close the task;
+the verified merge phase owns closure.
 
-```bash
-gh issue view {{TASK_ID}} --json number,title,body,labels,comments
-```
-
-If it references a parent PRD, read only the sections it names plus sections
-strictly necessary to interpret an acceptance criterion. Work on this issue
-only. Preserve unrelated working-tree changes and accumulated branch progress.
-Do not close the issue; the verified merge phase owns closure.
+Load the full contract successfully once. A failed CLI/transport request does
+not count as a successful read: retry a transient failure or use the equivalent
+read-only GitHub REST request. If the full contract cannot be loaded, stop as
+BLOCKED instead of implementing from an incomplete local summary.
 
 # REQUIRED CONTEXT
 
 Before editing:
 
-1. Read `/home/agent/CODING_STANDARDS.md` completely. It is the current,
-   read-only integration-branch standard even in an older issue worktree.
-2. Inspect `git status`, the last ten commits, relevant package manifests,
+1. Read `/home/agent/CODING_STANDARDS.md` completely.
+2. Read `/home/agent/FEEDBACK_LOOPS.md` completely for executable
+   bootstrap, focused-test, and authoritative-gate commands.
+3. Inspect `git status`, the last ten commits, relevant package manifests,
    public interfaces, and existing tests.
-3. Use the synchronized branch-local CodeGraph index for navigation:
 
-   ```bash
-   codegraph explore "{{ISSUE_TITLE}}"
-   codegraph query "<relevant symbol>"
-   codegraph impact "<public symbol being changed>"
-   ```
+# EXPLORATION
 
-   Use `codegraph node` for caller/callee context and `codegraph affected` for
-   focused-test selection. Use `rg` and direct reads for exact wire text,
-   configuration, and graph misses. CodeGraph is navigation evidence, not
-   specification or correctness evidence.
+## CODEGRAPH NAVIGATION
+
+Use the synchronized branch-local index before broad text searches:
+
+```bash
+codegraph explore "{{ISSUE_TITLE}}"
+codegraph query "<relevant symbol>"
+codegraph impact "<public symbol being changed>"
+```
+
+Use `codegraph node` for caller/callee context and `codegraph affected`
+to select focused tests. Fall back to `rg` and direct file reads for exact
+wire text, configuration, and graph misses. CodeGraph is navigation evidence, not correctness evidence;
+tests and executable feedback gates establish correctness.
 
 Exploration is complete only when the current behavior, required behavior,
 public observation seam, narrow red-capable command, affected packages, and
-applicable identity/persistence/security invariants are known for every
-acceptance criterion.
+applicable identity, persistence, and security invariants are known for every
+acceptance criterion. Use `rg` and direct file reads to establish exact
+contracts and behavior.
 
 # REQUIREMENT LEDGER
 
@@ -49,16 +57,16 @@ Before production edits, create and maintain this matrix:
 `ID | source | requirement | public seam | exact test | command | status`
 
 Include every acceptance criterion and every explicitly named scenario or edge
-case. Include parent-PRD requirements only when referenced by the issue or
+case. Include parent-spec requirements only when referenced by the task or
 required to interpret one of its criteria. Never substitute one representative
 example for an explicit list.
 
 The acceptance criteria pre-authorize their named public seams for this AFK
 run. When a criterion does not name a seam, use the narrowest existing public
-boundary that observes the behavior: HTTP/CLI/hook/SDK contract, exported
+boundary that observes the behavior: HTTP, CLI, hook, SDK contract, exported
 module API, storage port, executable script, or user-visible artifact. Prefer
 an existing seam over creating a new one. A materially unresolved product or
-public-interface decision is a blocker; a question answerable from the issue,
+public-interface decision is a blocker; a question answerable from the task,
 standards, tests, or code is not.
 
 Every row must name executable evidence. Use `not-applicable` only when no
@@ -96,14 +104,14 @@ refactors, establish characterization evidence before changing structure.
 
 The implementation phase ends with green behavior. Leave discretionary
 cleanup to the dedicated reviewer; perform only refactoring required by the
-issue or standards, and keep the focused loop green while doing it.
+task or standards, and keep the focused loop green while doing it.
 
 # FEEDBACK LOOPS
 
 After each slice, run the narrowest red-capable command. At completion, run:
 
 - every focused test recorded in the ledger;
-- one authoritative gate from `/home/agent/CODING_STANDARDS.md` for each
+- one authoritative gate from `/home/agent/FEEDBACK_LOOPS.md` for each
   affected package;
 - `git diff --check` and a final scoped diff/status inspection.
 
@@ -116,14 +124,15 @@ explicitly—an in-scope failure remains red.
 
 # COMPLETION GATE
 
-The issue is complete only when all of the following are true:
+The task is complete only when all of the following are true:
 
 - every ledger row is `pass` or justified `not-applicable`;
 - changed behavior has focused regression evidence at an approved public seam;
 - focused checks and every affected-package authoritative gate are green;
-- the final diff is issue-scoped and contains no unrelated churn, secrets,
+- the final diff is task-scoped and contains no unrelated churn, secrets,
   local state, generated-file mistakes, or undocumented compatibility change;
-- user-facing English and Chinese documentation agree when applicable;
+- localized user-facing documentation agrees across supported languages when
+  applicable;
 - all completed work is committed on `{{BRANCH}}`.
 
 Commit once the gate is green. Use DCO sign-off and this subject shape:
@@ -132,13 +141,13 @@ Commit once the gate is green. Use DCO sign-off and this subject shape:
 RALPH: <conventional type>(<scope>): <completed outcome>
 ```
 
-Keep the body concise: reference issue #{{TASK_ID}} and its parent PRD when
-applicable, then record key decisions, material files/areas changed, and notes
-needed by review or merge.
+Keep the body concise: reference task {{TASK_ID}} and its parent spec when
+applicable, then record key decisions, material files or areas changed, and
+notes needed by review or merge.
 
-If genuinely blocked, leave the issue open and add one concise GitHub comment
-with completed investigation, the exact blocker, and the failing command/output
-summary. Do not create a completion commit. Then emit:
+If genuinely blocked, leave the task open and add one concise tracker comment
+with completed investigation, the exact blocker, and the failing command and
+output summary. Do not create a completion commit. Then emit:
 
 <promise>BLOCKED</promise>
 
