@@ -8,10 +8,16 @@ export type {
 export {
   reassessGitHubReadiness,
   loadGitHubReadinessInventory,
+  inspectGitHubReadinessBacklog,
+  admitGitHubReadinessBatch,
 } from "./Readiness.js";
 export type {
   GitHubReadinessOptions,
   GitHubReadinessInventoryOptions,
+  GitHubReadinessBacklog,
+  GitHubReadinessBatch,
+  GitHubReadinessAdmission,
+  ReadinessExclusion,
   ReadinessSnapshot,
   ReadinessIssue,
   ReadinessDependency,

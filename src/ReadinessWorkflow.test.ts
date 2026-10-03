@@ -59,15 +59,20 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   const {snapshot,trigger}=JSON.parse(prompt.match(/<readiness-input>([\\s\\S]*?)<\\/readiness-input>/)[1]);
   record('readiness:'+trigger.kind);
   if(process.env.READINESS_FIXTURE_DIRTY==='1') fs.writeFileSync('unauthorized.txt','dirty');
-  console.log('<readiness>'+JSON.stringify({head:snapshot.head,decisions:snapshot.issues.map(i=>({number:i.number,status:i.dependencies.some(d=>d.state!=='closed')?'blocked':'ready-for-agent',reason:'fixture contract'}))})+'</readiness>');
+  console.log('<readiness>'+JSON.stringify({head:snapshot.head,decisions:snapshot.issues.map(i=>({number:i.number,status:i.body.includes('**Kind:** live-validation')?'not-implementation':i.dependencies.some(d=>d.state!=='closed')?'blocked':'ready-for-agent',reason:'fixture contract'}))})+'</readiness>');
 } else if(prompt.includes('# CANDIDATE INVENTORY')) {
   const issues=JSON.parse(prompt.match(/<issues-json>([\\s\\S]*?)<\\/issues-json>/)[1]); record('plan:'+issues.map(i=>i.number).join(','));
+  if(process.env.READINESS_FIXTURE_STALE_PLAN==='1') { const state=JSON.parse(fs.readFileSync(process.env.READINESS_FIXTURE_STATE,'utf8'));state.find(i=>i.number===22).labels.push({name:'blocked'});fs.writeFileSync(process.env.READINESS_FIXTURE_STATE,JSON.stringify(state)); }
   console.log('<plan>'+JSON.stringify({issues:issues.map(i=>({id:String(i.number),title:i.title,branch:'sandcastle/issue-'+i.number})),decisions:issues.map(i=>({id:String(i.number),disposition:'selected',reason:'independent',likelyAreas:['task-'+i.number]}))})+'</plan>');
 } else if(prompt.includes('Integrate the following completed branches')) {
   const branches=[...new Set(prompt.match(/sandcastle\\/issue-\\d+/g))];
   for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); execFileSync('gh',['issue','close',String(number)]); }
 } else if(prompt.includes('Review task ')) { const number=prompt.match(/Review task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('review:'+number); }
-else if(prompt.includes('Complete task ')) { const number=prompt.match(/Complete task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('implement:'+number);fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number); }
+else if(prompt.includes('Complete task ')) {
+  const number=prompt.match(/Complete task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('implement:'+number);
+  if(process.env.READINESS_FIXTURE_NO_PROGRESS!=='1' && !(number==='22' && process.env.READINESS_FIXTURE_RETAINED==='1')) {fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);}
+  if(process.env.READINESS_FIXTURE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
+}
 else throw Error('Unknown agent task');
 console.log('<promise>COMPLETE</promise>');
 `;
@@ -98,10 +103,18 @@ async function execute(extraEnv: Record<string, string> = {}) {
   await writeFile(
     state,
     JSON.stringify(
-      [20, 22].map((number) => ({
+      (extraEnv.READINESS_FIXTURE_QUALIFICATION_ONLY === "1"
+        ? [22]
+        : [20, 22]
+      ).map((number) => ({
         number,
         title: `Task ${number}`,
-        body: number === 20 ? "## Dependencies\n- #22" : "Implement slice",
+        body:
+          extraEnv.READINESS_FIXTURE_QUALIFICATION_ONLY === "1"
+            ? "**Kind:** live-validation\nLive protocol still required"
+            : number === 20
+              ? "## Dependencies\n- #22"
+              : "Implement slice",
         state: "open",
         state_reason: null,
         updated_at: "now",
@@ -127,6 +140,7 @@ async function execute(extraEnv: Record<string, string> = {}) {
   const mainPath = join(cwd, ".sandcastle/main.mts");
   let main = await readFile(mainPath, "utf8");
   main = main
+    .replace("const MAX_ITERATIONS = 10;", "const MAX_ITERATIONS = 3;")
     .replace(
       '"@ai-hero/sandcastle"',
       JSON.stringify(new URL("./index.ts", import.meta.url).href),
@@ -170,6 +184,13 @@ async function execute(extraEnv: Record<string, string> = {}) {
   git("config", "user.email", "fixture@example.com");
   git("add", ".");
   git("commit", "-qm", "fixture");
+  if (extraEnv.READINESS_FIXTURE_RETAINED === "1") {
+    git("switch", "-qc", "sandcastle/issue-22");
+    await writeFile(join(cwd, "task-22.txt"), "retained implementation");
+    git("add", ".");
+    git("commit", "-qm", "retained implementation");
+    git("switch", "main");
+  }
   git(
     "remote",
     "add",
@@ -177,8 +198,9 @@ async function execute(extraEnv: Record<string, string> = {}) {
     "https://github.com/upstream/not-the-target.git",
   );
   let error: unknown;
+  let stdout = "";
   try {
-    execFileSync(
+    stdout = execFileSync(
       process.execPath,
       ["--import", createRequire(import.meta.url).resolve("tsx"), mainPath],
       {
@@ -212,6 +234,7 @@ async function execute(extraEnv: Record<string, string> = {}) {
   );
   return {
     error,
+    stdout,
     trace: (await readFile(trace, "utf8")).trim().split("\n"),
     issues: JSON.parse(await readFile(state, "utf8")),
     snapshots,
@@ -273,4 +296,56 @@ it("rejects an assessor's uncommitted edits before starting the planner", async 
   expect(result.snapshots).toEqual([
     expect.objectContaining({ status: "failed" }),
   ]);
+}, 90_000);
+
+it("refreshes tracker eligibility before creating any selected worktree", async () => {
+  const result = await execute({ READINESS_FIXTURE_STALE_PLAN: "1" });
+  expect(result.error).toBeDefined();
+  expect(result.trace).not.toContain("implement:22");
+  expect(
+    result.issues.find((issue: { number: number }) => issue.number === 22)
+      .state,
+  ).toBe("open");
+}, 90_000);
+
+it("does not review or merge a blocked implementation that produced commits", async () => {
+  const result = await execute({ READINESS_FIXTURE_BLOCKED: "1" });
+  expect(result.error).toBeDefined();
+  expect(result.trace).not.toContain("review:22");
+  expect(result.trace).not.toContain("merge:22");
+  expect(
+    result.issues.every((issue: { state: string }) => issue.state === "open"),
+  ).toBe(true);
+}, 90_000);
+
+it("stops a no-progress batch after one implementation attempt", async () => {
+  const result = await execute({ READINESS_FIXTURE_NO_PROGRESS: "1" });
+  expect(result.error).toBeDefined();
+  expect(result.trace.filter((value) => value === "implement:22")).toHaveLength(
+    1,
+  );
+  expect(result.trace).not.toContain("merge:22");
+}, 90_000);
+
+it("reviews retained branch commits before integration when the resumed implementer adds none", async () => {
+  const result = await execute({ READINESS_FIXTURE_RETAINED: "1" });
+  expect(result.error).toBeUndefined();
+  expect(result.trace).toContain("review:22");
+  expect(result.trace.indexOf("review:22")).toBeLessThan(
+    result.trace.indexOf("merge:22"),
+  );
+  expect(
+    result.issues.every((issue: { state: string }) => issue.state === "closed"),
+  ).toBe(true);
+}, 90_000);
+
+it("reports pending external qualification without implementing or closing its issue", async () => {
+  const result = await execute({ READINESS_FIXTURE_QUALIFICATION_ONLY: "1" });
+  expect(result.error).toBeUndefined();
+  expect(result.stdout).toContain(
+    "external qualification remains pending for: 22",
+  );
+  expect(result.trace).toEqual(["readiness:startup", "plan:"]);
+  expect(result.issues[0].state).toBe("open");
+  expect(result.snapshots[0].status).toBe("completed");
 }, 90_000);

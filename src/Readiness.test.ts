@@ -14,6 +14,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   reassessGitHubReadiness,
   loadGitHubReadinessInventory,
+  inspectGitHubReadinessBacklog,
+  admitGitHubReadinessBatch,
 } from "./Readiness.js";
 import type {
   GitHubReadinessOptions,
@@ -138,18 +140,23 @@ async function fixture() {
     native: [] as { html_url: string }[],
   };
   const writes: string[][] = [];
+  const additionalIssues: (typeof issue)[] = [];
   const fakeGh = (args: readonly string[] = []): string => {
     const argv = [...(args ?? [])].map(String);
     if (argv[0] !== "api") throw new Error(`Unexpected gh call: ${argv}`);
     const endpoint = argv[1]!;
     if (argv.includes("POST") || argv.includes("DELETE")) {
+      const target = [issue, ...additionalIssues].find(
+        (row) =>
+          row.number === Number(endpoint.split("/issues/")[1]?.split("/")[0]),
+      )!;
       writes.push(argv);
       transport.onWrite();
       if (argv.includes("POST")) {
         for (const arg of argv.filter((a) => a.startsWith("labels[]=")))
-          issue.labels.push({ name: arg.slice(9) });
+          target.labels.push({ name: arg.slice(9) });
       } else
-        issue.labels = issue.labels.filter(
+        target.labels = target.labels.filter(
           (l) => !endpoint.endsWith(`/${encodeURIComponent(l.name)}`),
         );
       return "";
@@ -159,11 +166,15 @@ async function fixture() {
     if (endpoint.endsWith("/dependencies/blocked_by?per_page=100"))
       return JSON.stringify([transport.native]);
     if (endpoint.includes("/issues?")) {
-      const value = JSON.stringify([[issue]]);
+      const value = JSON.stringify([[issue, ...additionalIssues]]);
       transport.onList();
       return value;
     }
     if (endpoint.endsWith("/issues/20")) return JSON.stringify(issue);
+    const extra = additionalIssues.find((row) =>
+      endpoint.endsWith(`/issues/${row.number}`),
+    );
+    if (extra) return JSON.stringify(extra);
     const dependency = dependencies.get(Number(endpoint.split("/").at(-1)));
     if (dependency) return JSON.stringify(dependency);
     throw new Error(`Unexpected endpoint: ${endpoint}`);
@@ -187,6 +198,7 @@ async function fixture() {
     git,
     issue,
     writes,
+    additionalIssues,
     dependencies,
     transport,
     options: { cwd, repository: "owner/project", scopeLabel: "Sandcastle" },
@@ -345,6 +357,7 @@ it.each([
   "changed comments",
   "changed body",
   "changed labels",
+  "changed branch",
 ])("fails closed for %s without publishing", async (failure) => {
   const f = await fixture();
   const options = readyOptions(f.options);
@@ -377,6 +390,7 @@ it.each([
     if (failure === "changed body") f.issue.body += "\nAdditional gate";
     if (failure === "changed labels")
       f.issue.labels.push({ name: "readiness:hold" });
+    if (failure === "changed branch") f.git("switch", "-qc", "other-checkout");
     return proposal;
   };
   await expect(reassessGitHubReadiness(options)).rejects.toThrow();
@@ -462,6 +476,142 @@ it("records partial publication and rejects instead of claiming the batch is rea
   expect(
     JSON.parse(await readFile(join(auditDir, file!), "utf8")),
   ).toMatchObject({ status: "failed", pending: 20, applied: [] });
+});
+
+it("reports every excluded scoped issue without treating an empty frontier as completed work", async () => {
+  const f = await fixture();
+  f.issue.labels = [
+    { name: "Sandcastle" },
+    { name: "ready-for-agent" },
+    { name: "blocked" },
+    { name: "readiness:hold" },
+  ];
+  f.issue.body += "\n## Dependencies\n- #10";
+  f.dependencies.set(10, { state: "closed", state_reason: "not_planned" });
+  const report = await inspectGitHubReadinessBacklog(f.options);
+  expect(report.eligible).toEqual([]);
+  expect(report.snapshot.issues.map((i) => i.number)).toEqual([20]);
+  expect(report.excluded[0]?.reasons.map((r) => r.code)).toEqual(
+    expect.arrayContaining([
+      "blocked-label",
+      "manual-hold",
+      "unresolved-dependency",
+    ]),
+  );
+  expect(f.writes).toEqual([]);
+});
+
+it("admits a fresh batch at its named source branch without tracker mutations", async () => {
+  const f = await fixture();
+  f.issue.labels = [{ name: "Sandcastle" }, { name: "ready-for-agent" }];
+  const planned = await inspectGitHubReadinessBacklog(f.options);
+  const admission = await admitGitHubReadinessBatch(f.options, {
+    snapshot: planned.snapshot,
+    branch: planned.branch,
+    issues: [20],
+  });
+  expect(admission).toMatchObject({
+    head: planned.snapshot.head,
+    branch: planned.branch,
+    issues: [{ number: 20 }],
+  });
+  expect(f.writes).toEqual([]);
+});
+
+it.each(["body", "hold", "closed", "source", "branch", "duplicate"])(
+  "rejects a stale batch before execution when %s changes",
+  async (change) => {
+    const f = await fixture();
+    f.issue.labels = [{ name: "Sandcastle" }, { name: "ready-for-agent" }];
+    const planned = await inspectGitHubReadinessBacklog(f.options);
+    if (change === "body") f.issue.body += "\nApproval required";
+    if (change === "hold") f.issue.labels.push({ name: "readiness:hold" });
+    if (change === "closed") f.issue.state = "closed";
+    if (change === "source")
+      f.git("commit", "--allow-empty", "-qm", "changed source");
+    if (change === "branch") f.git("switch", "-qc", "different-checkout");
+    await expect(
+      admitGitHubReadinessBatch(f.options, {
+        snapshot: planned.snapshot,
+        branch: planned.branch,
+        issues: change === "duplicate" ? [20, 20] : [20],
+      }),
+    ).rejects.toThrow();
+    expect(f.writes).toEqual([]);
+  },
+);
+
+it("identifies dependency cycles instead of treating their labels as execution authority", async () => {
+  const f = await fixture();
+  f.issue.labels = [{ name: "Sandcastle" }, { name: "ready-for-agent" }];
+  f.issue.body = "## Dependencies\n- #21";
+  f.additionalIssues.push({
+    ...structuredClone(f.issue),
+    number: 21,
+    body: "## Dependencies\n- #20",
+  });
+  const report = await inspectGitHubReadinessBacklog(f.options);
+  expect(report.eligible).toEqual([]);
+  expect(
+    report.excluded
+      .filter((row) =>
+        row.reasons.some((reason) => reason.code === "dependency-cycle"),
+      )
+      .map((row) => row.issue.number),
+  ).toEqual([20, 21]);
+});
+
+it("rejects a change to an already published issue while another issue is being published", async () => {
+  const f = await fixture();
+  f.additionalIssues.push({ ...structuredClone(f.issue), number: 21 });
+  f.transport.onWrite = () => {
+    if (f.writes.length === 4) f.issue.body += "\nNew acceptance requirement";
+  };
+  const options = readyOptions(f.options);
+  options.assess = async (input) => ({
+    head: input.head,
+    decisions: input.issues.map((issue) => ({
+      number: issue.number,
+      status: "ready-for-agent",
+      reason: "Verified fixture",
+    })),
+  });
+  await expect(reassessGitHubReadiness(options)).rejects.toThrow(
+    "Tracker changed during publication",
+  );
+  expect(f.additionalIssues[0]?.labels).toContainEqual({
+    name: "ready-for-agent",
+  });
+});
+
+it("does not admit a manually ready meta task", async () => {
+  const f = await fixture();
+  f.issue.labels = [
+    { name: "Sandcastle" },
+    { name: "ready-for-agent" },
+    { name: "epic" },
+  ];
+  const report = await inspectGitHubReadinessBacklog(f.options);
+  expect(report.excluded[0]?.reasons).toContainEqual(
+    expect.objectContaining({ code: "not-implementation" }),
+  );
+  expect(await loadGitHubReadinessInventory(f.options)).toEqual([]);
+});
+
+it("rejects a tracker edit during final publication readback and retains the journal", async () => {
+  const f = await fixture();
+  f.transport.onList = () => {
+    if (f.writes.length) f.issue.body += "\nNew external acceptance gate";
+  };
+  await expect(
+    reassessGitHubReadiness(readyOptions(f.options)),
+  ).rejects.toThrow("Tracker changed during publication");
+  const [file] = await readdir(join(f.cwd, ".git/sandcastle/readiness"));
+  expect(
+    JSON.parse(
+      await readFile(join(f.cwd, ".git/sandcastle/readiness", file!), "utf8"),
+    ),
+  ).toMatchObject({ status: "failed", applied: [20] });
 });
 
 it("checks verified merge provenance before reassessing the next frontier", async () => {

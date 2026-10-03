@@ -249,7 +249,18 @@ async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
 }
 
 async function planNextBatch(batch: number) {
-  const inventory = await loadPlannerInventory();
+  const backlog = readinessEnabled
+    ? await sandcastle.inspectGitHubReadinessBacklog({
+        ...readiness,
+        repository: readiness.repository!,
+        cwd: process.cwd(),
+      })
+    : undefined;
+  const head =
+    backlog?.snapshot.head ??
+    (await runHost("git", ["rev-parse", "HEAD"])).trim();
+  const branch = backlog?.branch ?? (await currentBranch());
+  const inventory = backlog?.eligible ?? (await loadPlannerInventory());
   let feedback = "No previous validation failure.";
 
   for (let attempt = 1; attempt <= MAX_PLANNER_ATTEMPTS; attempt++) {
@@ -290,7 +301,7 @@ async function planNextBatch(batch: number) {
           return result;
         },
       );
-      return result.output;
+      return { plan: result.output, inventory, backlog, head, branch };
     } catch (error) {
       // Observe execution errors, but only retry invalid plans as before.
       if (!validationFailed) throw error;
@@ -320,14 +331,50 @@ async function executeWorkflow() {
     //
     // It outputs a <plan> JSON block — Output.object parses and validates it.
     // -------------------------------------------------------------------------
-    const plan = await planNextBatch(iteration);
+    const planned = await planNextBatch(iteration);
+    const plan = planned.plan;
     await agentMap.recordPlan(iteration, plan);
     const issues = plan.issues;
 
     if (issues.length === 0) {
-      // No unblocked work — either everything is done or everything is blocked.
-      console.log("No unblocked issues to work on. Exiting.");
-      break;
+      if (planned.backlog?.snapshot.issues.length) {
+        console.error(
+          JSON.stringify(
+            {
+              head: planned.head,
+              eligible: planned.backlog.eligible.map((issue) => issue.number),
+              exclusions: planned.backlog.excluded.map(
+                ({ kind, issue, reasons }) => ({
+                  number: issue.number,
+                  kind,
+                  reasons,
+                }),
+              ),
+              decisions: plan.decisions,
+            },
+            null,
+            2,
+          ),
+        );
+        if (
+          planned.backlog.eligible.length ||
+          planned.backlog.excluded.some(
+            (issue) => issue.kind === "implementation",
+          )
+        )
+          throw new Error(
+            "No eligible batch selected while implementation issues remain. Resolve the recorded dependencies, holds or project qualification gates before resuming.",
+          );
+        const qualification = planned.backlog.excluded
+          .filter((issue) => issue.kind === "qualification")
+          .map((row) => row.issue.number);
+        console.log(
+          `Local implementation is complete; external qualification remains pending for: ${qualification.join(", ") || "none"}. Meta issues remain owned by their project workflow.`,
+        );
+        return;
+      }
+      console.log("No eligible work remains in the configured inventory.");
+      return;
     }
 
     console.log(
@@ -347,6 +394,59 @@ async function executeWorkflow() {
     // Promise.allSettled means one failing pipeline doesn't cancel the others.
     // -------------------------------------------------------------------------
 
+    // Refresh once before parallel worktree creation; remote reads stay asynchronous.
+    if (planned.backlog) {
+      await sandcastle.admitGitHubReadinessBatch(
+        {
+          ...readiness,
+          repository: readiness.repository!,
+          cwd: process.cwd(),
+        },
+        {
+          snapshot: planned.backlog.snapshot,
+          branch: planned.branch,
+          issues: issues.map((issue) => Number(issue.id)),
+        },
+      );
+    } else {
+      const fresh = await loadPlannerInventory();
+      const identity = (row: unknown) => {
+        const candidate = z
+          .object({
+            id: z.union([z.string(), z.number()]).optional(),
+            number: z.number().optional(),
+          })
+          .passthrough()
+          .parse(row);
+        return String(candidate.id ?? candidate.number);
+      };
+      for (const issue of issues) {
+        const before = planned.inventory.find(
+          (row) => identity(row) === issue.id,
+        );
+        const after = fresh.find((row) => identity(row) === issue.id);
+        if (
+          !before ||
+          !after ||
+          JSON.stringify(before) !== JSON.stringify(after)
+        )
+          throw new Error(
+            `Issue ${issue.id} changed after planning; refresh the plan before execution.`,
+          );
+      }
+    }
+    const assertBaseline = async () => {
+      if (
+        (await runHost("git", ["rev-parse", "HEAD"])).trim() !== planned.head ||
+        (await currentBranch()) !== planned.branch ||
+        (await runHost("git", ["status", "--porcelain"])).trim()
+      )
+        throw new Error(
+          "Integration checkout changed after planning; keep work and reconcile before merging.",
+        );
+    };
+    await assertBaseline();
+    const batchBaseSha = planned.head;
     const settled = await Promise.allSettled(
       issues.map(async (issue) => {
         let sandbox: sandcastle.Sandbox | undefined;
@@ -363,6 +463,7 @@ async function executeWorkflow() {
             async (logging) => {
               sandbox = await sandcastle.createSandbox({
                 branch: issue.branch,
+                baseBranch: batchBaseSha,
                 sandbox: docker({ env: trackerEnvironment }),
                 hooks,
                 copyToWorktree,
@@ -373,6 +474,10 @@ async function executeWorkflow() {
                 name: "implementer",
                 maxIterations: 100,
                 agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+                completionSignal: [
+                  "<promise>COMPLETE</promise>",
+                  "<promise>BLOCKED</promise>",
+                ],
                 promptFile: "./.sandcastle/implement-prompt.md",
                 promptArgs: {
                   TASK_ID: issue.id,
@@ -383,8 +488,26 @@ async function executeWorkflow() {
             },
           );
 
-          // Only review if the implementer produced commits
-          if (sandbox && implement.commits.length > 0) {
+          if (implement.completionSignal !== "<promise>COMPLETE</promise>")
+            throw new Error(
+              `Implementation did not complete for issue ${issue.id}; retain the branch and leave its issue open.`,
+            );
+          const implementationCommits =
+            implement.commits.length > 0
+              ? implement.commits
+              : (
+                  await runHost("git", [
+                    "rev-list",
+                    `${batchBaseSha}..${issue.branch}`,
+                    "--",
+                  ])
+                )
+                  .trim()
+                  .split("\n")
+                  .filter(Boolean)
+                  .map((sha) => ({ sha }));
+          // Retained commits still require a fresh completed review before merging.
+          if (sandbox && implementationCommits.length > 0) {
             const review = await agentMap.track(
               {
                 batch: iteration,
@@ -399,6 +522,10 @@ async function executeWorkflow() {
                   name: "reviewer",
                   maxIterations: 1,
                   agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+                  completionSignal: [
+                    "<promise>COMPLETE</promise>",
+                    "<promise>BLOCKED</promise>",
+                  ],
                   promptFile: "./.sandcastle/review-prompt.md",
                   promptArgs: {
                     TASK_ID: issue.id,
@@ -412,7 +539,7 @@ async function executeWorkflow() {
             // Each sandbox.run() only returns commits from its own run.
             return {
               ...review,
-              commits: [...implement.commits, ...review.commits],
+              commits: [...implementationCommits, ...review.commits],
             };
           }
 
@@ -455,16 +582,14 @@ async function executeWorkflow() {
     }
 
     if (completedBranches.length === 0) {
-      // All agents ran but none made commits — nothing to merge this cycle.
-      console.log("No commits produced. Nothing to merge.");
       await agentMap.finishBatch(iteration);
-      continue;
+      throw new Error(
+        "No verified implementation progress. Retain the branches and inspect failed or blocked stages before resuming.",
+      );
     }
 
-    // Immutable baseline for validating the entire integrated batch. Capturing
-    // this before the merger starts prevents per-branch checks from missing
-    // incompatibilities that only appear after multiple branches are combined.
-    const batchBaseSha = (await runHost("git", ["rev-parse", "HEAD"])).trim();
+    // The integration checkout must still match the source admitted before execution.
+    await assertBaseline();
 
     // -------------------------------------------------------------------------
     // Phase 3: Merge
@@ -490,6 +615,10 @@ async function executeWorkflow() {
           name: "merger",
           maxIterations: 1,
           agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+          completionSignal: [
+            "<promise>COMPLETE</promise>",
+            "<promise>BLOCKED</promise>",
+          ],
           promptFile: "./.sandcastle/merge-prompt.md",
           promptArgs: {
             // A markdown list of branch names, one per line.
@@ -509,6 +638,22 @@ async function executeWorkflow() {
         "Merge did not complete; readiness and the next planner are stopped",
       );
     }
+    const integratedHead = (await runHost("git", ["rev-parse", "HEAD"])).trim();
+    if (
+      integratedHead === batchBaseSha ||
+      (await currentBranch()) !== planned.branch ||
+      (await runHost("git", ["status", "--porcelain"])).trim()
+    )
+      throw new Error(
+        "Merger did not produce a clean integrated checkout on the planned branch.",
+      );
+    for (const ref of [batchBaseSha, ...completedBranches])
+      await runHost("git", [
+        "merge-base",
+        "--is-ancestor",
+        ref,
+        integratedHead,
+      ]);
     await reassess(iteration, {
       kind: "post-merge",
       base: batchBaseSha,
@@ -521,7 +666,20 @@ async function executeWorkflow() {
     console.log("\nBranches merged.");
   }
 
-  console.log("\nAll done.");
+  if (
+    readinessEnabled &&
+    (
+      await sandcastle.inspectGitHubReadinessBacklog({
+        ...readiness,
+        repository: readiness.repository!,
+        cwd: process.cwd(),
+      })
+    ).snapshot.issues.length === 0
+  )
+    return;
+  throw new Error(
+    "Iteration limit reached; inspect the remaining backlog before starting another run.",
+  );
 }
 
 try {

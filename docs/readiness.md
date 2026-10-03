@@ -88,6 +88,34 @@ callback, plus a read-only `assess` callback. `ReadinessVerificationInput` and
 provides the same fresh scope/hold/state filter to custom planners. A custom
 workflow owns isolation of its assessor and its verifier configuration.
 
+## Batch admission and empty-frontier diagnostics
+
+`inspectGitHubReadinessBacklog(options)` returns the full scoped `snapshot`,
+named source `branch`, `eligible` issues and `excluded` issues with all applicable
+reason codes. It checks a clean, unchanged checkout around the asynchronous
+tracker read. Exclusions retain full issue contracts so the project can explain
+its gates. Explicit cycles, manual holds, cancelled dependencies, blocked+ready
+conflicts and explicitly marked meta/qualification tasks are excluded.
+
+`admitGitHubReadinessBatch(options, {snapshot, branch, issues})` refreshes once
+before parallel worktrees start. Its input is the original planning snapshot.
+It rejects changed HEAD/branch, dirty source, duplicate selections, changed
+selected bodies/comments/labels/dependencies and lost eligibility. It returns
+the immutable `head`, `branch` and refreshed selected contracts. Use `head` as
+`createSandbox({baseBranch: head})` for new branches. Existing branches retain
+their history and still require completed implementation plus a fresh review.
+
+These checks establish tracker/source integrity; project policy still owns
+product gates, meaningful acceptance evidence and stage allocations. A topology
+diagnosis cannot promote labels or authorize qualification.
+
+Reviewed/Codex AFK templates use admission before execution. They stop when no
+verified branch can progress, rather than repeating an unchanged batch. An empty
+plan prints the full scoped exclusion/decision report. Pending implementation
+keeps the run failed; a qualification-only exit explicitly reports external
+acceptance pending and leaves the issues open. Iteration-budget exhaustion with
+unresolved scope is not reported as completed delivery.
+
 ## Safety, failures and observability
 
 - The assessment agent runs in a fresh worktree without bootstrap hooks. The
@@ -104,6 +132,10 @@ workflow owns isolation of its assessor and its verifier configuration.
 - Before publication, the host re-fetches the full inventory and each target.
   It changes only ready/blocked label deltas, not bodies, comments, issue state,
   unrelated labels or dependency edges. Unchanged decisions make no API writes.
+- After all per-issue readbacks, the host re-fetches the whole scope and checks
+  it against the expected published snapshot, then checks HEAD/branch/source
+  again. Concurrent changes to already-published or previously untouched issues
+  fail the stage; the journal preserves applied/pending outcomes for reconciliation.
 - Publication is optimistic, not a multi-issue GitHub transaction. Concurrent
   edits/API failure can leave a partial update; readback failure stops the next
   planner. Inspect the audit and rerun fresh assessment—do not blindly replay an
@@ -112,6 +144,9 @@ workflow owns isolation of its assessor and its verifier configuration.
   (normally `.git/sandcastle/readiness/`), with private permissions. They include
   full issue contracts; do not publish them. `auditPath` is printed in the log.
   Startup reports never claim that a fresh merge gate ran.
+  Updates use private temporary files, fsync and atomic rename, preserving the
+  last durable audit if a later write is interrupted. Directory fsync is used on
+  supported POSIX local filesystems; this is not a distributed-storage guarantee.
 - The dashboard shows startup and post-merge readiness nodes, failure state and
   decision summaries. It remains local/read-only and needs no Docker itself.
 

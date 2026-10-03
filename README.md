@@ -189,6 +189,15 @@ stop unsafe promotions. Repository routing also applies to task reads/closure.
 See [readiness configuration and verifier contract](docs/readiness.md) before
 enabling it. This does not retrofit existing project configurations.
 
+Reviewed workflows refresh the selected contracts before creating worktrees,
+fork from the admitted source commit, and require completed implementation and
+review before merge. They stop on no progress and report pending qualification
+instead of treating an empty execution frontier as product acceptance.
+Custom workflows can use `inspectGitHubReadinessBacklog()` and
+`admitGitHubReadinessBatch()` for the same host checks. See the
+[kit-demo handoff inventory and migration guide](docs/automation-handoff.md)
+for the core/profile split and the recovery capabilities still requiring work.
+
 For custom workflows, wrap the existing agent call and forward `logging`:
 
 ```typescript

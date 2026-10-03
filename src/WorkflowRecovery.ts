@@ -3,9 +3,10 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Data, Effect } from "effect";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { hostname } from "node:os";
 import { z } from "zod";
+import { writePrivateRecord } from "./writePrivateRecord.js";
 
 /** Recovery stopped before authorizing further workflow execution. */
 class WorkflowRecoveryError extends Data.TaggedError("WorkflowRecoveryError")<{
@@ -123,20 +124,8 @@ function json(value: unknown): string {
 }
 
 const write = (fs: FileSystem.FileSystem, path: string, value: unknown) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const encoded = yield* attempt(() => json(value));
-      const temporary = path + "." + randomUUID() + ".tmp";
-      const file = yield* fs.open(temporary, { flag: "wx", mode: 0o600 });
-      yield* file.writeAll(new TextEncoder().encode(encoded));
-      yield* file.sync;
-      yield* fs.rename(temporary, path);
-      // Persist the rename before permitting another side effect (POSIX local filesystems).
-      if (process.platform !== "win32") {
-        const directory = yield* fs.open(dirname(path));
-        yield* directory.sync;
-      }
-    }),
+  attempt(() => json(value)).pipe(
+    Effect.flatMap((encoded) => writePrivateRecord(fs, path, encoded)),
   );
 
 const ownerSchema = z.object({

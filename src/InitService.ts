@@ -1607,7 +1607,7 @@ async function syncCodeGraph(sandbox: sandcastle.Sandbox): Promise<void> {
       "sandbox: codexSandbox(BASE_BRANCH),",
     );
     const reviewStart =
-      /if \(sandbox && implement\.commits\.length > 0\) \{\s*/.exec(
+      /if \(sandbox && implementationCommits\.length > 0\) \{\s*/.exec(
         content,
       )?.[0];
     if (!reviewStart)

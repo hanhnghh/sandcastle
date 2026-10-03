@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { writePrivateRecord } from "./writePrivateRecord.js";
 
 /** A readiness run stopped without authorizing further planning. */
 class ReadinessError extends Data.TaggedError("ReadinessError")<{
@@ -299,10 +300,255 @@ export type GitHubReadinessInventoryOptions = Pick<
   | "holdLabels"
 >;
 
+/** A host diagnosis of one issue; it never authorizes publication or execution. */
+export interface ReadinessExclusion {
+  /** Explicit task kind; qualification and meta tasks have no implementation admission. */
+  kind: "implementation" | "qualification" | "meta";
+  /** Full contract retained for project-owned gate/qualification diagnostics. */
+  issue: ReadinessIssue;
+  /** Every applicable deterministic exclusion, not just the first failure. */
+  reasons: {
+    /** Machine-readable reason for excluding this issue. */
+    code:
+      | "not-open"
+      | "out-of-scope"
+      | "blocked-label"
+      | "missing-ready-label"
+      | "manual-hold"
+      | "unresolved-dependency"
+      | "not-implementation"
+      | "dependency-cycle";
+    /** Tracker facts and the next check required; not a gate satisfaction claim. */
+    detail: string;
+  }[];
+}
+
+/** Full scoped backlog plus the current execution frontier at one clean checkout. */
+export interface GitHubReadinessBacklog {
+  /** Complete input for project-specific gate/evidence and qualification policy. */
+  snapshot: ReadinessSnapshot;
+  /** Named integration checkout captured with the source HEAD. */
+  branch: string;
+  /** Issues passing the host's state, hold, kind and dependency checks. */
+  eligible: ReadinessIssue[];
+  /** Scoped issues that still remain; an empty eligible list is not completion. */
+  excluded: ReadinessExclusion[];
+}
+
+/** A selected batch bound to the source and contracts the planner actually saw. */
+export interface GitHubReadinessBatch {
+  /** Original planning snapshot, not a newly substituted inventory. */
+  snapshot: ReadinessSnapshot;
+  /** Integration checkout used during planning. */
+  branch: string;
+  /** Unique, positive issue numbers selected by the planner. */
+  issues: number[];
+}
+
+/** Fresh execution contracts and immutable source baseline for worktree creation. */
+export interface GitHubReadinessAdmission {
+  /** Commit from which new issue branches must fork. */
+  head: string;
+  /** Integration branch that must remain checked out until merge. */
+  branch: string;
+  /** Selected issues after host refresh and contract equality checks. */
+  issues: ReadinessIssue[];
+}
+
+function issueKind(issue: ReadinessIssue): ReadinessExclusion["kind"] {
+  if (
+    issue.labels.some((label) => label.toLowerCase() === "live-validation") ||
+    /\*\*Kind:\*\*\s*live-validation\b/i.test(issue.body)
+  )
+    return "qualification";
+  if (
+    issue.labels.some((label) =>
+      ["meta", "prd", "epic", "spec", "tracking"].includes(label.toLowerCase()),
+    ) ||
+    /\*\*Kind:\*\*\s*meta\b/i.test(issue.body)
+  )
+    return "meta";
+  return "implementation";
+}
+
+const nonImplementation = (issue: ReadinessIssue) =>
+  issueKind(issue) !== "implementation";
+
+function exclusions(
+  issue: ReadinessIssue,
+  options: GitHubReadinessInventoryOptions,
+): ReadinessExclusion["reasons"] {
+  const reasons: ReadinessExclusion["reasons"] = [];
+  if (issue.state !== "open")
+    reasons.push({
+      code: "not-open",
+      detail: "Refresh the issue state before selection.",
+    });
+  if (!issue.labels.includes(options.scopeLabel))
+    reasons.push({
+      code: "out-of-scope",
+      detail: "Issue is no longer in the configured automation scope.",
+    });
+  if (nonImplementation(issue))
+    reasons.push({
+      code: "not-implementation",
+      detail:
+        "Use the project-owned specification or qualification stage contract.",
+    });
+  if (issue.labels.includes(options.blockedLabel ?? "blocked"))
+    reasons.push({
+      code: "blocked-label",
+      detail: "Resolve the blocker through evidence-backed readiness.",
+    });
+  if (!issue.labels.includes(options.readyLabel ?? "ready-for-agent"))
+    reasons.push({
+      code: "missing-ready-label",
+      detail:
+        "Reassess the full issue contract with the project verifier at this HEAD.",
+    });
+  const holds = issue.labels.filter((label) =>
+    (options.holdLabels ?? ["readiness:hold"]).includes(label),
+  );
+  if (holds.length)
+    reasons.push({
+      code: "manual-hold",
+      detail: `Resolve authoritative holds: ${holds.join(", ")}.`,
+    });
+  for (const dependency of issue.dependencies) {
+    if (dependency.state !== "closed" || dependency.stateReason !== "completed")
+      reasons.push({
+        code: "unresolved-dependency",
+        detail: `${dependency.repository}#${dependency.number} is ${dependency.state}/${dependency.stateReason ?? "unknown"}; require its completed outcome.`,
+      });
+  }
+  return reasons;
+}
+
+async function assertCheckout(cwd: string, head: string, branch: string) {
+  if (
+    (await git(cwd, "rev-parse", "HEAD")) !== head ||
+    (await git(cwd, "branch", "--show-current")) !== branch ||
+    (await git(cwd, "status", "--porcelain"))
+  )
+    fail("Source checkout changed; refresh planning before admitting a batch");
+}
+
+async function inspectBacklog(
+  options: GitHubReadinessInventoryOptions,
+): Promise<GitHubReadinessBacklog> {
+  const head = await git(options.cwd, "rev-parse", "HEAD");
+  const branch = await git(options.cwd, "branch", "--show-current");
+  if (!branch) fail("Batch inspection requires a named integration branch");
+  await assertCheckout(options.cwd, head, branch);
+  const input = await snapshot(options, head);
+  await assertCheckout(options.cwd, head, branch);
+  const byNumber = new Map(input.issues.map((issue) => [issue.number, issue]));
+  const visited = new Set<number>();
+  const cycles = new Set<number>();
+  const visit = (number: number, stack: number[]) => {
+    const offset = stack.indexOf(number);
+    if (offset !== -1) {
+      stack.slice(offset).forEach((id) => cycles.add(id));
+      return;
+    }
+    if (visited.has(number)) return;
+    for (const dependency of byNumber.get(number)!.dependencies)
+      if (
+        dependency.repository === options.repository &&
+        byNumber.has(dependency.number) &&
+        (dependency.state !== "closed" ||
+          dependency.stateReason !== "completed")
+      )
+        visit(dependency.number, [...stack, number]);
+    visited.add(number);
+  };
+  for (const issue of input.issues) visit(issue.number, []);
+  const excluded: ReadinessExclusion[] = [];
+  const eligible: ReadinessIssue[] = [];
+  for (const issue of input.issues) {
+    const reasons = exclusions(issue, options);
+    if (cycles.has(issue.number))
+      reasons.push({
+        code: "dependency-cycle",
+        detail:
+          "Resolve the explicit dependency cycle before selecting work; relabeling cannot resolve it.",
+      });
+    if (reasons.length)
+      excluded.push({ kind: issueKind(issue), issue, reasons });
+    else eligible.push(issue);
+  }
+  return { snapshot: input, branch, eligible, excluded };
+}
+
+/** Inspect all scoped issues asynchronously without changing GitHub. Product gates stay profile-owned. */
+export function inspectGitHubReadinessBacklog(
+  options: GitHubReadinessInventoryOptions,
+): Promise<GitHubReadinessBacklog> {
+  return Effect.runPromise(
+    Effect.tryPromise({
+      try: () => inspectBacklog(options),
+      catch: (cause) =>
+        new ReadinessError({
+          message: "Cannot inspect readiness backlog",
+          cause,
+        }),
+    }),
+  );
+}
+
+/** Refresh once before any worktree starts; reject changed source, eligibility or selected contracts. */
+export function admitGitHubReadinessBatch(
+  options: GitHubReadinessInventoryOptions,
+  batch: GitHubReadinessBatch,
+): Promise<GitHubReadinessAdmission> {
+  return Effect.runPromise(
+    Effect.tryPromise({
+      try: async () => {
+        if (
+          batch.snapshot.repository !== options.repository ||
+          !batch.branch ||
+          new Set(batch.issues).size !== batch.issues.length ||
+          batch.issues.some(
+            (number) => !Number.isSafeInteger(number) || number <= 0,
+          )
+        )
+          fail("Invalid batch identity or duplicate issue selection");
+        await assertCheckout(options.cwd, batch.snapshot.head, batch.branch);
+        const fresh = await inspectBacklog(options);
+        const issues = batch.issues.map((number) => {
+          const before = batch.snapshot.issues.find(
+            (issue) => issue.number === number,
+          );
+          const current = fresh.eligible.find(
+            (issue) => issue.number === number,
+          );
+          if (!before || !current || !same(before, current))
+            fail(
+              `Issue #${number} changed or is no longer eligible; refresh the plan`,
+            );
+          return current;
+        });
+        await assertCheckout(options.cwd, batch.snapshot.head, batch.branch);
+        return { head: batch.snapshot.head, branch: batch.branch, issues };
+      },
+      catch: (cause) =>
+        new ReadinessError({
+          message: `Batch admission failed: ${String(cause)}`,
+          cause,
+        }),
+    }),
+  );
+}
+
 async function snapshot(
   options: GitHubReadinessInventoryOptions,
   head: string,
 ): Promise<ReadinessSnapshot> {
+  if (
+    !/^[\w.-]+\/[\w.-]+$/.test(options.repository) ||
+    !options.scopeLabel.trim()
+  )
+    fail("Explicit repository and scope label required");
   return {
     repository: options.repository,
     head,
@@ -363,21 +609,7 @@ export function loadGitHubReadinessInventory(
       try: async () =>
         (
           await snapshot(options, await git(options.cwd, "rev-parse", "HEAD"))
-        ).issues.filter(
-          (issue) =>
-            issue.state === "open" &&
-            issue.labels.includes(options.scopeLabel) &&
-            issue.labels.includes(options.readyLabel ?? "ready-for-agent") &&
-            !issue.labels.includes(options.blockedLabel ?? "blocked") &&
-            !issue.labels.some((label) =>
-              (options.holdLabels ?? ["readiness:hold"]).includes(label),
-            ) &&
-            issue.dependencies.every(
-              (dependency) =>
-                dependency.state === "closed" &&
-                dependency.stateReason === "completed",
-            ),
-        ),
+        ).issues.filter((issue) => exclusions(issue, options).length === 0),
       catch: (cause) =>
         new ReadinessError({
           message: "Cannot load readiness-aware planner inventory",
@@ -412,9 +644,8 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
       applied: [],
     };
     const persist = () =>
-      fs.writeFileString(auditPath, JSON.stringify(audit, null, 2), {
-        mode: 0o600,
-      });
+      writePrivateRecord(fs, auditPath, JSON.stringify(audit, null, 2));
+    let sourceBranch = "";
     yield* persist();
     const outcome = yield* Effect.gen(function* () {
       const input = yield* attempt(async () => {
@@ -428,6 +659,8 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
         if (await git(options.cwd, "status", "--porcelain"))
           fail("Readiness requires a clean integration checkout");
         const head = await git(options.cwd, "rev-parse", "HEAD");
+        sourceBranch = await git(options.cwd, "branch", "--show-current");
+        audit.branch = sourceBranch;
         if (options.trigger.kind === "post-merge") {
           const trigger = options.trigger;
           if (
@@ -475,6 +708,8 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
       const assertSource = async () => {
         if (
           (await git(options.cwd, "rev-parse", "HEAD")) !== head ||
+          (await git(options.cwd, "branch", "--show-current")) !==
+            sourceBranch ||
           (await git(options.cwd, "status", "--porcelain"))
         )
           fail("Source changed during readiness");
@@ -483,6 +718,7 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
       const applied: number[] = [];
       audit.applied = applied;
       if (mode === "apply") {
+        const published = structuredClone(input);
         const ready = options.readyLabel ?? "ready-for-agent";
         const blocked = options.blockedLabel ?? "blocked";
         const holds = options.holdLabels ?? ["readiness:hold"];
@@ -538,16 +774,7 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
                     `Project verifier did not approve decision #${issue.number}`,
                   );
                 if (decision.status === "ready-for-agent") {
-                  if (
-                    issue.labels.some((label) =>
-                      ["meta", "prd", "epic", "live-validation"].includes(
-                        label.toLowerCase(),
-                      ),
-                    ) ||
-                    /\*\*Kind:\*\*\s*(?:meta|live-validation)\b/i.test(
-                      issue.body,
-                    )
-                  )
+                  if (nonImplementation(issue))
                     fail(
                       `Non-implementation issue #${issue.number} cannot be ready`,
                     );
@@ -641,12 +868,24 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
               fail(
                 `Readback mismatch for #${change.issue.number}; publication may be partial`,
               );
+            published.issues[
+              published.issues.findIndex(
+                (issue) => issue.number === after.number,
+              )
+            ] = after;
           });
           applied.push(change.issue.number);
           delete audit.pending;
           yield* persist();
         }
         yield* attempt(assertSource);
+        yield* attempt(async () => {
+          if (!same(published, await snapshot(options, head)))
+            fail(
+              "Tracker changed during publication; reconcile the journal against a fresh snapshot",
+            );
+          await assertSource();
+        });
       }
       audit.status = mode === "apply" ? "verified" : "reported";
       return { mode, assessment, applied, auditPath };

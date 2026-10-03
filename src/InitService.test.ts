@@ -66,7 +66,7 @@ describe("InitService scaffold", () => {
     });
     const main = await readFile(join(dir, ".sandcastle/main.mts"), "utf8");
     expect(main.indexOf('await reassess(1, { kind: "startup" })')).toBeLessThan(
-      main.indexOf("const plan = await planNextBatch(iteration)"),
+      main.indexOf("const planned = await planNextBatch(iteration)"),
     );
     expect(main).toContain('kind: "post-merge"');
     expect(main).toContain('role: "readiness"');
@@ -1840,7 +1840,8 @@ android {
         readFile(join(dir, ".sandcastle", "main.mts"), "utf-8"),
         readFile(join(dir, ".sandcastle", "merge-prompt.md"), "utf-8"),
       ]);
-      expect(main).toContain('const batchBaseSha = (await runHost("git"');
+      expect(main).toContain("const batchBaseSha = planned.head;");
+      expect(main).toContain("baseBranch: batchBaseSha");
       expect(main).not.toContain("execFileSync");
       expect(main).toContain("BATCH_BASE_SHA: batchBaseSha");
       expect(prompt).toContain("{{BATCH_BASE_SHA}}");
