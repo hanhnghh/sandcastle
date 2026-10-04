@@ -6,7 +6,7 @@ The runner uses the locally built SDK, the guarded reviewed workflow, and
 the explicit fork/scope from `readiness.json`. It does not push source or publish
 packages. Parent PRD acceptance remains manual.
 
-Roles use `gpt-5.6-sol`: planner/implementer low, reviewer/merger/readiness high.
+Roles use `gpt-6.1-sol`: planner/implementer low, reviewer/merger/readiness high.
 Limits are ten batches. The project-local `codex-home` holds ChatGPT subscription
 auth/session storage, is ignored by Git and is never copied from other projects.
 Complete `CODEX_HOME="$PWD/.sandcastle/codex-home" codex login` before starting.

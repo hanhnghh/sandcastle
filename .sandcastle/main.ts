@@ -140,7 +140,7 @@ function prepareDependencies(branch: string): string {
 }
 
 const codexAgent = (effort: "low" | "medium" | "high" | "xhigh" = "high") =>
-  sandcastle.codex("gpt-5.6-sol", {
+  sandcastle.codex("gpt-6.1-sol", {
     effort,
     sessionStorage: {
       hostSessionsDir: `${CODEX_HOME_HOST}/sessions`,
