@@ -12,6 +12,7 @@
   "rootPackage": {
     "cwd": ".",
     "focusedTestHint": "npm test -- <affected-test-files> --run",
+    "branchChecks": ["npm run typecheck", "npm run build"],
     "authoritativeGates": [
       "npm run typecheck",
       "npm test",

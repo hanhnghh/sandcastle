@@ -194,15 +194,19 @@ macOS node_modules into containers. Focused tests must exercise each changed
 public SDK, CLI, generated consumer or HTTP/browser contract. Existing provider
 integration fixtures are not substitutes for new operator-web regression tests.
 
-Run `bash .sandcastle/scripts/verify-package.sh root` at package completion.
-The merger runs `bash .sandcastle/scripts/verify-affected.sh <batch-base-sha>`
-against the immutable batch baseline. Record proven pre-existing failures
+Read `/home/agent/EVIDENCE_POLICY.md` for receipt applicability and recovery.
+Implementer/reviewer verify focused behavior and affected branch checks; only
+the integration owner's future gate may be `pending-integration`. Their COMPLETE
+signal means branch-ready, not issue closure. The merger runs
+`bash .sandcastle/scripts/verify-affected.sh <batch-base-sha>` against the immutable
+batch baseline on the final committed candidate. Record proven pre-existing failures
 explicitly; never mask a new failure or call an unexecuted command green.
 
 Self-host runs target `hanhnghh/sandcastle`, scope `scope:operator-admin`.
 Only verified listed implementation issues may be closed. Parent PRD #1,
 source pushes, npm releases and registry account changes remain maintainer-owned.
 This self-host runner opts into apply only for the pinned operator backlog in
-readiness-policy.json, after independent Linux gate execution. Unknown/edited
+readiness-policy.json, after independent Linux gate execution (still required;
+the readiness verifier has no reusable full-gate receipt mechanism). Unknown/edited
 contracts and parent-PRD changes require renewed maintainer approval. Generic
 consumer scaffolds remain report-only until their own verifier is configured.

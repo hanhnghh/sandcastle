@@ -47,4 +47,12 @@ baseline. Review still covers every changed file and AC, reading full patches in
 bounded chunks or validating large opaque artifacts through producers/consumers.
 Codex input is checked after expansion before invocation; it is never truncated.
 
+FEEDBACK_LOOPS.md assigns focused evidence and lint/type/build checks to the
+implementer/reviewer. Their COMPLETE signal is branch-ready; cumulative checks
+stay `pending-integration` until the normal merger verifies the final integrated
+candidate before closure. EVIDENCE_POLICY.md records receipt provenance and
+invalidation, bounded diagnosis and owned recovery. Readiness still executes its
+independent host gate; a prompt or agent receipt does not enable gate-proof reuse,
+staged closure, crash-resume or container adoption.
+
 Read-only Agent Map: `node dist/main.js dashboard --port 0`.

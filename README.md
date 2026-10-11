@@ -84,16 +84,39 @@ The Codex AFK execution profile currently detects Node.js/npm and native
 Android/Gradle projects. Init generates:
 
 - `.sandcastle/project.json` as the machine-readable project profile;
-- `.sandcastle/FEEDBACK_LOOPS.md` with focused and authoritative commands;
+- `.sandcastle/FEEDBACK_LOOPS.md` with focused/branch checks, authoritative
+  integration commands, role ownership and bounded diagnosis;
+- `.sandcastle/EVIDENCE_POLICY.md` with receipt applicability, invalidation,
+  qualification and owned-cleanup rules;
 - a deterministic `.sandcastle/CODING_STANDARDS.md` draft listing detected
   repository sources of truth;
 - executable bootstrap, package-verification, and cumulative merge-gate scripts
   under `.sandcastle/scripts/`.
 
+The reviewed parallel template also scaffolds the role/evidence policies;
+configure its project-specific commands before running it. Implementer and
+reviewer verify all changed contracts with focused evidence and affected
+lint/type/build checks. Their `COMPLETE` signal means branch-ready, not task
+closure. Only the integration owner's future gate may be `pending-integration`;
+missing acceptance evidence cannot be deferred this way. The normal merger owns
+one cumulative full gate on the final integrated source before closing tasks.
+An explicitly approved staged-host workflow may own that gate and closure
+instead; the policies alone do not enable staged qualification.
+
+Reuse records the original receipt, tested source, environment and covered
+contract without pretending it is a new run. Full-gate reuse requires the
+workflow's existing validated proof mechanism; otherwise the gate must run.
+Independent readiness verifiers retain their own requirements. These policies
+do not add a universal receipt store, crash-resume or container adoption.
+
 For Node/npm, dependencies are installed inside the Linux sandbox with `npm ci`
 when a `package-lock.json` is present. Sandcastle mounts an isolated npm download
 cache instead of copying host `node_modules`, avoiding host/sandbox native-binary
 incompatibilities.
+
+Codex AFK uses one sequential ready script: authentication and policy checks,
+sandbox-native dependency bootstrap, then CodeGraph synchronization. Separate
+ready hooks are not used for dependent initialization steps.
 
 For Android/Gradle, init detects the Gradle wrapper, Android plugin, and
 `compileSdk` from module build files or `gradle/libs.versions.toml`. The generated

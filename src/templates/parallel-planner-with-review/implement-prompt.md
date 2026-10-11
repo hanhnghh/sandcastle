@@ -1,6 +1,6 @@
 # MISSION
 
-Complete task {{TASK_ID}} — {{ISSUE_TITLE}} — on branch `{{BRANCH}}`.
+Implement task {{TASK_ID}} — {{ISSUE_TITLE}} — on branch `{{BRANCH}}`.
 Work autonomously to a verified commit. The task is the scope boundary; the
 repository and its existing public contracts are the source of implementation
 truth. Resolve questions from those sources before treating them as blockers.
@@ -20,6 +20,9 @@ Before editing:
 2. Inspect `git status`, the last ten commits, relevant package manifests,
    public interfaces, and existing tests.
 
+Read `.sandcastle/FEEDBACK_LOOPS.md` for role-owned executable checks and
+`.sandcastle/EVIDENCE_POLICY.md` before planning evidence or reusing receipts.
+
 # EXPLORATION
 
 Exploration is complete only when the current behavior, required behavior,
@@ -32,7 +35,7 @@ contracts and behavior.
 
 Before production edits, create and maintain this matrix:
 
-`ID | source | requirement | public seam | exact test | command | status`
+`ID | source | requirement | public seam | exact test | command | evidence (new/reused) | receipt/applicability | owner | status`
 
 Include every acceptance criterion and every explicitly named scenario or edge
 case. Include parent-spec requirements only when referenced by the task or
@@ -49,7 +52,9 @@ standards, tests, or code is not.
 
 Every row must name executable evidence. Use `not-applicable` only when no
 meaningful executable behavior exists, and record the contract-based reason.
-An unmapped or unverified row keeps completion red regardless of suite status.
+An unmapped or unverified branch-required row keeps branch-ready red regardless
+of suite status. The integration owner's future checks are accounted for
+separately as `pending-integration`.
 
 # EXECUTION — TRACER-BULLET TDD
 
@@ -86,27 +91,31 @@ task or standards, and keep the focused loop green while doing it.
 
 # FEEDBACK LOOPS
 
-After each slice, run the narrowest red-capable command. At completion, run:
+After each slice, run the narrowest red-capable command. Before selecting more
+checks, classify new/reused evidence in the ledger under `.sandcastle/EVIDENCE_POLICY.md`.
 
-- every focused test recorded in the ledger;
-- one authoritative gate from `@.sandcastle/CODING_STANDARDS.md` for each
-  affected package;
-- `git diff --check` and a final scoped diff/status inspection.
+At branch completion, verify every focused requirement and affected branch checks
+from `.sandcastle/FEEDBACK_LOOPS.md`, then run `git diff --check`
+and inspect the scoped diff/status. Use applicable receipts rather than replaying
+valid checks; record their source/environment/contract and original timestamps.
+The integration owner runs the authoritative gate on the exact integrated source.
+Record its command and owner as `pending-integration`; it is not a pass or waiver.
+An explicit acceptance or mandatory verifier may require an earlier full gate.
 
-Run commands from the affected package and respect its package manager and
-lockfile. Reuse available caches. Install dependencies only when the required
-package executable is absent. Do not repeatedly run unchanged repository-wide
-suites. Diagnose failures at their cause; never report an unexecuted command as
-passing. Record environment-dependent skips and proven pre-existing failures
-explicitly—an in-scope failure remains red.
+Run commands in the affected package with its declared build tool and lockfile.
+Reuse caches and install dependencies only when needed. Follow the bounded
+diagnosis loop in `.sandcastle/FEEDBACK_LOOPS.md` when repeated attempts stop
+producing new evidence. Record environmental or proven pre-existing failures
+explicitly. Missing or failing branch-required evidence blocks branch-ready.
 
 # COMPLETION GATE
 
-The task is complete only when all of the following are true:
+The branch is branch-ready for review only when all of the following are true:
 
-- every ledger row is `pass` or justified `not-applicable`;
+- every branch-required row is `pass` or justified `not-applicable`; only the
+  integration owner's future checks may be `pending-integration`;
 - changed behavior has focused regression evidence at an approved public seam;
-- focused checks and every affected-package authoritative gate are green;
+- focused behavior evidence and affected branch checks are green;
 - the final diff is task-scoped and contains no unrelated churn, secrets,
   local state, generated-file mistakes, or undocumented compatibility change;
 - localized user-facing documentation agrees across supported languages when
@@ -129,6 +138,8 @@ output summary. Do not create a completion commit. Then emit:
 
 <promise>BLOCKED</promise>
 
-Immediately before completion, print the final requirement ledger. Then emit:
+Immediately before completion, print the final requirement ledger including
+pending integration checks. This signal means branch-ready, not issue-complete;
+leave closure to the verified integration owner. Then emit:
 
 <promise>COMPLETE</promise>

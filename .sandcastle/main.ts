@@ -78,6 +78,8 @@ const CODING_STANDARDS_HOST = ".sandcastle/CODING_STANDARDS.md";
 const CODING_STANDARDS_SANDBOX = "/home/agent/CODING_STANDARDS.md";
 const FEEDBACK_LOOPS_HOST = ".sandcastle/FEEDBACK_LOOPS.md";
 const FEEDBACK_LOOPS_SANDBOX = "/home/agent/FEEDBACK_LOOPS.md";
+const EVIDENCE_POLICY_HOST = ".sandcastle/EVIDENCE_POLICY.md";
+const EVIDENCE_POLICY_SANDBOX = "/home/agent/EVIDENCE_POLICY.md";
 const NPM_CACHE_HOST = ".sandcastle/cache/npm";
 const NPM_CACHE_SANDBOX = "/home/agent/.npm";
 const CODEGRAPH_CACHE_ROOT_HOST = ".sandcastle/cache/codegraph";
@@ -119,6 +121,11 @@ const codexSandbox = (
       {
         hostPath: FEEDBACK_LOOPS_HOST,
         sandboxPath: FEEDBACK_LOOPS_SANDBOX,
+        readonly: true,
+      },
+      {
+        hostPath: EVIDENCE_POLICY_HOST,
+        sandboxPath: EVIDENCE_POLICY_SANDBOX,
         readonly: true,
       },
       { hostPath: NPM_CACHE_HOST, sandboxPath: NPM_CACHE_SANDBOX },

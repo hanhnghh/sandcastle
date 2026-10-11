@@ -68,8 +68,8 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   const branches=[...new Set(prompt.match(/sandcastle\\/issue-\\d+/g))];
   for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); execFileSync('gh',['issue','close',String(number)]); }
 } else if(prompt.includes('Review task ')) { const number=prompt.match(/Review task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('review:'+number); }
-else if(prompt.includes('Complete task ')) {
-  const number=prompt.match(/Complete task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('implement:'+number);
+else if(prompt.includes('Implement task ')) {
+  const number=prompt.match(/Implement task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('implement:'+number);
   if(process.env.READINESS_FIXTURE_NO_PROGRESS!=='1' && !(number==='22' && process.env.READINESS_FIXTURE_RETAINED==='1')) {fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);}
   if(process.env.READINESS_FIXTURE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
 }

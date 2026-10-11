@@ -48,6 +48,98 @@ const runScaffold = (repoDir: string, options?: Partial<ScaffoldOptions>) =>
 // ---------------------------------------------------------------------------
 
 describe("InitService scaffold", () => {
+  it.each(["parallel-planner-with-review", "codex-afk"])(
+    "%s assigns focused branch evidence and a cumulative integration owner",
+    async (templateName) => {
+      const dir = await makeDir();
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          scripts: {
+            test: "vitest run",
+            typecheck: "tsgo --noEmit",
+            build: "tsup",
+          },
+        }),
+      );
+      await runScaffold(dir, {
+        templateName,
+        ...(templateName === "codex-afk"
+          ? { agent: codexAgent, agentAuth: "chatgpt" as const }
+          : {}),
+      });
+      const configDir = join(dir, ".sandcastle");
+      const [policy, feedback, implement, review, merge] = await Promise.all([
+        readFile(join(configDir, "EVIDENCE_POLICY.md"), "utf8"),
+        readFile(join(configDir, "FEEDBACK_LOOPS.md"), "utf8"),
+        readFile(join(configDir, "implement-prompt.md"), "utf8"),
+        readFile(join(configDir, "review-prompt.md"), "utf8"),
+        readFile(join(configDir, "merge-prompt.md"), "utf8"),
+      ]);
+      expect(policy).toContain("# Minimum sufficient evidence");
+      const policyText = policy.replace(/\s+/g, " ");
+      expect(policyText).toContain("receipt path/hash");
+      expect(policy).toContain("original result and timestamps");
+      expect(policyText).toContain("Otherwise run the required gate");
+      expect(policy).toContain("proved-owned");
+      expect(policy).not.toContain("Shopify");
+      expect(feedback).toContain("## Verification by role");
+      expect(feedback).toContain("## Bounded diagnosis");
+      expect(feedback).toContain("two attempts");
+      expect(feedback).toContain("20 minutes");
+      expect(feedback).toContain("Approved staged host");
+      for (const prompt of [implement, review]) {
+        expect(prompt).toContain("EVIDENCE_POLICY.md");
+        expect(prompt).toContain("pending-integration");
+        expect(prompt).toContain("branch-ready");
+        expect(prompt).not.toContain("one authoritative gate from");
+        expect(prompt).not.toContain(
+          "every affected-package authoritative gate are green",
+        );
+      }
+      expect(merge).toContain("EVIDENCE_POLICY.md");
+      expect(merge).toContain("exact integrated source");
+      expect(merge).toContain("Close tasks only after the cumulative gate");
+    },
+  );
+
+  it("keeps detected lint/type/build branch checks separate from the full test gate", async () => {
+    const dir = await makeDir();
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({
+        scripts: {
+          lint: "eslint .",
+          typecheck: "tsgo --noEmit",
+          build: "tsup",
+          test: "vitest run",
+        },
+      }),
+    );
+    await runScaffold(dir, { templateName: "codex-afk", agent: codexAgent });
+    const configDir = join(dir, ".sandcastle");
+    const profile = JSON.parse(
+      await readFile(join(configDir, "project.json"), "utf8"),
+    );
+    expect(profile.rootPackage.branchChecks).toEqual([
+      "npm run lint",
+      "npm run typecheck",
+      "npm run build",
+    ]);
+    expect(profile.rootPackage.authoritativeGates).toEqual([
+      "npm run lint",
+      "npm run typecheck",
+      "npm test",
+      "npm run build",
+    ]);
+    const gate = await readFile(
+      join(configDir, "scripts", "verify-package.sh"),
+      "utf8",
+    );
+    expect(gate).toContain("npm run lint");
+    expect(gate).toContain("npm test");
+  });
+
   it("scaffolds scoped report-only readiness before planning and after verified merge", async () => {
     const dir = await makeDir();
     await runScaffold(dir, {
@@ -265,6 +357,7 @@ describe("InitService scaffold", () => {
       rootPackage: {
         cwd: ".",
         focusedTestHint: "npm test -- <affected-test-files> --run",
+        branchChecks: ["npm run typecheck", "npm run build"],
         authoritativeGates: ["npm run typecheck", "npm test", "npm run build"],
       },
     });
@@ -272,6 +365,10 @@ describe("InitService scaffold", () => {
     expect(feedback).toContain("npm ci");
     expect(feedback).toContain("npm run typecheck");
     expect(feedback).toContain("scripts/verify-affected.sh");
+    expect(feedback).toContain("## Branch checks");
+    expect(
+      feedback.split("## Branch checks")[1]?.split("## Authoritative")[0],
+    ).not.toContain("`npm test`");
     expect(standards).toContain("## Detected Sources of Truth");
     expect(standards).toContain("`CONTRIBUTING.md`");
     expect(bootstrap).toContain("npm ci");
@@ -349,6 +446,7 @@ android {
         cwd: ".",
         focusedTestHint:
           './gradlew :<module>:testDebugUnitTest --tests "<test-class>"',
+        branchChecks: ["./gradlew lint", "./gradlew assembleDebug"],
         authoritativeGates: [
           "./gradlew test",
           "./gradlew lint",
@@ -360,6 +458,8 @@ android {
     expect(feedback).toContain("./gradlew --no-daemon help");
     expect(feedback).toContain("./gradlew lint");
     expect(feedback).toContain("do not require an emulator");
+    expect(feedback).toContain("## Verification by role");
+    expect(feedback).toContain("pending-integration");
     expect(bootstrap).toContain("./gradlew --no-daemon help");
     expect(verifyProject).toContain("./gradlew test");
     expect(verifyProject).toContain("./gradlew lint");
@@ -522,9 +622,24 @@ android {
     expect(main).toContain('NPM_CACHE_HOST = ".sandcastle/cache/npm"');
     expect(main).toContain('NPM_CACHE_SANDBOX = "/home/agent/.npm"');
     expect(main).toContain("sandboxPath: FEEDBACK_LOOPS_SANDBOX");
+    expect(main).toContain(
+      'EVIDENCE_POLICY_SANDBOX = "/home/agent/EVIDENCE_POLICY.md"',
+    );
+    expect(main).toContain("sandboxPath: EVIDENCE_POLICY_SANDBOX");
+    const ready = await readFile(
+      join(configDir, "scripts", "ready.sh"),
+      "utf8",
+    );
+    expect(ready).toContain("test -r /home/agent/EVIDENCE_POLICY.md");
+    expect(ready.indexOf("codex login status")).toBeLessThan(
+      ready.indexOf("bash .sandcastle/scripts/bootstrap.sh"),
+    );
+    expect(ready.indexOf("bash .sandcastle/scripts/bootstrap.sh")).toBeLessThan(
+      ready.indexOf("codegraph sync"),
+    );
     expect(main).toContain("sandboxPath: NPM_CACHE_SANDBOX");
     expect(main).toContain(
-      '{ command: "bash .sandcastle/scripts/bootstrap.sh" }',
+      '{ command: "bash .sandcastle/scripts/ready.sh", timeoutMs: 180_000 }',
     );
     expect(main).toContain("const copyToWorktree: string[] = [];");
     expect(main).not.toContain('{ command: "npm install" }');
@@ -563,10 +678,10 @@ android {
       expect(prompt).toContain("/home/agent/CODING_STANDARDS.md");
       expect(prompt).toContain("/home/agent/FEEDBACK_LOOPS.md");
     }
-    expect(implement).toContain(
-      "authoritative gate from `/home/agent/FEEDBACK_LOOPS.md`",
-    );
-    expect(review).toContain("Run one authoritative gate from");
+    expect(implement).toContain("/home/agent/EVIDENCE_POLICY.md");
+    expect(review).toContain("/home/agent/EVIDENCE_POLICY.md");
+    expect(implement).toContain("pending-integration");
+    expect(review).toContain("affected branch checks");
     expect(merge).toContain(
       'bash .sandcastle/scripts/verify-affected.sh "{{BATCH_BASE_SHA}}"',
     );

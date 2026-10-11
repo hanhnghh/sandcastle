@@ -692,7 +692,7 @@ export function getNextStepsLines(
       "Next steps:",
       "1. Set GitHub issue-tracker credentials in .sandcastle/.env (see .sandcastle/.env.example)",
       `2. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
-      "3. Review .sandcastle/project.json and the generated .sandcastle/FEEDBACK_LOOPS.md commands",
+      "3. Review .sandcastle/project.json, FEEDBACK_LOOPS.md role-owned commands and EVIDENCE_POLICY.md receipt rules",
       "4. Review and complete the deterministic .sandcastle/CODING_STANDARDS.md draft",
       `5. Install the planner schema validator if needed (${addDependencyCommand(packageManager, "zod")})`,
       "6. Run .sandcastle/scripts/verify-affected.sh against a known base SHA to validate the project gates",
@@ -726,6 +726,11 @@ export function getNextStepsLines(
     if (hasReviewer) {
       lines.push(
         `${step++}. Customize .sandcastle/CODING_STANDARDS.md with your project's standards — the reviewer agent loads it during review`,
+      );
+    }
+    if (template === "parallel-planner-with-review") {
+      lines.push(
+        `${step++}. Configure .sandcastle/FEEDBACK_LOOPS.md checks and review .sandcastle/EVIDENCE_POLICY.md before AFK execution`,
       );
     }
     lines.push(`${step++}. Run \`npm run sandcastle\` to start the agent`);
@@ -777,6 +782,7 @@ interface NodeNpmProjectProfile {
   readonly rootPackage: {
     readonly cwd: ".";
     readonly focusedTestHint: string;
+    readonly branchChecks: readonly string[];
     readonly authoritativeGates: readonly string[];
   };
 }
@@ -798,6 +804,7 @@ interface AndroidGradleProjectProfile {
   readonly rootProject: {
     readonly cwd: ".";
     readonly focusedTestHint: string;
+    readonly branchChecks: readonly string[];
     readonly authoritativeGates: readonly string[];
   };
 }
@@ -963,6 +970,7 @@ const detectAndroidGradleProjectProfile = (
           cwd: ".",
           focusedTestHint:
             './gradlew :<module>:testDebugUnitTest --tests "<test-class>"',
+          branchChecks: ["./gradlew lint", "./gradlew assembleDebug"],
           authoritativeGates: [
             "./gradlew test",
             "./gradlew lint",
@@ -1036,6 +1044,7 @@ const detectNodeNpmProjectProfile = (
       .exists(join(repoDir, "package-lock.json"))
       .pipe(Effect.orElseSucceed(() => false));
     const authoritativeGates = [
+      ...(scripts.lint ? ["npm run lint"] : []),
       ...(scripts.typecheck ? ["npm run typecheck"] : []),
       ...(scripts.test ? ["npm test"] : []),
       ...(scripts.build ? ["npm run build"] : []),
@@ -1064,6 +1073,11 @@ const detectNodeNpmProjectProfile = (
         rootPackage: {
           cwd: ".",
           focusedTestHint,
+          branchChecks: [
+            ...(scripts.lint ? ["npm run lint"] : []),
+            ...(scripts.typecheck ? ["npm run typecheck"] : []),
+            ...(scripts.build ? ["npm run build"] : []),
+          ],
           authoritativeGates,
         },
       },
@@ -1080,7 +1094,30 @@ const detectCodexAfkProjectProfile = (
     return yield* detectNodeNpmProjectProfile(repoDir);
   });
 
-const renderFeedbackLoops = (profile: NodeNpmProjectProfile): string => {
+const readFeedbackRolePolicy = (): Effect.Effect<
+  string,
+  InitError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const content = yield* fs
+      .readFileString(join(getTemplatesDir(), "feedback-policy.md"))
+      .pipe(Effect.mapError((e) => new InitError({ message: e.message })));
+    const start = content.indexOf("## Verification by role");
+    if (start < 0)
+      return yield* Effect.fail(
+        new InitError({
+          message: "Feedback role policy is missing its verification table",
+        }),
+      );
+    return content.slice(start);
+  });
+
+const renderFeedbackLoops = (
+  profile: NodeNpmProjectProfile,
+  rolePolicy: string,
+): string => {
   const gates =
     profile.rootPackage.authoritativeGates.length > 0
       ? profile.rootPackage.authoritativeGates
@@ -1103,7 +1140,14 @@ regenerate these artifacts when the package layout or build system changes.
 - Working directory: \`${profile.rootPackage.cwd}\`
 - Focused test: \`${profile.rootPackage.focusedTestHint}\`
 
-Authoritative gates:
+## Branch checks
+
+${profile.rootPackage.branchChecks.map((command) => `- \`${command}\``).join("\n") || "- No lint/type/build commands were detected; configure affected checks before AFK execution."}
+
+Run these affected checks plus focused contract tests for branch-ready evidence.
+The unfiltered test suite belongs to the integration owner.
+
+## Authoritative full gates (integration owner)
 
 ${gates}
 
@@ -1111,6 +1155,8 @@ ${gates}
 
 Run \`.sandcastle/scripts/verify-affected.sh <batch-base-sha>\`. It validates
 the complete diff from the immutable batch base before tasks may be closed.
+
+${rolePolicy}
 `;
 };
 
@@ -1142,6 +1188,34 @@ persistence, compatibility, testing conventions, and generated-file rules. -->
 const renderShellScript = (commands: readonly string[]): string =>
   ["#!/usr/bin/env bash", "set -euo pipefail", "", ...commands, ""].join("\n");
 
+const scaffoldCodexAfkReadyScript = (
+  configDir: string,
+): Effect.Effect<void, InitError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = join(configDir, "scripts", "ready.sh");
+    yield* fs
+      .writeFileString(
+        path,
+        renderShellScript([
+          "codex login status",
+          "test -r /home/agent/CODING_STANDARDS.md",
+          "test -r /home/agent/FEEDBACK_LOOPS.md",
+          "test -r /home/agent/EVIDENCE_POLICY.md",
+          "bash .sandcastle/scripts/bootstrap.sh",
+          "if test -f .codegraph/codegraph.db; then",
+          "  codegraph sync --quiet .",
+          "else",
+          "  codegraph init .",
+          "fi",
+        ]),
+      )
+      .pipe(Effect.mapError((e) => new InitError({ message: e.message })));
+    yield* fs
+      .chmod(path, 0o755)
+      .pipe(Effect.mapError((e) => new InitError({ message: e.message })));
+  });
+
 const scaffoldNodeNpmProjectProfile = (
   configDir: string,
   detected: {
@@ -1152,6 +1226,7 @@ const scaffoldNodeNpmProjectProfile = (
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const { profile, sources } = detected;
+    const rolePolicy = yield* readFeedbackRolePolicy();
     const scriptsDir = join(configDir, "scripts");
     yield* fs
       .makeDirectory(scriptsDir, { recursive: true })
@@ -1176,7 +1251,7 @@ const scaffoldNodeNpmProjectProfile = (
       },
       {
         path: join(configDir, "FEEDBACK_LOOPS.md"),
-        content: renderFeedbackLoops(profile),
+        content: renderFeedbackLoops(profile, rolePolicy),
         mode: 0o644,
       },
       {
@@ -1235,6 +1310,7 @@ const scaffoldNodeNpmProjectProfile = (
 
 const renderAndroidFeedbackLoops = (
   profile: AndroidGradleProjectProfile,
+  rolePolicy: string,
 ): string => `# Feedback Loops
 
 This file is generated from \`.sandcastle/project.json\` for an Android/Gradle
@@ -1251,17 +1327,30 @@ project. Commands run inside the sandbox from the repository root.
 - Working directory: \`${profile.rootProject.cwd}\`
 - Focused unit test: \`${profile.rootProject.focusedTestHint}\`
 
-Authoritative gates that do not require an emulator:
+## Branch checks
+
+${profile.rootProject.branchChecks.map((command) => `- \`${command}\``).join("\n")}
+
+Run these affected checks plus focused contract tests for branch-ready evidence.
+The unfiltered unit-test suite belongs to the integration owner.
+
+## Authoritative full gates (integration owner)
+
+These commands do not require an emulator:
 
 ${profile.rootProject.authoritativeGates.map((command) => `- \`${command}\``).join("\n")}
 
 Instrumentation tests require an explicitly configured emulator or device and
-are therefore not part of the default AFK completion gate.
+are not included in the default gate. If acceptance requires them, configure
+the device and evidence owner; missing device evidence is not a passing receipt
+or permission to close the task.
 
 ## Cumulative Merge Gate
 
 Run \`.sandcastle/scripts/verify-affected.sh <batch-base-sha>\`. It validates
 the complete diff from the immutable batch base before tasks may be closed.
+
+${rolePolicy}
 `;
 
 const scaffoldAndroidGradleProjectProfile = (
@@ -1274,6 +1363,7 @@ const scaffoldAndroidGradleProjectProfile = (
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const { profile, sources } = detected;
+    const rolePolicy = yield* readFeedbackRolePolicy();
     const scriptsDir = join(configDir, "scripts");
     yield* fs
       .makeDirectory(scriptsDir, { recursive: true })
@@ -1292,7 +1382,7 @@ const scaffoldAndroidGradleProjectProfile = (
       },
       {
         path: join(configDir, "FEEDBACK_LOOPS.md"),
-        content: renderAndroidFeedbackLoops(profile),
+        content: renderAndroidFeedbackLoops(profile, rolePolicy),
         mode: 0o644,
       },
       {
@@ -1499,6 +1589,8 @@ const CODING_STANDARDS_HOST = ".sandcastle/CODING_STANDARDS.md";
 const CODING_STANDARDS_SANDBOX = "/home/agent/CODING_STANDARDS.md";
 const FEEDBACK_LOOPS_HOST = ".sandcastle/FEEDBACK_LOOPS.md";
 const FEEDBACK_LOOPS_SANDBOX = "/home/agent/FEEDBACK_LOOPS.md";
+const EVIDENCE_POLICY_HOST = ".sandcastle/EVIDENCE_POLICY.md";
+const EVIDENCE_POLICY_SANDBOX = "/home/agent/EVIDENCE_POLICY.md";
 const ${cachePrefix}_CACHE_HOST = ${JSON.stringify(project.cache.hostPath)};
 const ${cachePrefix}_CACHE_SANDBOX = ${JSON.stringify(project.cache.sandboxPath)};
 const CODEGRAPH_CACHE_ROOT_HOST = ".sandcastle/cache/codegraph";
@@ -1532,6 +1624,11 @@ const codexSandbox = (branch: string, extraEnv: Record<string, string> = tracker
       {
         hostPath: FEEDBACK_LOOPS_HOST,
         sandboxPath: FEEDBACK_LOOPS_SANDBOX,
+        readonly: true,
+      },
+      {
+        hostPath: EVIDENCE_POLICY_HOST,
+        sandboxPath: EVIDENCE_POLICY_SANDBOX,
         readonly: true,
       },
       { hostPath: ${cachePrefix}_CACHE_HOST, sandboxPath: ${cachePrefix}_CACHE_SANDBOX },
@@ -1576,11 +1673,7 @@ async function syncCodeGraph(sandbox: sandcastle.Sandbox): Promise<void> {
       `const hooks = {
   sandbox: {
     onSandboxReady: [
-      { command: "codex login status" },
-      { command: "test -r /home/agent/CODING_STANDARDS.md" },
-      { command: "test -r /home/agent/FEEDBACK_LOOPS.md" },
-      { command: codeGraphSyncCommand, timeoutMs: 120_000 },
-      { command: "bash .sandcastle/scripts/bootstrap.sh" },
+      { command: "bash .sandcastle/scripts/ready.sh", timeoutMs: 180_000 },
     ],
   },
 };`,
@@ -1660,42 +1753,19 @@ tests and executable feedback gates establish correctness.
       const content = yield* fs
         .readFileString(promptPath)
         .pipe(Effect.mapError((e) => new Error(e.message)));
-      const withStandardsMount = content.replaceAll(
-        "@.sandcastle/CODING_STANDARDS.md",
-        "/home/agent/CODING_STANDARDS.md",
-      );
-      let withFeedback = withStandardsMount;
-      if (filename === "implement-prompt.md") {
-        withFeedback = replaceRequired(
-          withFeedback,
-          `1. Read \`/home/agent/CODING_STANDARDS.md\` completely.
-2. Inspect \`git status\`, the last ten commits, relevant package manifests,`,
-          `1. Read \`/home/agent/CODING_STANDARDS.md\` completely.
-2. Read \`/home/agent/FEEDBACK_LOOPS.md\` completely for executable
-   bootstrap, focused-test, and authoritative-gate commands.
-3. Inspect \`git status\`, the last ten commits, relevant package manifests,`,
+      const withFeedback = content
+        .replaceAll(
+          "@.sandcastle/CODING_STANDARDS.md",
+          "/home/agent/CODING_STANDARDS.md",
+        )
+        .replaceAll(
+          ".sandcastle/FEEDBACK_LOOPS.md",
+          "/home/agent/FEEDBACK_LOOPS.md",
+        )
+        .replaceAll(
+          ".sandcastle/EVIDENCE_POLICY.md",
+          "/home/agent/EVIDENCE_POLICY.md",
         );
-        withFeedback = replaceRequired(
-          withFeedback,
-          "one authoritative gate from `/home/agent/CODING_STANDARDS.md`",
-          "one authoritative gate from `/home/agent/FEEDBACK_LOOPS.md`",
-        );
-      } else {
-        withFeedback = replaceRequired(
-          withFeedback,
-          `\`/home/agent/CODING_STANDARDS.md\` completely before judging the change.`,
-          `\`/home/agent/CODING_STANDARDS.md\` completely before judging the change.
-Read \`/home/agent/FEEDBACK_LOOPS.md\` completely before selecting or running
-any executable feedback command.`,
-        );
-        withFeedback = replaceRequired(
-          withFeedback,
-          `Run one authoritative gate from
-   \`/home/agent/CODING_STANDARDS.md\``,
-          `Run one authoritative gate from
-   \`/home/agent/FEEDBACK_LOOPS.md\``,
-        );
-      }
       const updated = replaceRequired(
         withFeedback,
         "# EXPLORATION\n\n",
@@ -1710,10 +1780,19 @@ any executable feedback command.`,
     let merge = yield* fs
       .readFileString(mergePath)
       .pipe(Effect.mapError((e) => new Error(e.message)));
-    merge = merge.replaceAll(
-      ".sandcastle/CODING_STANDARDS.md",
-      "/home/agent/CODING_STANDARDS.md",
-    );
+    merge = merge
+      .replaceAll(
+        ".sandcastle/CODING_STANDARDS.md",
+        "/home/agent/CODING_STANDARDS.md",
+      )
+      .replaceAll(
+        ".sandcastle/FEEDBACK_LOOPS.md",
+        "/home/agent/FEEDBACK_LOOPS.md",
+      )
+      .replaceAll(
+        ".sandcastle/EVIDENCE_POLICY.md",
+        "/home/agent/EVIDENCE_POLICY.md",
+      );
     merge = replaceRequired(
       merge,
       `1. Read \`/home/agent/CODING_STANDARDS.md\` completely.
@@ -1811,6 +1890,20 @@ const scaffoldIssueTrackerFiles = (
     }
 
     const fs = yield* FileSystem.FileSystem;
+    if (["parallel-planner-with-review", "codex-afk"].includes(templateName)) {
+      yield* fs
+        .copyFile(
+          join(getTemplatesDir(), "EVIDENCE_POLICY.md"),
+          join(configDir, "EVIDENCE_POLICY.md"),
+        )
+        .pipe(Effect.mapError((e) => new InitError({ message: e.message })));
+      yield* fs
+        .copyFile(
+          join(getTemplatesDir(), "feedback-policy.md"),
+          join(configDir, "FEEDBACK_LOOPS.md"),
+        )
+        .pipe(Effect.mapError((e) => new InitError({ message: e.message })));
+    }
     const inventoryCommand = createLabel
       ? issueTracker.templateArgs.PLANNER_LIST_TASKS_COMMAND
       : issueTracker.templateArgs.PLANNER_LIST_TASKS_COMMAND.replace(
@@ -2282,6 +2375,7 @@ export const scaffold = (
           sources: codexAfkProject.sources,
         });
       }
+      yield* scaffoldCodexAfkReadyScript(configDir);
     }
 
     // Replace issue tracker template arguments in all text files (must run before label stripping)

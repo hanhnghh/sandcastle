@@ -16,6 +16,9 @@ A failed tracker request does not count as a successful contract read. Retry
 transient failures or use the equivalent read-only GitHub REST endpoint. Never
 substitute an incomplete local backlog for the issue's full body/comments.
 
+Read `/home/agent/FEEDBACK_LOOPS.md` for role-owned checks and
+`/home/agent/EVIDENCE_POLICY.md` before validating or reusing evidence.
+
 # CONTEXT
 
 ## Task change inventory (navigation, not review evidence)
@@ -65,7 +68,7 @@ invariants. Use repository code and executable behavior as evidence.
 
 Map every acceptance criterion and explicitly named scenario to:
 
-`ID | requirement | implementation evidence | test evidence | status`
+`ID | requirement | implementation evidence | test evidence | receipt/applicability | owner | status`
 
 A criterion is not satisfied merely because a nearby test passes. Check the
 observable public seam named by the task, or the narrowest existing public seam
@@ -102,18 +105,20 @@ For each finding:
 2. Run the narrowest command and confirm it fails for the finding when a
    meaningful red state is possible.
 3. Make the smallest in-scope repair and rerun that command to green.
-4. Run one authoritative gate from
-   `/home/agent/FEEDBACK_LOOPS.md` for every affected package.
+4. Verify receipt applicability and run affected branch checks from
+   `/home/agent/FEEDBACK_LOOPS.md`; test coverage gaps and repairs independently.
 
-At completion, run all focused evidence, `git diff --check`, and inspect the
+At completion, verify all focused evidence under the evidence policy,
+run `git diff --check`, and inspect the
 final scoped diff and status. Never report an unexecuted command as passing.
 An in-scope failure remains red; record proven pre-existing or environmental
 failures explicitly.
 
 # COMPLETION GATE
 
-Complete only when every review-ledger row passes, all in-scope findings are
-repaired, affected-package gates are green, and the diff contains no unrelated
+The branch is branch-ready for integration only when every branch-required
+review row passes or is contract-justified `not-applicable`, all in-scope findings
+are repaired, affected branch checks are green, and the diff contains no unrelated
 churn, secrets, local state, generated-file mistakes, or undocumented contract
 changes.
 
@@ -121,6 +126,10 @@ If repairs were required, commit them with DCO sign-off and a concise
 `RALPH: <conventional type>(<scope>): <review outcome>` subject. If no repair is
 needed, do not create an empty commit.
 
-Print the final review ledger, then emit:
+Record the integration owner's command and future gate as `pending-integration`
+in the review ledger. Only that owner's future checks may be pending; missing
+behavior evidence remains a finding. This signal means branch-ready, not
+issue-complete, and does not authorize closure. Print the final review ledger,
+then emit:
 
 <promise>COMPLETE</promise>

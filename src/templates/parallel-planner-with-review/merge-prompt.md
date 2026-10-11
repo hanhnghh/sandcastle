@@ -19,6 +19,9 @@ Before merging:
 
 {{ISSUES}}
 
+Read `.sandcastle/FEEDBACK_LOOPS.md` for integration ownership and
+`.sandcastle/EVIDENCE_POLICY.md` before choosing checks, reusing proof or closing tasks.
+
 # MERGE
 
 Merge each listed branch with `git merge <branch> --no-edit`. Resolve conflicts
@@ -31,6 +34,18 @@ If a branch cannot be safely merged, stop. Leave all tasks open, record the
 exact conflict or blocker, and emit `<promise>BLOCKED</promise>`.
 
 # CUMULATIVE INTEGRATION GATE
+
+Commit resolutions or repairs before the final cumulative gate. Run the gate
+once on the exact integrated source after the complete batch. If a later repair
+invalidates evidence, diagnose narrowly and rerun the required gate at the new
+source. Reuse a passing full gate only through existing workflow-validated proof
+for the exact source, environment and gate; otherwise execute it. A branch
+completion signal or agent-authored receipt alone is insufficient.
+
+This default runner uses normal merger ownership. Delegating verification and
+closure requires an explicitly approved staged-host workflow adapter; the policy
+alone does not enable that adapter. Staged live acceptance remains open under
+its authorized protocol.
 
 After every listed branch has been merged:
 
@@ -52,8 +67,8 @@ in-scope failure remains red; proven pre-existing or environmental failures
 must be recorded explicitly and keep task closure blocked unless the project
 standards explicitly permit them.
 
-Commit conflict resolutions or integration repairs when needed. Do not create
-an empty summary commit merely to mark the batch complete.
+Keep the final tested source unchanged through closure. Do not create an empty
+summary commit merely to mark the batch complete.
 
 # CLOSE TASKS
 
