@@ -97,7 +97,10 @@ console.log(JSON.stringify(await verifyReadinessPolicy({cwd:process.cwd(),input:
 })));
 `;
 
-async function execute(extraEnv: Record<string, string> = {}) {
+async function execute(
+  extraEnv: Record<string, string> = {},
+  templateName = "parallel-planner-with-review",
+) {
   const root = await mkdtemp(join(tmpdir(), "readiness-workflow-"));
   roots.push(root);
   const cwd = join(root, "project");
@@ -198,6 +201,8 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
       "#!/usr/bin/env sh\nprintf 'sha256:fixture-image\\n'\n",
     );
     await chmod(join(bin, "docker"), 0o755);
+    await writeFile(join(bin, "codegraph"), "#!/usr/bin/env sh\nexit 0\n");
+    await chmod(join(bin, "codegraph"), 0o755);
     await writeFile(join(root, "models.jsonl"), "");
   }
   await writeFile(join(root, "verify.mjs"), verifier);
@@ -207,7 +212,7 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
         extraEnv.READINESS_FIXTURE_CODEX === "1" ? "codex" : "claude-code",
       )!,
       model: "fixture",
-      templateName: "parallel-planner-with-review",
+      templateName,
     }).pipe(Effect.provide(NodeFileSystem.layer)),
   );
   if (extraEnv.READINESS_FIXTURE_CODEX === "1") {
@@ -239,6 +244,10 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
     .replace(/sandcastle\.claudeCode\([^)]+\)/g, "scriptedAgent()")
     .replace(
       'const hooks = {\n  sandbox: { onSandboxReady: [{ command: "npm install" }] },\n};',
+      "const hooks = {};",
+    )
+    .replace(
+      'const hooks = {\n  sandbox: {\n    onSandboxReady: [\n      { command: "bash .sandcastle/scripts/ready.sh", timeoutMs: 180_000 },\n    ],\n  },\n};',
       "const hooks = {};",
     )
     .replace(
@@ -460,33 +469,42 @@ it("reports pending external qualification without implementing or closing its i
   expect(result.snapshots[0].status).toBe("completed");
 }, 90_000);
 
-it("generated Codex workflow consumes saved models and effort for all roles through real provider commands and records", async () => {
-  const result = await execute({ READINESS_FIXTURE_CODEX: "1" });
-  expect(result.error).toBeUndefined();
-  for (const [role, effort] of [
-    ["planner", "low"],
-    ["implementer", "medium"],
-    ["reviewer", "high"],
-    ["merger", "xhigh"],
-    ["readiness", "high"],
-  ]) {
-    const args = result.modelArgs.find((args) =>
-      args.includes("configured-" + role),
+it.each(["parallel-planner-with-review", "codex-afk"])(
+  "generated %s Codex workflow consumes saved models and effort for all roles through real provider commands and records",
+  async (templateName) => {
+    const result = await execute(
+      { READINESS_FIXTURE_CODEX: "1" },
+      templateName,
     );
-    expect(args).toBeDefined();
-    expect(args).toContain('model_reasoning_effort="' + effort + '"');
-    const nodes = result.snapshots.flatMap((snapshot) => snapshot.nodes);
-    expect(
-      nodes.find((node) => node.role === role && node.status === "completed"),
-    ).toMatchObject({
-      model: "configured-" + role,
-      effort,
-      provider: "codex",
-    });
-  }
-  expect(result.snapshots[0].runtime.configRevision).toMatch(/^[a-f0-9]{64}$/);
-  expect(result.snapshots[0].runtime.version).toMatch(/^0\./);
-}, 60_000);
+    expect(result.error).toBeUndefined();
+    for (const [role, effort] of [
+      ["planner", "low"],
+      ["implementer", "medium"],
+      ["reviewer", "high"],
+      ["merger", "xhigh"],
+      ["readiness", "high"],
+    ]) {
+      const args = result.modelArgs.find((args) =>
+        args.includes("configured-" + role),
+      );
+      expect(args).toBeDefined();
+      expect(args).toContain('model_reasoning_effort="' + effort + '"');
+      const nodes = result.snapshots.flatMap((snapshot) => snapshot.nodes);
+      expect(
+        nodes.find((node) => node.role === role && node.status === "completed"),
+      ).toMatchObject({
+        model: "configured-" + role,
+        effort,
+        provider: "codex",
+      });
+    }
+    expect(result.snapshots[0].runtime.configRevision).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
+    expect(result.snapshots[0].runtime.version).toMatch(/^0\./);
+  },
+  60_000,
+);
 
 it.each([
   {

@@ -129,3 +129,169 @@ fff8fea7fb4310bbff5293f074a365073d557bb792f019ff5543ffbbdb5cd1fc  src/OperatorRu
 | dashboard-browser.log      | 2026-10-11 16:08:46       | `d07921ca7fcc7218d222b0fd95569a2f87db893f621a3317bbe11799c4da3d05` | pass   |
 | typecheck-final.log        | 2026-10-11 16:16:07       | `e7c9d0c8beef624bc76156a9fdd7ca0359bdb3b4a6c3c32c0e308ea3239c65a7` | pass   |
 | docs-contract.log          | 2026-10-11 16:16:07       | `f87d7f281d165c77b175733479c680091b342a9122ab388bc24181a65dec2fc5` | pass   |
+
+## Independent review
+
+Reviewer contract read: full `gh issue view 2 --json number,title,body,labels,comments`
+from the origin repository `hanhnghh/sandcastle` (no comments). The stale upstream
+AGENTS.md repository pointer resolves to an unrelated scaffolding issue and was
+not used as the contract. Parent read was limited to Product decisions relevant
+to roles/configuration/freezing/security and Delivery/acceptance compatibility.
+CODING_STANDARDS.md, FEEDBACK_LOOPS.md and EVIDENCE_POLICY.md were read completely.
+
+All C1–C18 (including C10a–f) and B1 require new reviewer evidence. No implementer
+receipt is reused: the authored ledger alone is not executable proof. Selected
+checks: focused operator/config/runtime/CLI/init/generated-workflow tests,
+affected legacy SDK/Agent Map/provider/prompt callers, operator and dashboard
+browser contracts, npm typecheck/build, documentation/export inspection and
+diff inspection. The full suite and cumulative gate remain integration-owned.
+
+| Files                                                                    | Review method                                                                                                                   | Result                                                                           |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `.changeset/shared-role-operator.md`, `README.md`, `docs/operator.md`    | Full baseline diff; related changesets; compare documented routes/defaults/exports with production                              | Reviewed; no duplicate release entry or scope expansion                          |
+| `docs/issue-2-ledger.md`                                                 | Full baseline diff; compare every C row with task and actual public assertions                                                  | Reviewed; independent evidence required below                                    |
+| `.changeset/pinned-runtime-project.md`                                   | Full repair diff; check package name, patch bump and all related changesets                                                     | Pass; distinct runtime project-routing bugfix                                    |
+| `scripts/operator.browser.test.mjs`                                      | Full baseline diff; inspect fake executable boundary, real SDK/browser assertions and cleanup                                   | Reviewed; save/reload/keyboard/project routing/frozen next-run coverage          |
+| `src/AgentMap.ts`                                                        | Full baseline diff; read snapshot parser, recorder and HTTP consumer; navigate callers                                          | Reviewed; optional metadata preserves legacy recordings                          |
+| `src/InitService.ts`, `src/InitService.test.ts`                          | Full baseline diffs; read scaffold callers, rewrite stages and original workflow anchors                                        | Reviewed; inspect generated execution with focused tests                         |
+| `src/Operator.ts`, `src/Operator.test.ts`                                | Full baseline diffs; read private atomic writer and provider capability; inspect HTTP/SDK seams                                 | Reviewed; add persistence failure/concurrency evidence                           |
+| `src/OperatorCli.ts`, `src/OperatorCli.test.ts`                          | Full baseline diffs; inspect fixed child launch, session/image handoff and shutdown ownership                                   | Reviewed; validate built CLI                                                     |
+| `src/OperatorRuntime.ts`                                                 | Full baseline diff; CodeGraph query/impact/affected; read runtime consumers                                                     | Finding R1: delayed SDK operations re-resolve a relative cwd after process.chdir |
+| `src/OperatorServer.ts`                                                  | Full baseline diff (including separately paginated omitted section); inspect host/origin/session, serialization and run locking | Reviewed; strengthen failed-start/retry evidence                                 |
+| `src/ReadinessWorkflow.test.ts`                                          | Full baseline diff; read generated harness and real guard consumers                                                             | Reviewed; all six Codex fault scenarios require execution                        |
+| `src/cli.ts`, `src/cli.test.ts`, `src/index.ts`, `src/operatorAssets.ts` | Full baseline diffs; inspect registered command, public exports, form serialization/accessibility/data rendering                | Reviewed; validate built CLI/browser/declarations                                |
+
+R1 (C6/C16): a runtime created or reopened with a relative explicit project path
+must keep that project for frozen prompt access and observations after the host
+changes its working directory. Current hydration resolves the path on each
+promptFile/map call, selecting another project. Add a public SDK regression,
+observe RED, pin the hydrated host path once, then observe GREEN.
+
+Coverage findings: C3 atomic persistence lacks read-during-save and filesystem
+failure observations; C11/C16 run admission lacks failed adapter/image/prompt
+start and retry coverage. Add public SDK/HTTP evidence without internal mocks.
+These are evidence repairs, not claims of an established product failure.
+
+Additional C5/C17 coverage finding: the AFK artifact initially had generated-text
+assertions only. The existing real generated-workflow harness now exercises both
+reviewed Codex and Codex AFK workflows. Only sandbox provisioning/bootstrap and
+external CodeGraph/model/tracker commands use fixture boundaries; the shared
+runtime, provider command/parser, SDK, admission and workflow guards remain real.
+All five role command arguments and HTTP-observed role records use independently
+specified configured model/effort values. No copied provider code is edited to
+select those values.
+
+R1 repair: resolve the host project once during hydration and use that absolute
+path for both frozen prompts and Agent Map. README was checked; its guide link
+and feature description remain accurate. The guide documents stable project
+routing, and a separate patch changeset records the bugfix (all existing
+changesets inspected). The repair diff and each new test were read in full.
+
+Diagnosis (review phase; all acceptance and integration gates retained):
+
+- 16:26:40 UTC, 1.86s: the first cwd regression unexpectedly passed because its
+  `../../../tmp` path still resolved to the same root after the directory change.
+  This weak harness result was not used as behavior evidence. Replaced the
+  input with the public `cwd: "."` case in the selected project.
+- 16:27:26 UTC, 1.53s: `npm test -- src/Operator.test.ts --run -t 'retain the explicit project'`
+  failed with ENOENT in the other project's runtime directory. Established
+  product cause: deferred cwd resolution. RED log: `runtime-red.log`.
+- 16:27:58 UTC, 1.70s: same command after pinning hydration's cwd passed.
+  GREEN log: `runtime-green.log`. Final O rechecks both create and reopen and
+  verifies prompt contents plus persisted observations through dashboard HTTP.
+- Persistence and failed-start evidence additions passed against existing
+  production behavior; no meaningful product RED was claimed for those gaps.
+  O also verifies the known prompt SHA-256 and private file/directory modes.
+- The first AFK test invocation had a mistyped log directory; shell redirection
+  failed before Vitest ran. Corrected only that path; 16:29:46 UTC, 15.65s:
+  `npm test -- src/ReadinessWorkflow.test.ts --run -t 'generated codex-afk Codex workflow'`
+  passed (one selected test). The final workflow suite supersedes this slice.
+
+Reviewer environment: Linux, uid 501, Node v24.21.0, npm 11.19.0, locked
+Vitest 3.2.4 and Playwright 1.63.0/headless Chromium; temporary Git projects,
+isolated Git config and fake external executables. The POSIX permission case
+ran and passed here; its root/Windows skip covers environments where these
+mode bits cannot establish the tested write denial. No scenario was skipped
+in this review environment. No live tracker/model mutation or issue closure.
+
+Reviewer receipts are new executions, not reused implementer results. Their
+directory is `.sandcastle/logs/issue-2-review/` (ignored). The tested source and
+harness manifest `source.sha256` has digest
+`20caaff472dcfaa9e89b8fbfcae42bcf5f4e321c21075b1f96018d275405422a`.
+This manifest is provenance for focused review evidence, not full-gate proof.
+Build/browser evidence remains applicable: production source has not changed
+since the repaired runtime was built. Only the affected test harness changed
+after F; its workflow evidence is superseded by the complete final R execution.
+
+- O: `npm test -- src/Operator.test.ts --run` — 13 passed, no skipped cases,
+  16:31:59 UTC, 1.99s; `operator-final.log`.
+- F: `npm test -- src/OperatorCli.test.ts src/cli.test.ts src/InitService.test.ts src/InitService.agents.test.ts src/InitService.packageManager.test.ts src/InitService.sandboxProviders.test.ts src/ReadinessWorkflow.test.ts src/Readiness.test.ts src/ReadinessPolicy.test.ts src/PlannerBatch.test.ts src/AgentMap.test.ts src/AgentProvider.test.ts src/run.test.ts src/PromptResolver.test.ts src/ReviewerInput.test.ts src/createSandbox.test.ts --run`
+  — 732 passed, 16:29:09 UTC, 126.46s; `focused.log`. The 717 non-workflow
+  cases remain applicable; R supersedes the 15 workflow cases.
+- W: `node --test scripts/operator.browser.test.mjs` — 3 passed, 16:29:14 UTC
+  completion, 4.76s; `operator-browser.log`.
+- A: `node --test scripts/agent-map.browser.test.mjs` — 6 passed, 16:29:37 UTC
+  completion, 27.95s; `dashboard-browser.log`.
+- B: `npm run build` — passed, 16:28:46 UTC completion; `build.log`, including
+  the public Effect-free declaration validator.
+- T: `npm run typecheck` — final passed after the last test edit;
+  `typecheck-review.log`.
+- L: documented defaults/README link/built public exports/HTTP paths verified
+  with `node --input-type=module`, 16:31:10 UTC; `docs.log`. Changesets and
+  public JSDoc/interface ownership inspected directly.
+- D: `git diff --check`, scoped full diff/status inspection and focused
+  `npx prettier --check` — passed; repeat diff/status inspection before commit.
+- R: `npm test -- src/ReadinessWorkflow.test.ts --run` — final 16 passed,
+  16:31:49 UTC, 125.43s; `workflow-final.log`. Both Codex consumers and all
+  admission/completion/review/merge/readiness faults executed with the final
+  harness. Distinct Vitest cases across O/F/R: 746; browser cases W/A: 9.
+
+| Receipt | Completion UTC | SHA-256                                                            |
+| ------- | -------------- | ------------------------------------------------------------------ |
+| O       | 16:32:01       | `4d76d2192c1636576c574da4e86b2af24f1323bad2c80dfc16c2cafeec509528` |
+| F       | 16:31:16       | `d10d2cbb5e31492f6efdddb26efdd282227ac615cbaa2addd4fc4cca56ea45c4` |
+| R       | 16:33:55       | `f5414a0f70588355e33801aab452b090b913885d4ecc9beb2615b954f8ac8a69` |
+| W       | 16:29:14       | `e5fc42ed4ba0a5941f3747d11a716459d1328a38ab220733cae2a38161b9c1ee` |
+| A       | 16:29:37       | `5899a0ed596e602ff0ad8140d1869db805d802814cbf3daf2e8d02286f7ca769` |
+| B       | 16:28:46       | `b337e07212722c1cf288b65075d9f0ebe7ce62ad66963a7c02df4da09f5a94af` |
+| T       | 16:33:23       | `e7c9d0c8beef624bc76156a9fdd7ca0359bdb3b4a6c3c32c0e308ea3239c65a7` |
+| L       | 16:31:10       | `7f882af7129e3f8c66094c0e283f0c3b6824d90a808e704a9f10ee2eccf30e2f` |
+
+Final reviewer ledger (supersedes implementer status for branch readiness;
+original implementation history above is retained). Every receipt below is a
+fresh Linux execution with the applicability limits specified above. No full
+gate was run or claimed. Every changed file in the immutable task diff was
+reviewed in full, plus the new patch changeset and all repair diffs.
+
+| ID   | requirement                                                                          | implementation evidence                                                         | test evidence                                                                               | receipt/applicability                         | owner             | status              |
+| ---- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------- | ----------------- | ------------------- |
+| C1   | Explicit project CLI; dashboard read-only                                            | cli.ts command; OperatorCli; AgentMap HTTP                                      | CLI help/explicit project/child handoff; legacy dashboard                                   | F/A, unchanged consumers                      | reviewer          | pass                |
+| C2   | Five roles/current values/suggestions/custom IDs/capability/defaults                 | Operator schemas/defaults; operatorAssets form                                  | Five SDK defaults, custom save; browser dropdown/reload                                     | O/W, final runtime                            | reviewer          | pass                |
+| C3   | Complete validation, atomic persistence, actionable errors, no partial writes        | Operator save; writePrivateRecord                                               | Per-role invalid matrix; competing writes/readers; permission denial preserves durable read | O, POSIX case executed                        | reviewer          | pass                |
+| C4   | Missing defaults; reject unsupported/malformed stored source                         | Operator load/schema/revision validation                                        | Missing file, JSON/schema/provider/effort/role/revision cases                               | O, final source                               | reviewer          | pass                |
+| C5   | Both Codex consumers use shared config; dropdown reaches fake run without main edits | InitService runtime wiring; OperatorRuntime                                     | Both generated workflows execute all five configured roles; browser fake process            | F/R/W, final harness                          | reviewer          | pass                |
+| C6   | SDK compatibility; project adapter retains sandbox/gates                             | Public exports; OperatorProjectAdapter; additive map metadata                   | Existing provider/run/sandbox/prompt calls; HTTP adapter; stable SDK cwd                    | O/F/B, unchanged callers                      | reviewer          | pass                |
+| C7   | Freeze revision/runtime identity; record actual role model/effort                    | Runtime record; runtime agents/map metadata                                     | Real provider arguments agree with HTTP role records for all five roles                     | O/R, final source                             | reviewer          | pass                |
+| C8   | Private frozen prompts/digests/image identity                                        | Runtime freeze/handoff; CLI image inspect                                       | Known digest/content; 700/600 modes; immutable CLI image ID/UUID                            | O/F, Linux permissions                        | reviewer          | pass                |
+| C9   | Running save affects next run only                                                   | Frozen record and child handoff                                                 | Active settings unchanged; next browser fake process gets new model/effort                  | O/W, final runtime                            | reviewer          | pass                |
+| C10a | Admission/source guards                                                              | Existing admission seam retained in generated workflow                          | Fresh eligibility stops implementation/worktree progression                                 | F/R, actual workflow                          | reviewer          | pass                |
+| C10b | BLOCKED implementation cannot advance                                                | Existing completion guard retained                                              | Committed blocked implementation gets no review/merge                                       | R, actual workflow                            | reviewer          | pass                |
+| C10c | Review guard and retained progress                                                   | Existing reviewer path retained                                                 | Blocked review stops merge; retained commits receive review                                 | R, actual workflow                            | reviewer          | pass                |
+| C10d | Merge completion before readiness/planning                                           | Existing merger guard retained                                                  | Blocked merger stops next phase; successful merge unlocks dependency                        | R, actual workflow                            | reviewer          | pass                |
+| C10e | Readiness checkout and independent verification guards                               | Existing readiness/verification seams retained                                  | Dirty assessment and failed post-merge verification stop advancement                        | F/R, actual workflow                          | reviewer          | pass                |
+| C10f | No-progress and external qualification invariants                                    | Existing workflow policies retained                                             | No-progress stops; qualification stays open/unimplemented                                   | R, actual workflow                            | reviewer          | pass                |
+| C11  | Session/origin/host protect mutations                                                | OperatorServer exact authority/session checks                                   | Missing/forged session, hostile/missing origin, hostile host; port-specific cookies         | O/W, public HTTP/browser                      | reviewer          | pass                |
+| C12  | Malformed requests cannot write                                                      | Bounded JSON body; strict config schema                                         | Malformed/oversized/wrong-type/unknown-field requests preserve config                       | O, public HTTP/SDK                            | reviewer          | pass                |
+| C13  | No secrets/auth or arbitrary execution config                                        | Safe error mapping; strict config/run bodies; prompt omission                   | .env excluded; unsafe auth/command rejected; adapter secret errors suppressed               | O, public HTTP/SDK                            | reviewer          | pass                |
+| C14  | Save/reload persistence                                                              | Native form; shared durable config                                              | Suggested/custom model and effort persist across reload                                     | W, real browser                               | reviewer          | pass                |
+| C15  | Invalid feedback and keyboard access                                                 | Labels/native controls/status region                                            | Keyboard selection/Enter; invalid model feedback preserves durable settings                 | W, real browser                               | reviewer          | pass                |
+| C16  | Immutable running settings; selected-project routing                                 | Bound HTTP cwd; pinned SDK cwd; overlap guard                                   | Two projects/shared browser; active vs next run; cwd regression; failed-start retry         | O/W, final runtime                            | reviewer          | pass                |
+| C17  | Source schema/init/run-record regressions                                            | Strict config/runtime parsers; generated consumers; additive map schema         | Unsupported handoffs/tampering; both generated consumers; legacy records and UI             | O/F/R/A, final harness                        | reviewer          | pass                |
+| C18  | Docs/public interfaces/changesets                                                    | README/operator guide; documented exports; minor feature + patch repair entries | Link/default/export/route validator; declaration build; scoped artifact inspection          | L/B/D, current docs                           | reviewer          | pass                |
+| B1   | Branch typecheck/build/clean scoped diff                                             | Final repaired source and test harness                                          | npm typecheck/build; formatter and diff check                                               | T/B/D, current production                     | reviewer          | pass                |
+| R1   | Stable relative-project runtime routing                                              | Hydrate pins absolute projectDirectory                                          | Meaningful RED then GREEN; both reopened/created prompt and map operations                  | O, regression repaired                        | reviewer          | pass                |
+| I1   | Final cumulative Linux implementation gate                                           | Exact integrated candidate                                                      | `bash .sandcastle/scripts/verify-affected.sh a22f71e6713d7fdba64f38b030c529aabcd58690`      | Future integrated source; not branch evidence | integration owner | pending-integration |
+| I2   | Operator browser on integrated build                                                 | Exact integrated runtime/browser consumers                                      | `node --test scripts/operator.browser.test.mjs` after integrated build                      | Future integrated source; not branch evidence | integration owner | pending-integration |
+
+Outcome: all branch-required review rows pass; R1 and all coverage findings are
+repaired. Branch-ready for integration only. Task 2 and parent #1 remain open.

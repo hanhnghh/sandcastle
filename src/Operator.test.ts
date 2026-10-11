@@ -1,4 +1,12 @@
-import { mkdtemp, readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  writeFile,
+  mkdir,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +14,7 @@ import { afterEach, expect, test } from "vitest";
 import { loadRoleConfig, saveRoleConfig } from "./Operator.js";
 import { startOperator } from "./OperatorServer.js";
 import { createProjectRuntime, openProjectRuntime } from "./OperatorRuntime.js";
+import { startDashboard } from "./AgentMap.js";
 
 const directories: string[] = [];
 async function project() {
@@ -142,7 +151,15 @@ test("runtime freezes revision, prompt templates and image identity while the ne
     "original {{TASK}}",
   );
   expect(active.record.sandboxIdentity).toBe("sha256:test-image");
-  expect(active.record.prompts.implementer?.digest).toMatch(/^[a-f0-9]{64}$/);
+  expect(active.record.prompts.implementer?.digest).toBe(
+    "d9ddf95378ebd79ec72efe79473ace516ae0e1c1ca7c52fe4f337b809acfa304",
+  );
+  if (process.platform !== "win32") {
+    const directory = join(cwd, ".sandcastle/runtime", active.record.id);
+    expect((await stat(directory)).mode & 0o777).toBe(0o700);
+    for (const name of ["record.json", "implementer.md"])
+      expect((await stat(join(directory, name))).mode & 0o777).toBe(0o600);
+  }
   expect(active.record.runtimeVersion).toMatch(/^0\./);
   expect(() => {
     active.record.config.roles.implementer.model = "tamper";
@@ -468,4 +485,187 @@ test("frozen runtime handoff verifies its source schema, version, revision and p
   await expect(
     openProjectRuntime({ cwd, id: runtime.record.id }),
   ).rejects.toThrow(/integrity/);
+});
+
+test("created and reopened runtimes retain the explicit project after the host changes directory", async () => {
+  const cwd = await project();
+  const other = await project();
+  const hostCwd = process.cwd();
+  await writeFile(join(cwd, "prompt.md"), "selected project prompt");
+  const dashboard = await startDashboard({ cwd, port: 0 });
+  try {
+    process.chdir(cwd);
+    const runtime = await createProjectRuntime({
+      cwd: ".",
+      sandboxIdentity: "selected-image",
+      promptFiles: {
+        planner: "prompt.md",
+        implementer: null,
+        reviewer: null,
+        merger: null,
+        readiness: null,
+      },
+    });
+    const reopened = await openProjectRuntime({
+      cwd: ".",
+      id: runtime.record.id,
+    });
+    process.chdir(other);
+    for (const selected of [runtime, reopened]) {
+      expect(await readFile(selected.promptFile("planner"), "utf8")).toBe(
+        "selected project prompt",
+      );
+      const map = await selected.createAgentMap("Selected project");
+      await map.finish("completed");
+    }
+    const runs = (await (await fetch(dashboard.url + "/api/runs")).json()) as {
+      runs: { name: string }[];
+    };
+    expect(runs.runs.map((run) => run.name)).toEqual([
+      "Selected project",
+      "Selected project",
+    ]);
+  } finally {
+    process.chdir(hostCwd);
+    await dashboard.close();
+  }
+});
+
+test("readers observe complete configurations during competing atomic saves", async () => {
+  const cwd = await project();
+  const original = await saveRoleConfig({
+    cwd,
+    config: await loadRoleConfig({ cwd }),
+  });
+  const models = ["gpt-6.1-sol", "atomic-a", "atomic-b"];
+  const saves = Promise.all(
+    Array.from({ length: 12 }, (_, index) => {
+      const config = structuredClone(original);
+      for (const role of Object.values(config.roles))
+        role.model = models[1 + (index % 2)]!;
+      return saveRoleConfig({ cwd, config });
+    }),
+  );
+  const reads = Promise.all(
+    Array.from({ length: 30 }, async () => {
+      const config = await loadRoleConfig({ cwd });
+      const observed = Object.values(config.roles).map((role) => role.model);
+      expect(models).toContain(observed[0]);
+      expect(new Set(observed).size).toBe(1);
+    }),
+  );
+  await Promise.all([saves, reads]);
+  expect(models.slice(1)).toContain(
+    (await loadRoleConfig({ cwd })).roles.planner.model,
+  );
+});
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "filesystem save failure gives an actionable error and preserves the durable configuration",
+  async () => {
+    const cwd = await project();
+    const config = await saveRoleConfig({
+      cwd,
+      config: await loadRoleConfig({ cwd }),
+    });
+    const changed = structuredClone(config);
+    changed.roles.planner.model = "not-persisted";
+    await chmod(join(cwd, ".sandcastle"), 0o500);
+    try {
+      await expect(saveRoleConfig({ cwd, config: changed })).rejects.toThrow(
+        /Cannot save .sandcastle\/roles.json; check project permissions/,
+      );
+      expect(await loadRoleConfig({ cwd })).toEqual(config);
+    } finally {
+      await chmod(join(cwd, ".sandcastle"), 0o700);
+    }
+  },
+);
+
+test.each(["image", "prompt"])(
+  "failed %s admission reports a safe error and permits a corrected run",
+  async (failure) => {
+    const cwd = await project();
+    let invalid = true;
+    const server = await startOperator({
+      cwd,
+      port: 0,
+      adapter: {
+        promptFiles: {
+          planner: "prompt.md",
+          implementer: null,
+          reviewer: null,
+          merger: null,
+          readiness: null,
+        },
+        sandboxIdentity: async () => {
+          if (invalid && failure === "image")
+            throw new Error("credential-do-not-return");
+          return "recovered-image";
+        },
+        run: async () => {},
+      },
+    });
+    try {
+      const cookie = await session(server.url);
+      const headers = {
+        cookie,
+        origin: server.url,
+        "content-type": "application/json",
+      };
+      const start = () =>
+        fetch(server.url + "/api/run", { method: "POST", headers, body: "{}" });
+      const failed = await start();
+      expect(failed.status).toBe(400);
+      const diagnostic = (await failed.json()) as { error: string };
+      expect(diagnostic.error).toContain(
+        failure === "image"
+          ? "check project paths, adapter and permissions"
+          : "check prompt paths and permissions",
+      );
+      expect(diagnostic.error).not.toContain("credential-do-not-return");
+      expect(await (await fetch(server.url + "/api/run")).json()).toEqual({
+        run: null,
+      });
+      invalid = false;
+      await writeFile(join(cwd, "prompt.md"), "recovered prompt");
+      expect((await start()).status).toBe(202);
+      expect(await (await fetch(server.url + "/api/run")).json()).toMatchObject(
+        {
+          run: { sandboxIdentity: "recovered-image", status: "completed" },
+        },
+      );
+    } finally {
+      await server.close();
+    }
+  },
+);
+
+test("failed execution remains observable and releases the next-run guard", async () => {
+  const cwd = await project();
+  let invalid = true;
+  const server = await operator(cwd, async () => {
+    if (invalid) throw new Error("execution-secret-do-not-return");
+  });
+  try {
+    const cookie = await session(server.url);
+    const headers = {
+      cookie,
+      origin: server.url,
+      "content-type": "application/json",
+    };
+    const start = () =>
+      fetch(server.url + "/api/run", { method: "POST", headers, body: "{}" });
+    expect((await start()).status).toBe(202);
+    const failed = await (await fetch(server.url + "/api/run")).text();
+    expect(JSON.parse(failed)).toMatchObject({ run: { status: "failed" } });
+    expect(failed).not.toContain("execution-secret-do-not-return");
+    invalid = false;
+    expect((await start()).status).toBe(202);
+    expect(await (await fetch(server.url + "/api/run")).json()).toMatchObject({
+      run: { status: "completed" },
+    });
+  } finally {
+    await server.close();
+  }
 });

@@ -83,6 +83,9 @@ identity. `runtime.agent(role, options?)` builds the configured Codex provider
 while allowing project-owned session storage/environment/approval options.
 Effort comes from the frozen configuration.
 
+The runtime resolves its project directory when created or reopened. Later host
+working-directory changes keep prompt access and observations in that project.
+
 `runtime.promptFile(role)` returns an absolute host path to the frozen template;
 existing prompt arguments and sandbox shell expansion still apply.
 `runtime.createAgentMap(name)` records the runtime ID, config revision, version

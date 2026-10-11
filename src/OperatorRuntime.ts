@@ -89,6 +89,7 @@ const freeze = <T>(value: T): T => {
   return value;
 };
 const hydrate = (cwd: string, record: RuntimeRecord): ProjectRuntime => {
+  const projectDirectory = resolve(cwd);
   freeze(record);
   return {
     record,
@@ -103,7 +104,7 @@ const hydrate = (cwd: string, record: RuntimeRecord): ProjectRuntime => {
           message: `No prompt configured for ${role}`,
         });
       return join(
-        resolve(cwd),
+        projectDirectory,
         ".sandcastle",
         "runtime",
         record.id,
@@ -116,7 +117,7 @@ const hydrate = (cwd: string, record: RuntimeRecord): ProjectRuntime => {
           const map = yield* Effect.tryPromise({
             try: () =>
               createAgentMap({
-                cwd,
+                cwd: projectDirectory,
                 name,
                 runtime: {
                   id: record.id,
