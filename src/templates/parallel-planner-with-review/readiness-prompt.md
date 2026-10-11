@@ -24,6 +24,9 @@ acceptance criteria, environment/evidence gates, and dependencies.
   what is missing and how it can be verified.
 - `not-implementation`: PRD, epic, tracking/meta issue, or live-validation task
   that cannot be completed by this implementation workflow.
+- `ready-for-qualification`: only a project-declared live-validation lane with
+  independently proven execution/preflight gates and an exact allowlisted program.
+  This does not pass its live acceptance or authorize an implementation agent.
 
 Closed dependencies alone do not prove their code was integrated. A file's
 existence does not prove its claim; synthetic tests do not prove live validation.
@@ -32,6 +35,8 @@ concise evidence references and unresolved gates in each reason. Missing context
 keeps an issue blocked. Do not rerun a broad tracker query or invent evidence.
 
 Return exactly one decision per supplied issue, including held/meta issues.
+The decision universe is snapshot.issues. snapshot.context contains read-only
+parent/spec contracts, not additional decision targets.
 Host verification independently controls publication. Do not claim your proposal
 changed labels. Return `<readiness>` JSON with exactly this shape:
 
@@ -42,11 +47,27 @@ changed labels. Return `<readiness>` JSON with exactly this shape:
     {
       "number": 20,
       "status": "blocked",
-      "reason": "Gate X needs live evidence."
+      "reason": "Gate X needs live evidence.",
+      "evidence": [],
+      "gates": [
+        {
+          "id": "X",
+          "status": "open",
+          "reason": "Missing execution evidence",
+          "evidence": []
+        }
+      ]
     }
   ]
 }
 ```
+
+Each evidence row is `{ "path": "source-file-or-host-reference", "claim": "precise scoped claim" }`.
+Gate rows use id, status (`satisfied` or `open`), reason and evidence. Account for
+every project-declared execution gate exactly once, including blocked issues.
+Use supplied host receipts only at their exact HEAD; a committed file/hash alone
+does not prove execution or live authority. If a policy is supplied, unknown or
+edited contracts remain blocked. The host independently checks all promotions.
 
 Then emit `<promise>COMPLETE</promise>`. If the assessment itself cannot be
 completed safely, emit `<promise>BLOCKED</promise>`; do not fabricate coverage.

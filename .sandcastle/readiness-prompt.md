@@ -24,6 +24,9 @@ acceptance criteria, environment/evidence gates, and dependencies.
   what is missing and how it can be verified.
 - `not-implementation`: PRD, epic, tracking/meta issue, or live-validation task
   that cannot be completed by this implementation workflow.
+- `ready-for-qualification`: only an explicitly declared, host-allowlisted lane;
+  never implementation admission or completed live acceptance. This self-host
+  operator backlog has no qualification programs; do not invent one.
 
 Closed dependencies alone do not prove their code was integrated. A file's
 existence does not prove its claim; synthetic tests do not prove live validation.
@@ -32,6 +35,8 @@ concise evidence references and unresolved gates in each reason. Missing context
 keeps an issue blocked. Do not rerun a broad tracker query or invent evidence.
 
 Return exactly one decision per supplied issue, including held/meta issues.
+Only snapshot.issues need decisions. snapshot.context contains read-only parent
+contracts; do not publish or close them.
 Host verification independently controls publication. Do not claim your proposal
 changed labels. Return `<readiness>` JSON with exactly this shape:
 
@@ -42,11 +47,29 @@ changed labels. Return `<readiness>` JSON with exactly this shape:
     {
       "number": 20,
       "status": "blocked",
-      "reason": "Gate X needs live evidence."
+      "reason": "Gate X needs live evidence.",
+      "evidence": [],
+      "gates": [
+        {
+          "id": "integration",
+          "status": "open",
+          "reason": "Missing host proof",
+          "evidence": []
+        }
+      ]
     }
   ]
 }
 ```
+
+Every decision must include evidence and gates. Evidence is `{path,claim}`.
+Account for every execution gate in the supplied project policy, including
+blocked tickets. A satisfied integration gate references `host:integration`
+and the supplied passing host execution at snapshot.head. Read the producer
+code/tests for dependencies as well; closed issue state alone is insufficient.
+Unknown or edited contracts must remain blocked for maintainer approval. Do not
+infer gate IDs, waive ACs, reclassify task ownership or promote without evidence.
+Use the host-supplied contractApprovals flags: false or absent is not approved.
 
 Then emit `<promise>COMPLETE</promise>`. If the assessment itself cannot be
 completed safely, emit `<promise>BLOCKED</promise>`; do not fabricate coverage.

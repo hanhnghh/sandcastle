@@ -1058,7 +1058,7 @@ android {
       expect(prompt).toContain("@.sandcastle/CODING_STANDARDS.md");
     });
 
-    it("review-prompt.md diffs against {{TARGET_BRANCH}} (the fork point), not the branch itself", async () => {
+    it("review-prompt.md inventories an immutable task baseline instead of injecting the raw diff", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "sequential-reviewer" });
 
@@ -1066,8 +1066,10 @@ android {
         join(dir, ".sandcastle", "review-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("git diff {{TARGET_BRANCH}}...{{BRANCH}}");
-      expect(prompt).toContain("git log {{TARGET_BRANCH}}..{{BRANCH}}");
+      expect(prompt).toContain(
+        "git diff --stat {{REVIEW_BASE_SHA}}...{{BRANCH}}",
+      );
+      expect(prompt).toContain("git log -n 20 {{REVIEW_BASE_SHA}}..{{BRANCH}}");
       // SOURCE_BRANCH equals BRANCH at run time, so diffing against it is
       // always empty — the prompt must use TARGET_BRANCH instead.
       expect(prompt).not.toContain("{{SOURCE_BRANCH}}");
@@ -1920,8 +1922,10 @@ android {
         join(dir, ".sandcastle", "review-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("git diff {{TARGET_BRANCH}}...{{BRANCH}}");
-      expect(prompt).toContain("git log {{TARGET_BRANCH}}..{{BRANCH}}");
+      expect(prompt).toContain(
+        "git diff --stat {{REVIEW_BASE_SHA}}...{{BRANCH}}",
+      );
+      expect(prompt).toContain("git log -n 20 {{REVIEW_BASE_SHA}}..{{BRANCH}}");
       // SOURCE_BRANCH equals BRANCH at run time, so diffing against it is
       // always empty — the prompt must use TARGET_BRANCH instead.
       expect(prompt).not.toContain("{{SOURCE_BRANCH}}");

@@ -31,9 +31,20 @@ One Linux full-suite run failed that timing assertion while another passed it.
 Do not skip it or treat a retry as proof that this fixture is deterministic.
 Any new or persistent failure still blocks the cumulative merge gate.
 
-Readiness is **report-only**. Issue #2 initially runs; #3/#4/#5 remain blocked
-until #2 is integrated and readiness is explicitly approved. #6 depends on all
-three; #7 depends on #6. A report does not authorize label mutation. The host
-stops with diagnostics if blocked implementation work remains, not false success.
+Readiness is **apply**, bounded by `readiness-policy.json` for approved #2–#7
+and the pinned parent PRD #1. Before assessment the host independently runs the
+Linux package/browser gate at the integration HEAD, with no model. The read-only
+readiness agent then proposes evidence/gates/status; the host verifies the
+contract hashes, complete comments/dependency identities, completed dependency
+branches and their ancestry, gate execution and tracker freshness/readback.
+Publication replaces only a managed summary prefix and readiness labels; original
+ACs/dependencies, holds and parent PRD remain unchanged. #3/#4/#5 unlock after #2;
+#6 after all three, #7 after #6. Unknown/edited contracts need maintainer approval.
+Failures stop the next planner; a mere file/hash or an agent's claim is not proof.
+
+Reviewer input contains an inventory/stat/commit summary at an immutable task
+baseline. Review still covers every changed file and AC, reading full patches in
+bounded chunks or validating large opaque artifacts through producers/consumers.
+Codex input is checked after expansion before invocation; it is never truncated.
 
 Read-only Agent Map: `node dist/main.js dashboard --port 0`.

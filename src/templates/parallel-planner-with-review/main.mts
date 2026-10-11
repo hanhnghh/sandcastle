@@ -99,6 +99,9 @@ const readiness = z
     readyLabel: z.string().min(1),
     blockedLabel: z.string().min(1),
     holdLabels: z.array(z.string().min(1)),
+    qualificationLabel: z.string().min(1).default("ready-for-qualification"),
+    publishBody: z.boolean().default(false),
+    contextIssueNumbers: z.array(z.number().int().positive()).optional(),
     verifyCommand: z.array(z.string().min(1)).min(1).nullable(),
   })
   .strict()
@@ -531,6 +534,7 @@ async function executeWorkflow() {
                     TASK_ID: issue.id,
                     ISSUE_TITLE: issue.title,
                     BRANCH: issue.branch,
+                    REVIEW_BASE_SHA: batchBaseSha,
                   },
                 }),
             );

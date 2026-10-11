@@ -13,11 +13,30 @@ class ReadinessError extends Data.TaggedError("ReadinessError")<{
   cause?: unknown;
 }> {}
 
+const evidenceSchema = z
+  .object({ path: z.string().trim().min(1), claim: z.string().trim().min(1) })
+  .strict();
+const gateSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    status: z.enum(["satisfied", "open"]),
+    reason: z.string().trim().min(1),
+    evidence: z.array(evidenceSchema),
+  })
+  .strict();
+const statusSchema = z.enum([
+  "ready-for-agent",
+  "ready-for-qualification",
+  "blocked",
+  "not-implementation",
+]);
 const decisionSchema = z
   .object({
     number: z.number().int().positive(),
-    status: z.enum(["ready-for-agent", "blocked", "not-implementation"]),
+    status: statusSchema,
     reason: z.string().trim().min(1),
+    evidence: z.array(evidenceSchema).optional(),
+    gates: z.array(gateSchema).optional(),
   })
   .strict();
 const assessmentSchema = z
@@ -36,9 +55,22 @@ export interface ReadinessAssessment {
     /** GitHub issue number. */
     number: number;
     /** Proposed readiness classification. */
-    status: "ready-for-agent" | "blocked" | "not-implementation";
+    status:
+      | "ready-for-agent"
+      | "ready-for-qualification"
+      | "blocked"
+      | "not-implementation";
     /** Evidence references and unresolved requirements. */
     reason: string;
+    /** Structured claims, not authorization. Legacy callbacks may omit these; strict project verifiers require them. */
+    evidence?: { path: string; claim: string }[];
+    /** One accounting row per project-declared gate; the host independently verifies satisfaction. */
+    gates?: {
+      id: string;
+      status: "satisfied" | "open";
+      reason: string;
+      evidence: { path: string; claim: string }[];
+    }[];
   }[];
 }
 
@@ -82,6 +114,8 @@ export interface ReadinessSnapshot {
   head: string;
   /** Every open non-PR issue with the configured scope label. */
   issues: ReadinessIssue[];
+  /** Read-only parent/context contracts bound to the same freshness checks; no decisions or mutations. */
+  context?: ReadinessIssue[];
 }
 
 /** Provenance distinguishes initial reconciliation from a completed batch. */
@@ -111,6 +145,12 @@ export interface GitHubReadinessOptions {
   blockedLabel?: string;
   /** Any of these labels prevents automated publication; defaults to readiness:hold. */
   holdLabels?: string[];
+  /** Label for a separately allowlisted project qualification lane; never admits implementation. */
+  qualificationLabel?: string;
+  /** Publish a managed readiness summary without changing original acceptance/dependencies. Default false. */
+  publishBody?: boolean;
+  /** Related parent/spec issue IDs outside execution scope, included in freshness checks but never published. */
+  contextIssueNumbers?: number[];
   /** Why this reconciliation is running. */
   trigger: ReadinessTrigger;
   /** Read-only assessment callback. The host distrusts and validates its output. */
@@ -136,20 +176,33 @@ export interface ReadinessVerification {
   /** Approve every non-held decision only after independently checking its full contract. */
   approved: {
     number: number;
-    status: "ready-for-agent" | "blocked" | "not-implementation";
+    status:
+      | "ready-for-agent"
+      | "ready-for-qualification"
+      | "blocked"
+      | "not-implementation";
   }[];
   /** Dependency owner/repo#number mapped to a commit reachable from head. */
   dependencyCommits: Record<string, string>;
+  /** Host-approved qualification program IDs by issue; required for qualification promotion, never executes them. */
+  qualificationPrograms?: Record<string, string>;
 }
 
 const verificationSchema = z
   .object({
     head: z.string(),
-    approved: z.array(decisionSchema.omit({ reason: true })),
+    approved: z.array(
+      z
+        .object({ number: z.number().int().positive(), status: statusSchema })
+        .strict(),
+    ),
     dependencyCommits: z.record(
       z.string(),
       z.string().regex(/^[a-f0-9]{40,64}$/),
     ),
+    qualificationPrograms: z
+      .record(z.string(), z.string().trim().min(1))
+      .optional(),
   })
   .strict();
 
@@ -298,6 +351,7 @@ export type GitHubReadinessInventoryOptions = Pick<
   | "readyLabel"
   | "blockedLabel"
   | "holdLabels"
+  | "contextIssueNumbers"
 >;
 
 /** A host diagnosis of one issue; it never authorizes publication or execution. */
@@ -357,7 +411,11 @@ export interface GitHubReadinessAdmission {
 
 function issueKind(issue: ReadinessIssue): ReadinessExclusion["kind"] {
   if (
-    issue.labels.some((label) => label.toLowerCase() === "live-validation") ||
+    issue.labels.some((label) =>
+      ["live-validation", "ready-for-qualification"].includes(
+        label.toLowerCase(),
+      ),
+    ) ||
     /\*\*Kind:\*\*\s*live-validation\b/i.test(issue.body)
   )
     return "qualification";
@@ -549,9 +607,23 @@ async function snapshot(
     !options.scopeLabel.trim()
   )
     fail("Explicit repository and scope label required");
+  const contextNumbers = [...new Set(options.contextIssueNumbers ?? [])].sort(
+    (a, b) => a - b,
+  );
+  if (contextNumbers.some((n) => !Number.isSafeInteger(n) || n < 1))
+    fail("Context issue IDs must be positive integers");
   return {
     repository: options.repository,
     head,
+    ...(contextNumbers.length
+      ? {
+          context: await Promise.all(
+            contextNumbers.map((n) =>
+              loadIssue(options.cwd, options.repository, n),
+            ),
+          ),
+        }
+      : {}),
     issues: (
       await Promise.all(
         (
@@ -563,6 +635,7 @@ async function snapshot(
           .filter(
             (row) =>
               !row.pull_request &&
+              !contextNumbers.includes(row.number) &&
               row.labels.some(
                 (label: { name: string }) => label.name === options.scopeLabel,
               ),
@@ -575,6 +648,47 @@ async function snapshot(
 
 const same = (a: unknown, b: unknown) =>
   JSON.stringify(a) === JSON.stringify(b);
+
+const SUMMARY_START = "<!-- sandcastle-readiness:start -->";
+const SUMMARY_END = "<!-- sandcastle-readiness:end -->";
+/** @internal Strip only the host-owned prefix; malformed/ambiguous ownership fails closed. */
+export function stripReadinessSummary(body: string): string {
+  if (!body.includes(SUMMARY_START) && !body.includes(SUMMARY_END)) return body;
+  const end = body.indexOf(SUMMARY_END);
+  if (
+    !body.startsWith(SUMMARY_START) ||
+    end < SUMMARY_START.length ||
+    body.indexOf(SUMMARY_START, SUMMARY_START.length) !== -1 ||
+    body.indexOf(SUMMARY_END, end + SUMMARY_END.length) !== -1
+  )
+    fail(
+      "Malformed managed readiness body; preserve the contract and reconcile manually",
+    );
+  return body.slice(end + SUMMARY_END.length).replace(/^\n\n/, "");
+}
+function readinessBody(
+  issue: ReadinessIssue,
+  decision: ReadinessAssessment["decisions"][number],
+  head: string,
+): string {
+  const text = (value: string) => value.replaceAll("<!--", "&lt;!--");
+  return [
+    SUMMARY_START,
+    "## Current execution readiness",
+    `Status: ${decision.status}.`,
+    `Assessed at integrated commit \`${head}\`; this is not deployment/release acceptance.`,
+    "This managed execution summary supersedes earlier readiness summaries only; original acceptance and dependencies remain unchanged.",
+    text(decision.reason),
+    ...(decision.gates ?? []).map(
+      (g) => `- Gate ${text(g.id)}: ${g.status} — ${text(g.reason)}`,
+    ),
+    ...(decision.evidence ?? []).map(
+      (e) => `- Evidence: ${text(e.path)} — ${text(e.claim)}`,
+    ),
+    SUMMARY_END,
+    stripReadinessSummary(issue.body),
+  ].join("\n\n");
+}
 function validateAssessment(input: ReadinessSnapshot, value: unknown) {
   const assessment = assessmentSchema.parse(value);
   if (assessment.head !== input.head) fail("Readiness source HEAD mismatch");
@@ -588,6 +702,20 @@ function validateAssessment(input: ReadinessSnapshot, value: unknown) {
     )
   )
     fail("Readiness must cover every scoped issue exactly once");
+  for (const row of assessment.decisions) {
+    if (
+      row.gates &&
+      new Set(row.gates.map((g) => g.id)).size !== row.gates.length
+    )
+      fail(`Duplicate gate accounting #${row.number}`);
+    if (row.gates?.some((g) => g.status === "satisfied" && !g.evidence.length))
+      fail(`Satisfied gate without evidence #${row.number}`);
+    if (
+      row.status === "ready-for-agent" &&
+      row.gates?.some((g) => g.status === "open")
+    )
+      fail(`Ready proposal has an open execution gate #${row.number}`);
+  }
   return assessment;
 }
 
@@ -721,11 +849,14 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
         const published = structuredClone(input);
         const ready = options.readyLabel ?? "ready-for-agent";
         const blocked = options.blockedLabel ?? "blocked";
+        const qualification =
+          options.qualificationLabel ?? "ready-for-qualification";
         const holds = options.holdLabels ?? ["readiness:hold"];
         yield* attempt(async () => {
           if (
-            new Set([ready, blocked, options.scopeLabel]).size !== 3 ||
-            [ready, blocked].some(
+            new Set([ready, blocked, qualification, options.scopeLabel])
+              .size !== 4 ||
+            [ready, blocked, qualification].some(
               (label) => !label.trim() || holds.includes(label),
             )
           )
@@ -773,10 +904,26 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
                   fail(
                     `Project verifier did not approve decision #${issue.number}`,
                   );
-                if (decision.status === "ready-for-agent") {
-                  if (nonImplementation(issue))
+                if (
+                  decision.status === "ready-for-agent" ||
+                  decision.status === "ready-for-qualification"
+                ) {
+                  if (
+                    decision.status === "ready-for-agent" &&
+                    nonImplementation(issue)
+                  )
                     fail(
                       `Non-implementation issue #${issue.number} cannot be ready`,
+                    );
+                  if (
+                    decision.status === "ready-for-qualification" &&
+                    (issueKind(issue) !== "qualification" ||
+                      !verification.qualificationPrograms?.[
+                        String(issue.number)
+                      ])
+                  )
+                    fail(
+                      `Qualification #${issue.number} requires a host-approved project program`,
                     );
                   for (const dependency of issue.dependencies) {
                     const key = `${dependency.repository}#${dependency.number}`;
@@ -797,13 +944,20 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
                   }
                 }
                 const desired =
-                  decision.status === "ready-for-agent" ? ready : blocked;
-                const remove = [ready, blocked].filter(
+                  decision.status === "ready-for-agent"
+                    ? ready
+                    : decision.status === "ready-for-qualification"
+                      ? qualification
+                      : blocked;
+                const remove = [ready, blocked, qualification].filter(
                   (label) => label !== desired && issue.labels.includes(label),
                 );
                 const add = issue.labels.includes(desired) ? [] : [desired];
-                return add.length || remove.length
-                  ? [{ issue, add, remove }]
+                const body = options.publishBody
+                  ? readinessBody(issue, decision, head)
+                  : issue.body;
+                return add.length || remove.length || body !== issue.body
+                  ? [{ issue, add, remove, body }]
                   : [];
               }),
             )
@@ -831,8 +985,25 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
           audit.status = "applying";
           audit.pending = change.issue.number;
           yield* persist();
+          const bodyPath = auditPath + ".body.json";
+          if (change.body !== change.issue.body)
+            yield* writePrivateRecord(
+              fs,
+              bodyPath,
+              JSON.stringify({ body: change.body }),
+            );
           yield* attempt(async () => {
             const endpoint = `repos/${options.repository}/issues/${change.issue.number}/labels`;
+            if (change.body !== change.issue.body) {
+              await run(options.cwd, "gh", [
+                "api",
+                `repos/${options.repository}/issues/${change.issue.number}`,
+                "--method",
+                "PATCH",
+                "--input",
+                bodyPath,
+              ]);
+            }
             // Remove readiness first when blocking, add readiness last when promoting.
             for (const label of change.remove)
               await run(options.cwd, "gh", [
@@ -856,6 +1027,7 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
             );
             const expected = {
               ...change.issue,
+              body: change.body,
               updatedAt: after.updatedAt,
               labels: [
                 ...change.issue.labels.filter(

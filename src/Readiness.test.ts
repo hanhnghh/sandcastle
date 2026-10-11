@@ -1,4 +1,5 @@
 import * as childProcess from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -71,6 +72,118 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
+it("retains structured evidence and open gate accounting in the read-only readiness report", async () => {
+  const f = await fixture();
+  const result = await reassessGitHubReadiness({
+    ...readyOptions(f.options),
+    mode: "report-only",
+    assess: async (s) => ({
+      head: s.head,
+      decisions: [
+        {
+          number: 20,
+          status: "blocked",
+          reason: "Missing gate",
+          evidence: [{ path: "proof.txt", claim: "Existing contract only" }],
+          gates: [
+            {
+              id: "integration",
+              status: "open",
+              reason: "No passing execution",
+              evidence: [],
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  expect(result.assessment.decisions[0]).toMatchObject({
+    gates: [{ id: "integration", status: "open" }],
+    evidence: [{ path: "proof.txt" }],
+  });
+  expect(f.writes).toEqual([]);
+});
+
+it("publishes approved qualification readiness without admitting it to implementation", async () => {
+  const f = await fixture();
+  f.issue.body =
+    "**Kind:** live-validation\n## Acceptance\n- Observe real service";
+  await reassessGitHubReadiness({
+    ...readyOptions(f.options),
+    assess: async (s) => ({
+      head: s.head,
+      decisions: [
+        {
+          number: 20,
+          status: "ready-for-qualification",
+          reason: "Host-approved lane",
+          evidence: [
+            {
+              path: "proof.txt",
+              claim: "Project verifier approved preflight, not live acceptance",
+            },
+          ],
+          gates: [
+            {
+              id: "live-acceptance",
+              status: "open",
+              reason: "Qualification program must test this",
+              evidence: [],
+            },
+          ],
+        },
+      ],
+    }),
+    verify: async (input) => ({
+      ...(await approve(input)),
+      qualificationPrograms: { "20": "project-preflight" },
+    }),
+  });
+  expect(f.issue.labels.map((l) => l.name)).toContain(
+    "ready-for-qualification",
+  );
+  expect(await loadGitHubReadinessInventory(f.options)).toEqual([]);
+});
+
+it("publishes and reads back a managed readiness body without changing task acceptance, and repeats as a no-op", async () => {
+  const f = await fixture();
+  const original = f.issue.body;
+  const options = { ...readyOptions(f.options), publishBody: true };
+  await reassessGitHubReadiness(options);
+  expect(f.issue.body).toContain("<!-- sandcastle-readiness:start -->");
+  expect(f.issue.body).toContain(original);
+  const writes = f.writes.length;
+  await reassessGitHubReadiness(options);
+  expect(f.writes).toHaveLength(writes);
+});
+
+it("rejects a parent contract edited during assessment even when it is outside the execution scope", async () => {
+  const f = await fixture();
+  f.transport.contextIssue = {
+    ...f.issue,
+    number: 99,
+    body: "Parent contract",
+    labels: [{ name: "meta" }],
+  };
+  await expect(
+    reassessGitHubReadiness({
+      ...readyOptions(f.options),
+      contextIssueNumbers: [99],
+      assess: async (s) => {
+        expect(s.context?.[0]?.body).toBe("Parent contract");
+        f.transport.contextIssue!.body = "Changed parent AC";
+        return {
+          head: s.head,
+          decisions: [
+            { number: 20, status: "ready-for-agent", reason: "Checked" },
+          ],
+        };
+      },
+    }),
+  ).rejects.toThrow(/Tracker changed/);
+  expect(f.writes).toEqual([]);
+});
+
 it("keeps the host event loop responsive while GitHub inventory is loading", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "readiness-responsive-"));
   cleanups.push(() => rm(cwd, { recursive: true, force: true }));
@@ -138,6 +251,7 @@ async function fixture() {
     onList: () => {},
     comments: [] as { id: number; body: string; updated_at: string }[],
     native: [] as { html_url: string }[],
+    contextIssue: undefined as typeof issue | undefined,
   };
   const writes: string[][] = [];
   const additionalIssues: (typeof issue)[] = [];
@@ -145,14 +259,21 @@ async function fixture() {
     const argv = [...(args ?? [])].map(String);
     if (argv[0] !== "api") throw new Error(`Unexpected gh call: ${argv}`);
     const endpoint = argv[1]!;
-    if (argv.includes("POST") || argv.includes("DELETE")) {
+    if (
+      argv.includes("POST") ||
+      argv.includes("DELETE") ||
+      argv.includes("PATCH")
+    ) {
       const target = [issue, ...additionalIssues].find(
         (row) =>
           row.number === Number(endpoint.split("/issues/")[1]?.split("/")[0]),
       )!;
       writes.push(argv);
       transport.onWrite();
-      if (argv.includes("POST")) {
+      if (argv.includes("PATCH")) {
+        const path = argv[argv.indexOf("--input") + 1]!;
+        target.body = JSON.parse(readFileSync(path, "utf8")).body;
+      } else if (argv.includes("POST")) {
         for (const arg of argv.filter((a) => a.startsWith("labels[]=")))
           target.labels.push({ name: arg.slice(9) });
       } else
@@ -171,6 +292,11 @@ async function fixture() {
       return value;
     }
     if (endpoint.endsWith("/issues/20")) return JSON.stringify(issue);
+    if (
+      transport.contextIssue &&
+      endpoint.endsWith(`/issues/${transport.contextIssue.number}`)
+    )
+      return JSON.stringify(transport.contextIssue);
     const extra = additionalIssues.find((row) =>
       endpoint.endsWith(`/issues/${row.number}`),
     );

@@ -6,6 +6,7 @@ import {
   AgentError,
   AgentIdleTimeoutError,
   SessionCaptureError,
+  PromptError,
 } from "./errors.js";
 import type { SandboxError } from "./errors.js";
 import type { SandboxService } from "./SandboxFactory.js";
@@ -41,6 +42,16 @@ const invokeAgent = (
   SandboxError
 > =>
   Effect.gen(function* () {
+    if (
+      provider.maxPromptCharacters !== undefined &&
+      prompt.length > provider.maxPromptCharacters
+    ) {
+      return yield* Effect.fail(
+        new PromptError({
+          message: `Resolved ${provider.name} prompt has ${prompt.length} characters; limit is ${provider.maxPromptCharacters}. Inspect shell-expansion sizes in the run log. Send an inventory/artifact reference and read full diffs in bounded chunks; input was not truncated and the agent was not invoked.`,
+        }),
+      );
+    }
     let resultText = "";
     let sessionId: string | undefined;
     let usage: IterationUsage | undefined;

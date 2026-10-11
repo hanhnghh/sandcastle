@@ -53,7 +53,14 @@ HEAD, full bodies, all comment pages/edit timestamps, labels, and native plus
 explicit dependency-section references (including nested and cross-repo refs).
 Trigger is `startup` or `post-merge`, with the latter's baseline, branch refs,
 merged issue IDs and completion signal. Assessment proposes one status/reason
-per scoped issue.
+per scoped issue, with optional structured `evidence: [{path, claim}]` and
+`gates: [{id, status: "satisfied" | "open", reason, evidence}]`. New assessor
+prompts require these rows; legacy SDK callbacks can keep their earlier shape.
+Satisfied gates need evidence, duplicate IDs are rejected, and an implementation-ready proposal
+cannot contain an open gate. Qualification proposals may retain open live
+acceptance gates: their trusted verifier must distinguish proven preflight from
+the observations the allowlisted protocol still needs to collect. Gate evidence is a claim until the host
+independently verifies its applicability and actual execution.
 
 Expected verifier output:
 
@@ -87,6 +94,54 @@ callback, plus a read-only `assess` callback. `ReadinessVerificationInput` and
 `ReadinessVerification` describe their contract. `loadGitHubReadinessInventory()`
 provides the same fresh scope/hold/state filter to custom planners. A custom
 workflow owns isolation of its assessor and its verifier configuration.
+
+### Pinned project-policy verifier
+
+`readinessContractHash(issue)` pins title, original body, complete comment/edit
+history and dependency identities; host-owned summary text/state labels do not
+invalidate it. Explicitly approve these contracts before saving a policy. Never
+regenerate hashes automatically to accept agent/human edits. Unknown or edited
+contracts can only stay blocked until the owner reviews the change.
+
+`verifyReadinessPolicy({cwd, input, policy, verifyGate})` checks full/unique
+decision coverage, complete declared gate accounting, holds, task lanes and
+completed dependency refs reachable from HEAD. The policy maps dependency IDs
+to owner-approved Git refs (prefer immutable SHAs when appropriate); the owner
+must ensure those refs identify the actual verified producer implementation,
+not an arbitrary ancestor. The trusted `verifyGate(id, input)` adapter executes
+or independently validates the exact project gate. It returns
+`{head, passed, reference}`, bound to the assessed HEAD. Do not implement it by
+checking only that an agent-written receipt file exists. Host references such
+as `host:integration` must correspond to actual passing checks; additional file
+references must be regular tracked files, not secret/cache paths or symlinks.
+
+Product/live authority checks belong in the adapter. A generic SDK test-suite
+success cannot substitute for Shopify/cloud/billing qualification. The self-host
+operator backlog declares only its offline integration gate; its driver runs
+the Linux package/build/browser checks before the read-only assessor, then
+verifies the proposal before publication. No npm publication or live operation
+is authorized by this policy.
+
+### Managed summaries and qualification
+
+Opt into `publishBody: true` to replace only a host-owned prefix between
+`<!-- sandcastle-readiness:start -->` and `<!-- sandcastle-readiness:end -->`.
+Original AC/dependency text and unrelated labels remain intact. Malformed
+ownership markers stop publication; repeated identical summaries are no-ops.
+Body/label writes are checked by readback and the full-scope snapshot. GitHub
+writes are not one atomic transaction: partial failures stop planning and retain
+the journal for reconciliation, not blind retry or rollback over human edits.
+
+`contextIssueNumbers: [<parent IDs>]` includes full read-only parent/spec contracts
+in snapshot.context and every freshness check, but excludes them from decision
+targets/publication, even if they carry the scope label.
+
+`ready-for-qualification` additionally requires a qualification-kind issue and
+a host-approved `qualificationPrograms` entry. The policy must explicitly name
+the program and its execution/preflight gates. This status never admits the
+implementation planner and does not pass outstanding live acceptance. Program
+authorization, current account/environment checks and actual execution remain
+owned by the project's qualification lane.
 
 ## Batch admission and empty-frontier diagnostics
 

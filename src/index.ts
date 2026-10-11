@@ -1,4 +1,9 @@
 export { run } from "./run.js";
+export {
+  readinessContractHash,
+  verifyReadinessPolicy,
+} from "./ReadinessPolicy.js";
+export type { ReadinessPolicy, ReadinessGateProof } from "./ReadinessPolicy.js";
 export { withWorkflowRecovery } from "./WorkflowRecovery.js";
 export type {
   WorkflowRecoveryOptions,

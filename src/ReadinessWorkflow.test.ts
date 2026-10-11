@@ -59,7 +59,7 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   const {snapshot,trigger}=JSON.parse(prompt.match(/<readiness-input>([\\s\\S]*?)<\\/readiness-input>/)[1]);
   record('readiness:'+trigger.kind);
   if(process.env.READINESS_FIXTURE_DIRTY==='1') fs.writeFileSync('unauthorized.txt','dirty');
-  console.log('<readiness>'+JSON.stringify({head:snapshot.head,decisions:snapshot.issues.map(i=>({number:i.number,status:i.body.includes('**Kind:** live-validation')?'not-implementation':i.dependencies.some(d=>d.state!=='closed')?'blocked':'ready-for-agent',reason:'fixture contract'}))})+'</readiness>');
+  console.log('<readiness>'+JSON.stringify({head:snapshot.head,decisions:snapshot.issues.map(i=>({number:i.number,status:i.body.includes('**Kind:** live-validation')?'not-implementation':i.dependencies.some(d=>d.state!=='closed')?'blocked':'ready-for-agent',reason:'fixture contract',evidence:[{path:'host:integration',claim:'Host gate'}],gates:[{id:'integration',status:'satisfied',reason:'Host gate',evidence:[{path:'host:integration',claim:'Host gate'}]}]}))})+'</readiness>');
 } else if(prompt.includes('# CANDIDATE INVENTORY')) {
   const issues=JSON.parse(prompt.match(/<issues-json>([\\s\\S]*?)<\\/issues-json>/)[1]); record('plan:'+issues.map(i=>i.number).join(','));
   if(process.env.READINESS_FIXTURE_STALE_PLAN==='1') { const state=JSON.parse(fs.readFileSync(process.env.READINESS_FIXTURE_STATE,'utf8'));state.find(i=>i.number===22).labels.push({name:'blocked'});fs.writeFileSync(process.env.READINESS_FIXTURE_STATE,JSON.stringify(state)); }
@@ -79,11 +79,13 @@ console.log('<promise>COMPLETE</promise>');
 
 const verifier = `
 import fs from 'node:fs'; import {execFileSync} from 'node:child_process';
+import {verifyReadinessPolicy} from ${JSON.stringify(new URL("./index.ts", import.meta.url).href)};
 const {snapshot,assessment,trigger}=JSON.parse(fs.readFileSync(0,'utf8'));
 if(trigger.kind==='post-merge' && process.env.READINESS_FIXTURE_FAIL_VERIFY==='1') throw Error('project gate failed');
-const dependencyCommits={};
-for(const i of snapshot.issues) for(const d of i.dependencies) if(d.state==='closed') dependencyCommits[d.repository+'#'+d.number]=execFileSync('git',['log','-1','--format=%H','--','task-'+d.number+'.txt'],{encoding:'utf8'}).trim();
-console.log(JSON.stringify({head:snapshot.head,approved:assessment.decisions.map(({number,status})=>({number,status})),dependencyCommits}));
+const policy=JSON.parse(fs.readFileSync(process.env.READINESS_FIXTURE_POLICY,'utf8'));
+console.log(JSON.stringify(await verifyReadinessPolicy({cwd:process.cwd(),input:{snapshot,assessment,trigger},policy,
+  verifyGate:async id=>{if(id!=='integration') throw Error('Unknown gate');execFileSync(process.execPath,['-e','process.exit(0)']);return {head:snapshot.head,passed:true,reference:'host:integration'};},
+})));
 `;
 
 async function execute(extraEnv: Record<string, string> = {}) {
@@ -126,6 +128,49 @@ async function execute(extraEnv: Record<string, string> = {}) {
     ),
   );
   await writeFile(trace, "");
+  const { readinessContractHash } = await import("./index.js");
+  const approvedRows = JSON.parse(await readFile(state, "utf8")) as {
+    number: number;
+    title: string;
+    body: string;
+  }[];
+  const policyPath = join(root, "policy.json");
+  await writeFile(
+    policyPath,
+    JSON.stringify({
+      repository: "owner/project",
+      issues: Object.fromEntries(
+        approvedRows.map((i) => [
+          String(i.number),
+          {
+            contractHash: readinessContractHash({
+              ...i,
+              comments: [],
+              dependencies:
+                i.number === 20
+                  ? [
+                      {
+                        repository: "owner/project",
+                        number: 22,
+                        state: "open",
+                        stateReason: null,
+                      },
+                    ]
+                  : [],
+            }),
+            kind: i.body.includes("live-validation")
+              ? "qualification"
+              : "implementation",
+            gates: ["integration"],
+            dependencies:
+              i.number === 20
+                ? { "owner/project#22": "refs/heads/sandcastle/issue-22" }
+                : {},
+          },
+        ]),
+      ),
+    }),
+  );
   await writeFile(join(bin, "gh"), fakeGh);
   await chmod(join(bin, "gh"), 0o755);
   await writeFile(join(root, "agent.mjs"), fakeAgent);
@@ -170,7 +215,12 @@ async function execute(extraEnv: Record<string, string> = {}) {
       ...config,
       repository: "owner/project",
       mode: "apply",
-      verifyCommand: [process.execPath, join(root, "verify.mjs")],
+      verifyCommand: [
+        process.execPath,
+        "--import",
+        createRequire(import.meta.url).resolve("tsx"),
+        join(root, "verify.mjs"),
+      ],
     }),
   );
   await writeFile(
@@ -213,6 +263,7 @@ async function execute(extraEnv: Record<string, string> = {}) {
           PATH: `${bin}:${process.env.PATH}`,
           GH_TOKEN: "fake-host-token",
           READINESS_FIXTURE_STATE: state,
+          READINESS_FIXTURE_POLICY: policyPath,
           READINESS_FIXTURE_TRACE: trace,
           ...extraEnv,
         },

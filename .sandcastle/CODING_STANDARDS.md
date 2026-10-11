@@ -202,4 +202,7 @@ explicitly; never mask a new failure or call an unexecuted command green.
 Self-host runs target `hanhnghh/sandcastle`, scope `scope:operator-admin`.
 Only verified listed implementation issues may be closed. Parent PRD #1,
 source pushes, npm releases and registry account changes remain maintainer-owned.
-Readiness is report-only until an independently tested project verifier exists.
+This self-host runner opts into apply only for the pinned operator backlog in
+readiness-policy.json, after independent Linux gate execution. Unknown/edited
+contracts and parent-PRD changes require renewed maintainer approval. Generic
+consumer scaffolds remain report-only until their own verifier is configured.

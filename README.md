@@ -189,6 +189,21 @@ stop unsafe promotions. Repository routing also applies to task reads/closure.
 See [readiness configuration and verifier contract](docs/readiness.md) before
 enabling it. This does not retrofit existing project configurations.
 
+Assessors can report structured `evidence` and execution `gates`. A trusted
+project verifier can use `verifyReadinessPolicy()` with contracts pinned by
+`readinessContractHash()` and independently executed host gate proofs. Optional
+managed body summaries preserve original acceptance/dependencies; read-only
+parent contexts participate in freshness checks. `ready-for-qualification` is a
+separately allowlisted project lane, never implementation admission or a claim
+of live acceptance. Generic scaffolds still default to report-only.
+
+Reviewer scaffolds pass an immutable task baseline and inject file/stat/commit
+inventories, not raw patches. Review must cover every changed file and AC by
+reading full diffs in bounded groups or validating opaque artifacts through
+producer/consumer evidence. Codex prompts over 1,048,576 UTF-16 code units are
+rejected after expansion before invocation, without truncating input or exposing
+payload data. Existing copied prompts need explicit adaptation or re-init.
+
 Reviewed workflows refresh the selected contracts before creating worktrees,
 fork from the admitted source commit, and require completed implementation and
 review before merge. They stop on no progress and report pending qualification

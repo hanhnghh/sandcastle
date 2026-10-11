@@ -28,7 +28,10 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { randomUUID, createHash } from "node:crypto";
-import { validatePlannerBatch } from "./planner-batch.js";
+import {
+  validatePlannerBatch,
+  type PlannerCandidate,
+} from "./planner-batch.js";
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
 // and validates it against this schema. We use Zod here, but any Standard
@@ -191,6 +194,9 @@ const readiness = z
     readyLabel: z.string().min(1),
     blockedLabel: z.string().min(1),
     holdLabels: z.array(z.string().min(1)),
+    qualificationLabel: z.string().min(1).default("ready-for-qualification"),
+    publishBody: z.boolean().default(false),
+    contextIssueNumbers: z.array(z.number().int().positive()).optional(),
     verifyCommand: z.array(z.string().min(1)).min(1).nullable(),
   })
   .strict()
@@ -231,22 +237,146 @@ const agentMap = await sandcastle.createAgentMap({
   name: "Parallel planner with review",
 });
 
-const loadPlannerInventory = async (): Promise<unknown[]> =>
+const loadPlannerInventory = async (): Promise<PlannerCandidate[]> =>
   readinessEnabled
     ? sandcastle.loadGitHubReadinessInventory({
         ...readiness,
         repository: readiness.repository!,
         cwd: process.cwd(),
       })
-    : (JSON.parse(
-        await runHost("bash", [".sandcastle/planner-inventory.sh"]),
-      ) as unknown[]);
+    : z
+        .array(
+          z
+            .object({
+              id: z.union([z.string(), z.number()]).optional(),
+              number: z.union([z.string(), z.number()]).optional(),
+              explicitBlockersResolved: z.boolean().optional(),
+            })
+            .passthrough(),
+        )
+        .parse(
+          JSON.parse(
+            await runHost("bash", [".sandcastle/planner-inventory.sh"]),
+          ),
+        );
 
 const currentBranch = async () =>
   (await runHost("git", ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 
+// This project approves only the published operator backlog. Generic projects
+// keep their own policy/verifier; do not derive policy from agent conclusions.
+const selfHostPolicy = JSON.parse(
+  readFileSync(".sandcastle/readiness-policy.json", "utf8"),
+) as sandcastle.ReadinessPolicy & {
+  context: { parentIssue: number; contractHash: string };
+};
+async function checkParentContract() {
+  const endpoint = `repos/${selfHostPolicy.repository}/issues/${selfHostPolicy.context.parentIssue}`;
+  const parent = JSON.parse(await runHost("gh", ["api", endpoint]));
+  const comments = JSON.parse(
+    await runHost("gh", [
+      "api",
+      endpoint + "/comments?per_page=100",
+      "--paginate",
+      "--slurp",
+    ]),
+  )
+    .flat()
+    .map((c: { id: number; body: string; updated_at: string }) => ({
+      id: c.id,
+      body: c.body,
+      updatedAt: c.updated_at,
+    }));
+  if (
+    sandcastle.readinessContractHash({
+      title: parent.title,
+      body: parent.body ?? "",
+      comments,
+      dependencies: [],
+    }) !== selfHostPolicy.context.contractHash
+  )
+    throw new Error(
+      "Parent PRD changed; reapprove project readiness policy before automatic promotion.",
+    );
+}
+async function verifyHostIntegration(
+  batch: number,
+): Promise<sandcastle.ReadinessGateProof> {
+  const head = (await runHost("git", ["rev-parse", "HEAD"])).trim();
+  const branch = `sandcastle/host-gate-${randomUUID()}`;
+  return agentMap.track(
+    {
+      batch,
+      role: "readiness",
+      title: "Host integration gate (no model)",
+      branch,
+    },
+    async (logging) => {
+      const sandbox = await sandcastle.createSandbox({
+        branch,
+        baseBranch: head,
+        sandbox: codexSandbox(branch, readinessEnvironment),
+        hooks,
+        copyToWorktree: [],
+      });
+      try {
+        const result = await sandbox.exec(
+          "timeout 600 bash .sandcastle/scripts/verify-package.sh root",
+          {
+            onLine: (message) => {
+              if (logging.type === "file")
+                logging.onAgentStreamEvent?.({
+                  type: "text",
+                  message,
+                  iteration: 1,
+                  timestamp: new Date(),
+                });
+            },
+          },
+        );
+        if (result.exitCode !== 0)
+          throw new Error(
+            `Host integration gate failed (${result.exitCode}); no readiness publication. ${result.stderr.slice(-2000)}`,
+          );
+        const [testedHead, testedStatus] = await Promise.all([
+          sandbox.exec("git rev-parse HEAD"),
+          sandbox.exec("git status --porcelain"),
+        ]);
+        if (
+          testedHead.exitCode !== 0 ||
+          testedStatus.exitCode !== 0 ||
+          testedHead.stdout.trim() !== head ||
+          testedStatus.stdout.trim()
+        )
+          throw new Error(
+            "Host gate checkout changed during verification; proof is not valid for the integration HEAD",
+          );
+        if (
+          (await runHost("git", ["rev-parse", "HEAD"])).trim() !== head ||
+          (await runHost("git", ["status", "--porcelain"])).trim()
+        )
+          throw new Error(
+            "Source changed while host integration gate was executing",
+          );
+        return {
+          head,
+          passed: true,
+          reference: "host:integration",
+          completionSignal: "<promise>COMPLETE</promise>",
+          commits: [],
+        };
+      } finally {
+        await sandbox.close();
+      }
+    },
+  );
+}
+
 async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
   if (!readinessEnabled) return;
+  await checkParentContract();
+  const hostGate =
+    readiness.mode === "apply" ? await verifyHostIntegration(batch) : undefined;
   await agentMap.track(
     {
       batch,
@@ -261,19 +391,35 @@ async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
         repository: readiness.repository!,
         cwd: process.cwd(),
         trigger,
-        verify: readiness.verifyCommand
-          ? async (input) =>
-              JSON.parse(
-                await runHost(
-                  readiness.verifyCommand![0]!,
-                  readiness.verifyCommand!.slice(1),
-                  {
-                    input: JSON.stringify(input),
-                    timeout: 300_000,
+        verify:
+          readiness.mode === "apply"
+            ? async (input) => {
+                await checkParentContract();
+                const parent = input.snapshot.context?.find(
+                  (i) => i.number === selfHostPolicy.context.parentIssue,
+                );
+                if (
+                  !parent ||
+                  sandcastle.readinessContractHash(parent) !==
+                    selfHostPolicy.context.contractHash
+                )
+                  throw new Error(
+                    "Parent contract is not bound to this readiness snapshot",
+                  );
+                return sandcastle.verifyReadinessPolicy({
+                  cwd: process.cwd(),
+                  input,
+                  policy: selfHostPolicy,
+                  verifyGate: async (id) => {
+                    if (id !== "integration" || !hostGate)
+                      throw new Error(
+                        `No trusted host verifier for gate ${id}`,
+                      );
+                    return hostGate;
                   },
-                ),
-              )
-          : undefined,
+                });
+              }
+            : undefined,
         assess: async (snapshot) => {
           // Fresh worktree, no bootstrap hooks, no tracker credentials.
           const branch = `sandcastle/readiness-${randomUUID()}`;
@@ -290,7 +436,19 @@ async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
               agent: codexAgent(),
               promptFile: "./.sandcastle/readiness-prompt.md",
               promptArgs: {
-                READINESS_INPUT: JSON.stringify({ snapshot, trigger }),
+                READINESS_INPUT: JSON.stringify({
+                  snapshot,
+                  trigger,
+                  policy: selfHostPolicy,
+                  hostGate,
+                  contractApprovals: Object.fromEntries(
+                    snapshot.issues.map((i) => [
+                      i.number,
+                      selfHostPolicy.issues[String(i.number)]?.contractHash ===
+                        sandcastle.readinessContractHash(i),
+                    ]),
+                  ),
+                }),
               },
               completionSignal: [
                 "<promise>COMPLETE</promise>",
@@ -628,6 +786,7 @@ async function executeWorkflow() {
                     TASK_ID: issue.id,
                     ISSUE_TITLE: issue.title,
                     BRANCH: issue.branch,
+                    REVIEW_BASE_SHA: batchBaseSha,
                   },
                 }),
             );

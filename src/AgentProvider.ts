@@ -267,6 +267,8 @@ export interface AgentProvider {
   readonly env: Record<string, string>;
   /** When true, session capture is enabled for this provider. Default: true for Claude Code, false for others. */
   readonly captureSessions: boolean;
+  /** Maximum resolved prompt length in UTF-16 code units. Omitted when the provider declares no transport limit; never causes truncation. */
+  readonly maxPromptCharacters?: number;
   /** Provider-owned storage and transfer behavior for resumable agent sessions. */
   readonly sessionStorage?: AgentSessionStorage;
   buildPrintCommand(options: AgentCommandOptions): PrintCommand;
@@ -775,6 +777,7 @@ export const codex = (
   options?: CodexOptions,
 ): AgentProvider & { readonly sessionStorage: AgentSessionStorage } => ({
   name: "codex",
+  maxPromptCharacters: 1_048_576,
   env: options?.env ?? {},
   captureSessions: options?.captureSessions ?? true,
   sessionStorage: makeCodexSessionStorage(options),

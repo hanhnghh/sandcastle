@@ -12,13 +12,27 @@ to interpret an acceptance criterion. Read
 
 # CONTEXT
 
-## Branch diff
+## Task change inventory (navigation, not review evidence)
 
-!`git diff {{TARGET_BRANCH}}...{{BRANCH}}`
+Immutable review baseline: `{{REVIEW_BASE_SHA}}`.
+
+!`git diff --stat {{REVIEW_BASE_SHA}}...{{BRANCH}}`
+
+!`git diff --name-status {{REVIEW_BASE_SHA}}...{{BRANCH}}`
 
 ## Commits on this branch
 
-!`git log {{TARGET_BRANCH}}..{{BRANCH}} --oneline`
+!`git log -n 20 {{REVIEW_BASE_SHA}}..{{BRANCH}} --oneline`
+
+Review every changed file and every acceptance criterion. Read the full task
+diff per file or small group with `git diff {{REVIEW_BASE_SHA}}...{{BRANCH}} -- <paths>`;
+paginate unusually large diffs without losing coverage. Read callers, surrounding
+code and tests when needed. The initial inventory and bounded commit list do not
+limit review scope; inspect remaining commits as needed. For large generated or
+encoded artifacts, verify producers, schema/hash/decoding scripts and actual
+consumers/tests instead of dumping opaque payloads into model input. Record each
+file's review method and result alongside the AC ledger. Missing coverage keeps
+review incomplete; do not silently truncate data or waive an AC.
 
 # EXPLORATION
 
