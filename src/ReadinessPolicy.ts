@@ -251,7 +251,9 @@ export function verifyReadinessPolicy(options: {
                 e.path,
               )
             )
-              fail(`Invalid evidence reference #${issue.number}`);
+              fail(
+                `Invalid evidence reference #${issue.number}: use a plain repository-relative file path with line details in claim, or an exact verified host reference`,
+              );
             if (
               !/^100(644|755) /.test(
                 await git("ls-tree", snapshot.head, "--", e.path),

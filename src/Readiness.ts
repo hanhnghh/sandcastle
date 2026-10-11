@@ -14,7 +14,17 @@ class ReadinessError extends Data.TaggedError("ReadinessError")<{
 }> {}
 
 const evidenceSchema = z
-  .object({ path: z.string().trim().min(1), claim: z.string().trim().min(1) })
+  .object({
+    path: z
+      .string()
+      .trim()
+      .min(1)
+      .refine(
+        (path) => !/:\d+(?::\d+)?(?:-\d+)?$|#L\d+(?:-L?\d+)?$/.test(path),
+        "Evidence path must not include line numbers; put line details in claim and keep path as the plain file path or exact supplied host reference",
+      ),
+    claim: z.string().trim().min(1),
+  })
   .strict();
 const gateSchema = z
   .object({
@@ -62,7 +72,7 @@ export interface ReadinessAssessment {
       | "not-implementation";
     /** Evidence references and unresolved requirements. */
     reason: string;
-    /** Structured claims, not authorization. Legacy callbacks may omit these; strict project verifiers require them. */
+    /** Structured claims, not authorization. Paths identify plain source files or exact supplied host references; line details belong in claim. Legacy callbacks may omit these; strict project verifiers require them. */
     evidence?: { path: string; claim: string }[];
     /** One accounting row per project-declared gate; the host independently verifies satisfaction. */
     gates?: {

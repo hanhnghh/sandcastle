@@ -63,6 +63,13 @@ changed labels. Return `<readiness>` JSON with exactly this shape:
 ```
 
 Every decision must include evidence and gates. Evidence is `{path,claim}`.
+For source evidence, path is the plain repository-relative filename at the
+supplied HEAD. Put optional line details in claim, for example
+`{"path":"src/AgentProvider.ts","claim":"Line 752: declares effort options"}`.
+Keep path free of `:line`, line ranges, `#L` anchors and absolute paths.
+For execution evidence, copy the exact reference supplied by the host (such as
+`host:integration`); keep its identity unchanged and invent no host receipts.
+These rules apply to both decision.evidence and gates[].evidence.
 Account for every execution gate in the supplied project policy, including
 blocked tickets. A satisfied integration gate references `host:integration`
 and the supplied passing host execution at snapshot.head. Read the producer

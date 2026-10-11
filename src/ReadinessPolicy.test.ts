@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -146,6 +146,85 @@ it("requires complete declared gate accounting even for a blocked known contract
       }),
     }),
   ).rejects.toThrow(/Incomplete policy gate accounting/);
+});
+
+it.each(["proof.txt:752", "../proof.txt", ".env", "missing.txt"])(
+  "refuses %s as source evidence even with a passing host gate",
+  async (path) => {
+    const f = await fixture();
+    await writeFile(join(f.cwd, "proof.txt"), "Observed behavior\n");
+    await writeFile(join(f.cwd, ".env"), "fixture-only\n");
+    f.git("add", "proof.txt", ".env");
+    f.git("commit", "-qm", "fixture evidence");
+    const head = f.git("rev-parse", "HEAD");
+    f.input.snapshot.head = head;
+    f.input.assessment.head = head;
+    f.input.assessment.decisions[0]!.evidence!.push({
+      path,
+      claim: "Claimed source",
+    });
+    await expect(
+      sdk.verifyReadinessPolicy({
+        cwd: f.cwd,
+        input: f.input,
+        policy: {
+          repository: "owner/project",
+          issues: {
+            "3": {
+              contractHash: sdk.readinessContractHash(f.issue),
+              kind: "implementation",
+              dependencies: {},
+              gates: ["integration"],
+            },
+          },
+        },
+        verifyGate: async () => ({
+          head,
+          passed: true,
+          reference: "host:integration",
+        }),
+      }),
+    ).rejects.toThrow(
+      path === "missing.txt"
+        ? /not a regular committed file/
+        : /Invalid evidence reference/,
+    );
+  },
+);
+
+it("accepts a committed plain source path with line details in its claim alongside independent host proof", async () => {
+  const f = await fixture();
+  await writeFile(join(f.cwd, "proof.txt"), "Observed behavior\n");
+  f.git("add", "proof.txt");
+  f.git("commit", "-qm", "fixture evidence");
+  const head = f.git("rev-parse", "HEAD");
+  f.input.snapshot.head = head;
+  f.input.assessment.head = head;
+  f.input.assessment.decisions[0]!.evidence!.push({
+    path: "proof.txt",
+    claim: "Line 1: Observed behavior",
+  });
+  const result = await sdk.verifyReadinessPolicy({
+    cwd: f.cwd,
+    input: f.input,
+    policy: {
+      repository: "owner/project",
+      issues: {
+        "3": {
+          contractHash: sdk.readinessContractHash(f.issue),
+          kind: "implementation",
+          dependencies: {},
+          gates: ["integration"],
+        },
+      },
+    },
+    verifyGate: async () => ({
+      head,
+      passed: true,
+      reference: "host:integration",
+    }),
+  });
+  expect(result.approved).toEqual([{ number: 3, status: "ready-for-agent" }]);
 });
 
 it.each([

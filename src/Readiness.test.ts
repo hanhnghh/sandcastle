@@ -104,6 +104,110 @@ it("retains structured evidence and open gate accounting in the read-only readin
   expect(f.writes).toEqual([]);
 });
 
+it.each([
+  "src/AgentProvider.ts:752",
+  "src/AgentProvider.ts:752-760",
+  "src/AgentProvider.ts:752:4",
+  "src/AgentProvider.ts#L752",
+  "src/AgentProvider.ts#L752-L760",
+])(
+  "rejects line-annotated evidence %s before verification or publication",
+  async (path) => {
+    const f = await fixture();
+    let verified = false;
+    await expect(
+      reassessGitHubReadiness({
+        ...readyOptions(f.options),
+        verify: async (input) => {
+          verified = true;
+          return approve(input);
+        },
+        assess: async (s) => ({
+          head: s.head,
+          decisions: [
+            {
+              number: 20,
+              status: "ready-for-agent",
+              reason: "Source inspected",
+              evidence: [{ path, claim: "Declared effort options" }],
+            },
+          ],
+        }),
+      }),
+    ).rejects.toThrow(/line numbers.*claim/);
+    expect(verified).toBe(false);
+    expect(f.writes).toEqual([]);
+  },
+);
+
+it("rejects line-annotated gate evidence before publication even for blocked proposals", async () => {
+  const f = await fixture();
+  await expect(
+    reassessGitHubReadiness({
+      ...readyOptions(f.options),
+      mode: "report-only",
+      assess: async (s) => ({
+        head: s.head,
+        decisions: [
+          {
+            number: 20,
+            status: "blocked",
+            reason: "Missing dependency",
+            evidence: [],
+            gates: [
+              {
+                id: "integration",
+                status: "satisfied",
+                reason: "Claimed gate",
+                evidence: [
+                  {
+                    path: "src/AgentProvider.ts:752",
+                    claim: "Source inspected",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    }),
+  ).rejects.toThrow(/line numbers.*claim/);
+  expect(f.writes).toEqual([]);
+});
+
+it("preserves plain file paths and exact host references with line details only in claims", async () => {
+  const f = await fixture();
+  const evidence = [
+    { path: "proof.txt", claim: "Line 1: Gate passed" },
+    { path: "host:integration", claim: "Trusted host execution" },
+  ];
+  const result = await reassessGitHubReadiness({
+    ...readyOptions(f.options),
+    mode: "report-only",
+    assess: async (s) => ({
+      head: s.head,
+      decisions: [
+        {
+          number: 20,
+          status: "ready-for-agent",
+          reason: "Contract inspected",
+          evidence,
+          gates: [
+            {
+              id: "integration",
+              status: "satisfied",
+              reason: "Host check",
+              evidence: [evidence[1]!],
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  expect(result.assessment.decisions[0]?.evidence).toEqual(evidence);
+  expect(f.writes).toEqual([]);
+});
+
 it("publishes approved qualification readiness without admitting it to implementation", async () => {
   const f = await fixture();
   f.issue.body =

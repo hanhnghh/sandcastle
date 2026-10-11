@@ -172,6 +172,9 @@ describe("InitService scaffold", () => {
     );
     expect(prompt).toContain("Do not change GitHub");
     expect(prompt).not.toContain("shopify-compose-page");
+    expect(prompt).toContain("plain repository-relative filename");
+    expect(prompt).toContain("line details in claim");
+    expect(prompt).toContain("both decision.evidence and gates[].evidence");
   });
   it("does not enable GitHub readiness for a non-GitHub tracker", async () => {
     const dir = await makeDir();

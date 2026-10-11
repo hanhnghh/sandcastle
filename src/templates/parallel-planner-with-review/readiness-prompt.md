@@ -63,6 +63,13 @@ changed labels. Return `<readiness>` JSON with exactly this shape:
 ```
 
 Each evidence row is `{ "path": "source-file-or-host-reference", "claim": "precise scoped claim" }`.
+For source evidence, path is the plain repository-relative filename at the
+supplied HEAD. Put optional line details in claim, for example
+`{"path":"src/AgentProvider.ts","claim":"Line 752: declares effort options"}`.
+Keep path free of `:line`, line ranges, `#L` anchors and absolute paths.
+For execution evidence, copy the exact reference supplied by the host (such as
+`host:integration`); keep its identity unchanged and invent no host receipts.
+These rules apply to both decision.evidence and gates[].evidence.
 Gate rows use id, status (`satisfied` or `open`), reason and evidence. Account for
 every project-declared execution gate exactly once, including blocked issues.
 Use supplied host receipts only at their exact HEAD; a committed file/hash alone

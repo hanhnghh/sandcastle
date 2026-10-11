@@ -62,6 +62,15 @@ acceptance gates: their trusted verifier must distinguish proven preflight from
 the observations the allowlisted protocol still needs to collect. Gate evidence is a claim until the host
 independently verifies its applicability and actual execution.
 
+Evidence `path` identifies a plain repository-relative file at the supplied HEAD
+or an exact host-supplied execution reference such as `host:integration`. Put
+optional line details in `claim`, for example
+`{"path":"src/AgentProvider.ts","claim":"Line 752: declares effort options"}`.
+Source paths with `:line`, line/column or `#L` annotations are rejected during
+assessment validation, before a verifier or GitHub publication is invoked.
+These rules apply to both decision and gate evidence. File existence and an
+agent's claim still do not prove execution; the trusted verifier owns that check.
+
 Expected verifier output:
 
 ```json
