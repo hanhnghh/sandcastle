@@ -41,11 +41,12 @@ test("operator CLI serves only its explicit project and hands its frozen runtime
     join(configDir, "main.mts"),
     `
 import * as sandcastle from ${JSON.stringify(pathToFileURL(join(process.cwd(), "dist/index.js")).href)};
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 const runtime = await sandcastle.openProjectRuntime({ cwd: process.cwd(), id: process.env.SANDCASTLE_RUNTIME_ID });
 await writeFile(".sandcastle/observed.json", JSON.stringify({
   id: runtime.record.id, model: runtime.record.config.roles.planner.model,
   effort: runtime.record.config.roles.planner.effort, image: runtime.record.sandboxIdentity,
+  prompt: await readFile(runtime.promptFile("implementer"), "utf8"),
 }));
 `,
   );
@@ -95,6 +96,18 @@ await writeFile(".sandcastle/observed.json", JSON.stringify({
       ).status,
     ).toBe(200);
     expect(
+      (
+        await fetch(url + "/api/prompts", {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({
+            role: "implementer",
+            content: "CLI selected prompt",
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
       (await fetch(url + "/api/run", { method: "POST", headers, body: "{}" }))
         .status,
     ).toBe(202);
@@ -114,11 +127,49 @@ await writeFile(".sandcastle/observed.json", JSON.stringify({
       model: "cli-selected",
       effort: "medium",
       image: "sha256:" + "a".repeat(64),
+      prompt: "CLI selected prompt",
     });
     const current = (await (await fetch(url + "/api/run")).json()) as {
       run: { id: string };
     };
     expect(observed.id).toBe(current.run.id);
+    expect(
+      (
+        await fetch(url + "/api/prompts", {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({
+            role: "implementer",
+            content: "CLI next prompt",
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    const nextResponse = await fetch(url + "/api/run", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    expect(nextResponse.status).toBe(202);
+    const nextRun = (await nextResponse.json()) as { id: string };
+    expect(nextRun.id).not.toBe(observed.id);
+    status = "running";
+    for (let attempt = 0; status === "running" && attempt < 100; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const response = (await (await fetch(url + "/api/run")).json()) as {
+        run: { id: string; status: string };
+      };
+      expect(response.run.id).toBe(nextRun.id);
+      status = response.run.status;
+    }
+    expect(status).toBe("completed");
+    const nextObserved = JSON.parse(
+      await readFile(join(configDir, "observed.json"), "utf8"),
+    );
+    expect(nextObserved).toMatchObject({
+      id: nextRun.id,
+      prompt: "CLI next prompt",
+    });
   } finally {
     child.kill("SIGTERM");
     await closed;

@@ -81,7 +81,8 @@ ownership, content-addressed default/base versions, a text diff against the
 current default and a separate changed-default diff. **Save** stores a private,
 atomic project override in `.sandcastle/prompts/<role>.json`. **Reset** selects
 the current default; it does not rewrite the project source file. Native forms
-support keyboard save/reset. Reloads and operator restarts retain overrides.
+support keyboard save/reset. Saving or resetting one role preserves other roles'
+unsaved drafts. Reloads and operator restarts retain saved overrides.
 
 `loadProjectPrompts({ cwd, promptFiles })` exposes the same resolution used by
 CLI, web and `createProjectRuntime`. `saveProjectPrompt({ cwd, promptFiles,

@@ -294,14 +294,30 @@ test("prompt editor saves with keyboard, reloads, resets and renders data", asyn
   await page.reload();
   assert.ok((await editor.inputValue()).includes("Customized"));
   assert.equal(await page.evaluate(() => window.promptExecuted), undefined);
-  await editor.fill("Invalid");
-  await page
-    .getByRole("button", { name: "Save implementer prompt", exact: true })
-    .click();
-  await page
-    .getByRole("status")
-    .filter({ hasText: "preserve required runtime output" })
-    .waitFor();
+  assert.equal(await page.locator("#prompts script").count(), 0);
+  const diff = page.getByLabel("Implementer prompt diff", { exact: true });
+  await diff.locator("..").locator("summary").focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await diff.isVisible(), true);
+  assert.ok((await diff.textContent()).includes("- Default browser prompt"));
+  assert.ok((await diff.textContent()).includes("+ Customized <script>"));
+  for (const [content, diagnostic] of [
+    ["Invalid", "preserve required runtime output"],
+    [
+      "Unknown {{UNSUPPORTED}} <promise>COMPLETE</promise>",
+      "unknown placeholder {{UNSUPPORTED}}",
+    ],
+    [
+      "Malformed {{NAME} <promise>COMPLETE</promise>",
+      "malformed template placeholder",
+    ],
+  ]) {
+    await editor.fill(content);
+    await page
+      .getByRole("button", { name: "Save implementer prompt", exact: true })
+      .click();
+    await page.getByRole("status").filter({ hasText: diagnostic }).waitFor();
+  }
   await page.reload();
   assert.ok((await editor.inputValue()).includes("Customized"));
   await writeFile(
@@ -339,6 +355,56 @@ test("prompt editor saves with keyboard, reloads, resets and renders data", asyn
     await editor.inputValue(),
     "Updated default <promise>COMPLETE</promise>",
   );
+});
+
+test("saving and resetting a role preserves other prompt drafts and keyboard focus", async (t) => {
+  const { page } = await fixture(t);
+  const reviewer = page.getByLabel("Reviewer prompt", { exact: true });
+  const implementer = page.getByLabel("Implementer prompt", { exact: true });
+  const draft = "Unsaved reviewer guidance <promise>COMPLETE</promise>";
+  await reviewer.fill(draft);
+  await implementer.fill(
+    "Saved implementer guidance <promise>COMPLETE</promise>",
+  );
+  const save = page.getByRole("button", {
+    name: "Save implementer prompt",
+    exact: true,
+  });
+  await save.focus();
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("status")
+    .filter({ hasText: "implementer prompt saved" })
+    .waitFor();
+  assert.equal(await reviewer.inputValue(), draft);
+  assert.equal(
+    await save.evaluate((button) => button === document.activeElement),
+    true,
+  );
+  const reset = page.getByRole("button", {
+    name: "Reset implementer prompt",
+    exact: true,
+  });
+  await reset.focus();
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("status")
+    .filter({ hasText: "implementer prompt reset" })
+    .waitFor();
+  assert.equal(await reviewer.inputValue(), draft);
+  assert.equal(
+    await reset.evaluate((button) => button === document.activeElement),
+    true,
+  );
+  await page
+    .getByRole("button", { name: "Save reviewer prompt", exact: true })
+    .click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "reviewer prompt saved" })
+    .waitFor();
+  await page.reload();
+  assert.equal(await reviewer.inputValue(), draft);
 });
 
 test("fake model receives selected prompt while edits apply to the next run", async (t) => {
@@ -430,5 +496,20 @@ test("prompt overrides persist across an operator web restart and isolate projec
     assert.equal(
       await first.page.getByLabel(role + " prompt", { exact: true }).count(),
       1,
+    );
+  for (const role of [
+    "Planner",
+    "Implementer",
+    "Reviewer",
+    "Merger",
+    "Readiness",
+  ])
+    assert.ok(
+      (
+        await first.page
+          .locator("#prompts")
+          .getByRole("group", { name: role, exact: true })
+          .textContent()
+      ).includes(role === "Reviewer" ? "Override" : "Default"),
     );
 });

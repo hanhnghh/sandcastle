@@ -169,7 +169,7 @@ const safeDirectory = (cwd: string, create: boolean) =>
       path = join(path, name);
       if (!(yield* fs.exists(path))) {
         if (!create) return null;
-        yield* fs.makeDirectory(path, { mode: 0o700 });
+        yield* fs.makeDirectory(path, { recursive: true, mode: 0o700 });
       }
       if (
         (yield* fs.realPath(path)).replace(/\\/g, "/") !==

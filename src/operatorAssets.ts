@@ -98,12 +98,14 @@ function diff(before, after) {
   while (end < left.length - start && end < right.length - start && left[left.length - end - 1] === right[right.length - end - 1]) end++;
   return left.slice(0, start).map(line => '  ' + line).concat(left.slice(start, left.length-end).map(line => '- ' + line), right.slice(start, right.length-end).map(line => '+ ' + line), left.slice(left.length-end).map(line => '  ' + line)).join('\\n');
 }
-async function loadPrompts() {
+async function loadPrompts(updatedRole) {
   const data = await request('/api/prompts');
   const container = document.getElementById('prompt-fields');
-  container.replaceChildren();
+  if (updatedRole === null) container.replaceChildren();
   for (const [role, prompt] of Object.entries(data.prompts)) {
+    if (updatedRole !== null && role !== updatedRole) continue;
     const form = document.createElement('form');
+    form.id = role + '-prompt-form';
     const group = document.createElement('fieldset');
     group.style.display = 'block';
     const legend = document.createElement('legend');
@@ -126,13 +128,20 @@ async function loadPrompts() {
     const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save ' + role + ' prompt';
     const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset ' + role + ' prompt';
     async function persist(content) {
+      const restoreFocus = form.contains(document.activeElement);
       save.disabled = reset.disabled = true;
-      try { await request('/api/prompts', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({role, content})}); await loadPrompts(); message(role + ' prompt ' + (content === null ? 'reset' : 'saved') + '. Applies to the next run.'); }
+      editor.disabled = true;
+      try { await request('/api/prompts', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({role, content})}); await loadPrompts(role); message(role + ' prompt ' + (content === null ? 'reset' : 'saved') + '. Applies to the next run.'); }
       catch (error) { message(error.message, true); }
-      finally { save.disabled = reset.disabled = false; }
+      finally {
+        save.disabled = reset.disabled = editor.disabled = false;
+        if (restoreFocus && document.activeElement === document.body) document.getElementById(form.id).querySelector(content === null ? 'button[type=button]' : 'button[type=submit]').focus();
+      }
     }
     form.addEventListener('submit', event => { event.preventDefault(); persist(editor.value); }); reset.addEventListener('click', () => persist(null));
-    group.append(status, label, details, defaultDetails, save, reset); form.append(group); container.append(form);
+    group.append(status, label, details, defaultDetails, save, reset); form.append(group);
+    const previous = document.getElementById(form.id);
+    if (previous) previous.replaceWith(form); else container.append(form);
   }
 }
 async function observe() {
@@ -144,7 +153,7 @@ async function observe() {
       Object.entries(data.run.config.roles).map(([role, settings]) => role + ': ' + settings.model + ' / ' + settings.effort).join(' · ');
   } catch (error) { run.textContent = 'Cannot observe run: ' + error.message; }
 }
-loadPrompts().catch(error => message(error.message, true));
+loadPrompts(null).catch(error => message(error.message, true));
 load().catch(error => message(error.message, true));
 observe();
 setInterval(observe, 1000);

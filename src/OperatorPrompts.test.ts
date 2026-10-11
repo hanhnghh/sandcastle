@@ -45,6 +45,46 @@ test("defaults advance while overrides retain their base and reset follows curre
   }
 });
 
+test("concurrent first saves retain each role's project override", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "prompts-"));
+  try {
+    await writeFile(
+      join(cwd, "default.md"),
+      "Default <promise>COMPLETE</promise>",
+    );
+    const promptFiles = {
+      planner: "default.md",
+      implementer: "default.md",
+      reviewer: "default.md",
+      merger: "default.md",
+      readiness: "default.md",
+    };
+    const options = { cwd, promptFiles };
+    const saves = await Promise.allSettled(
+      Object.keys(promptFiles).map((role) =>
+        saveProjectPrompt({
+          ...options,
+          role,
+          content: role + " custom <promise>COMPLETE</promise>",
+        }),
+      ),
+    );
+    expect(saves.map((save) => save.status)).toEqual(
+      Array(5).fill("fulfilled"),
+    );
+    const selected = await loadProjectPrompts(options);
+    expect(Object.values(selected).map((prompt) => prompt?.content)).toEqual([
+      "planner custom <promise>COMPLETE</promise>",
+      "implementer custom <promise>COMPLETE</promise>",
+      "reviewer custom <promise>COMPLETE</promise>",
+      "merger custom <promise>COMPLETE</promise>",
+      "readiness custom <promise>COMPLETE</promise>",
+    ]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("invalid templates preserve prior prompt", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "prompts-"));
   try {
@@ -60,6 +100,11 @@ test("invalid templates preserve prior prompt", async () => {
         readiness: path,
       },
     };
+    await saveProjectPrompt({
+      ...options,
+      role: "reviewer",
+      content: "Saved review {{TASK}} <promise>COMPLETE</promise> <review>",
+    });
     const original = (await loadProjectPrompts(options)).reviewer!;
     for (const content of [
       "Task {{UNKNOWN}} <promise>COMPLETE</promise> <review>",
@@ -183,12 +228,19 @@ test("prompt writes reject paths and symlink escapes", async () => {
         });
         expect(response.status).toBe(400);
       }
-      const denied = await fetch(server.url + "/api/prompts", {
-        method: "PUT",
-        headers: { ...headers, origin: "https://evil.example" },
-        body: JSON.stringify({ role: "implementer", content: "replace" }),
-      });
-      expect(denied.status).toBe(403);
+      for (const deniedHeaders of [
+        { ...headers, origin: "https://evil.example" },
+        { ...headers, cookie: "forged" },
+        { origin: server.url, "content-type": "application/json" },
+        { cookie, "content-type": "application/json" },
+      ]) {
+        const denied = await fetch(server.url + "/api/prompts", {
+          method: "PUT",
+          headers: deniedHeaders,
+          body: JSON.stringify({ role: "implementer", content: "replace" }),
+        });
+        expect(denied.status).toBe(403);
+      }
     } finally {
       await server.close();
     }
@@ -202,6 +254,49 @@ test("prompt writes reject paths and symlink escapes", async () => {
       }),
     ).rejects.toThrow(/symbolic link/);
     expect(await readFile(join(outside, "auth.json"), "utf8")).toBe("secret");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("managed prompt records cannot follow authentication symlinks", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "prompts-"));
+  const outside = await mkdtemp(join(tmpdir(), "auth-"));
+  try {
+    await writeFile(join(cwd, "default.md"), "Default");
+    const auth = join(outside, "auth.json");
+    await writeFile(auth, "private authentication bytes");
+    const options = {
+      cwd,
+      promptFiles: {
+        planner: "default.md",
+        implementer: "default.md",
+        reviewer: "default.md",
+        merger: "default.md",
+        readiness: "default.md",
+      },
+    };
+    await mkdir(join(cwd, ".sandcastle/prompts"), { recursive: true });
+    for (const record of ["implementer.json", "defaults.json"]) {
+      const path = join(cwd, ".sandcastle/prompts", record);
+      await symlink(auth, path);
+      for (const content of ["Edited", null]) {
+        await expect(
+          saveProjectPrompt({ ...options, role: "implementer", content }),
+        ).rejects.toThrow(/symbolic link/);
+        expect(await readFile(auth, "utf8")).toBe(
+          "private authentication bytes",
+        );
+      }
+      await rm(path);
+    }
+    await rm(join(cwd, ".sandcastle"), { recursive: true });
+    await symlink(outside, join(cwd, ".sandcastle"), "dir");
+    await expect(
+      saveProjectPrompt({ ...options, role: "implementer", content: "Edited" }),
+    ).rejects.toThrow(/symbolic link/);
+    expect(await readFile(auth, "utf8")).toBe("private authentication bytes");
   } finally {
     await rm(cwd, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });

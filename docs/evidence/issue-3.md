@@ -124,3 +124,173 @@ JS
 The docs website package owns `docs/content/docs`, as declared by
 `docs/source.config.ts`; these root-linked Markdown guides do not change its
 build inputs. No docs website build is applicable.
+
+## Independent review
+
+Reviewer loaded issue #3's full body, labels and comments with
+`gh issue view 3 --json number,title,body,labels,comments`. Parent #1's product
+decisions were read only to interpret ownership, frozen inputs and local
+security. Review baseline is `c4450f8dcb17ee55b952ddee71b30346eb78b34c`,
+implementation source is `5616fc1787ad23cbc57b961a0762dd3ae9b52c1a`.
+The complete host coding standards, feedback loops and evidence policy were
+read before judging changes or choosing checks. No implementer receipt is
+reused: their applicability is not independently validated. All P1a–P6b,
+B1–B3 rows above need new reviewer evidence; I1 remains owned by integration.
+
+Review findings before repair:
+
+- R1: saving/resetting a role calls `loadPrompts()` which replaces every
+  editor, discarding other roles' unsaved drafts. Add browser regression,
+  establish RED, then refresh only the saved role and retain keyboard focus.
+- R2: CLI evidence checks frozen model/effort/image but not prompt selection.
+  Strengthen the public CLI/child-runtime test to observe saved prompt text
+  and next-run selection. This is a coverage gap, not a proven product defect.
+- R3: first SDK saves check directory existence before non-recursive mkdir;
+  concurrent saves can race during managed-directory creation. Persistence
+  needs new public SDK evidence before repairing this suspected defect.
+
+All findings are repaired. R1 reproduced at the browser seam: the reviewer
+draft became the default after saving implementer. The focused command
+`node --test --test-name-pattern='saving and resetting a role' scripts/operator.browser.test.mjs`
+failed, then passed after role-local refresh/focus restoration and a build
+(1 test, 1.10 seconds). R3 reproduced through concurrent public SDK saves:
+some promises rejected while creating managed storage. The focused command
+`npm test -- src/OperatorPrompts.test.ts --run -t 'concurrent first saves'`
+failed at 17:15:02 UTC (1.52 seconds), then passed at 17:15:11 UTC
+(1.72 seconds) after idempotent mkdir. The first reproduction used
+`Promise.all`; the final harness uses `Promise.allSettled` so cleanup waits
+for every save. No failure classification or expected behavior was relaxed.
+R2's strengthened CLI evidence passed without a product repair; a meaningful
+RED was not applicable to this coverage-only finding.
+
+### Reviewer receipts
+
+All executions below are new review evidence on 2026-10-11, Linux
+6.12.54-linuxkit, Node v24.21.0, npm 11.19.0, installed lockfile dependencies,
+Vitest 3.2.4 and Playwright 1.63.0 Chromium. No external model, container service
+or migration is needed: fake executables and temporary no-sandbox projects
+exercise public runtime/CLI/browser seams. Test cleanup completed. Build
+finished before the final built-package tests started.
+
+Receipt location: this section. Tested production, relevant consumers,
+manifests, templates and harness bytes are bound by SHA-256
+`69b1282044aa0b5fd09d260a6adbab2f8addef9e9bece7d7ab0592e50f8f9cd7`.
+The fingerprint is computed over sorted filenames plus NUL, file bytes plus
+NUL, for: package.json, package-lock.json, tsconfig.json, tsup.config.ts;
+src/{index,Operator,OperatorPrompts,OperatorRuntime,OperatorServer,operatorAssets,
+OperatorCli,InitService,writePrivateRecord,PromptArgumentSubstitution,
+PromptPreprocessor}.ts; src/{OperatorPrompts,Operator,OperatorCli,
+PromptArgumentSubstitution,PromptPreprocessor}.test.ts;
+scripts/{operator.browser.test,operator-prompts.package.test,
+check-public-types-effect-free}.mjs; and all five
+src/templates/parallel-planner-with-review/\*-prompt.md files.
+These are focused receipts, not reusable full-gate proof. Only documentation
+ledger recording follows these executions; tested product/harness bytes are
+unchanged in the review commit.
+
+- **RU**: `npm test -- src/OperatorPrompts.test.ts src/Operator.test.ts src/OperatorCli.test.ts src/PromptArgumentSubstitution.test.ts src/PromptPreprocessor.test.ts --run`
+  — 74 passed, start 17:18:05 UTC, 5.06 seconds. U1–U9 above retain their exact
+  names. U8 now observes selected and next-run prompt content in the real CLI's
+  child runtime. Additional exact tests: **U10**, `concurrent first saves retain
+each role's project override`; **U11**, `managed prompt records cannot follow
+authentication symlinks`. U2 now protects a previously saved override, and
+  U4 also tests missing/forged sessions and absent/hostile Origins at the
+  prompt endpoint. The additional preprocessor suite independently checks
+  trusted shell expansion and failure semantics (12 tests).
+- **RW**: `node --test scripts/operator.browser.test.mjs scripts/operator-prompts.package.test.mjs`
+  — eight passed, 17:18 UTC, 7.97 seconds. W1–W4 above retain their exact names.
+  W1 now independently asserts both diff signs, opens both diffs by keyboard,
+  rejects unknown/malformed templates and checks no script DOM is inserted.
+  W3 now asserts every role's ownership status. Additional exact test **W5**:
+  `saving and resetting a role preserves other prompt drafts and keyboard focus`.
+- **RT**: `npm run typecheck` — passed at 17:18 UTC, 0.98 seconds, including
+  the final typed regression tests.
+- **RB**: `npm run build` — passed at 17:17 UTC, declarations in 6.79 seconds,
+  postbuild copied templates and passed the public Effect-free type validator.
+  Existing bundler unused-import notices did not fail the build.
+- **RA**: `node --input-type=module` documented-artifact validator above,
+  extended to assert the draft documentation and package-named patch changeset
+  — passed at 17:18 UTC. Checks real built SDK exports and README guide link.
+- **RD**: `git diff --check`, changed-file `npx prettier --check`, full scoped
+  diff and final status inspection — pass. All changesets were read before
+  adding the distinct patch changeset; no duplicates or unrelated churn.
+
+### File review coverage
+
+Each original file was read through its complete
+`git diff c4450f8dcb17ee55b952ddee71b30346eb78b34c...sandcastle/issue-3 -- <path>`;
+the repair diff was additionally inspected in full. No encoded/generated
+payloads needed alternate review. Graph explore/query/impact/node/affected
+guided navigation, with direct reads for graph misses. Graph output is not
+used as correctness evidence.
+
+| File                                        | Review method and result                                                                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| .changeset/versioned-project-prompts.md     | Full diff + all changesets + manifest name; unique minor feature entry, RA passes.                                                          |
+| README.md                                   | Full diff + operator section/link target; ownership summary remains accurate, RA passes.                                                    |
+| docs/evidence/issue-3.md                    | Full diff + policy/applicability audit; historical implementer evidence retained, new independent review recorded.                          |
+| docs/operator.md                            | Full diff + surrounding SDK/HTTP contracts; accurate ownership/upgrade limits, draft wording repaired, RA passes.                           |
+| scripts/operator-prompts.package.test.mjs   | Full diff + package producer/consumer path; isolated real built SDK defaults advance without replacing customization, RW passes.            |
+| scripts/operator.browser.test.mjs           | Full diff + fixture/fake-provider/cleanup; public browser evidence strengthened, RW passes.                                                 |
+| src/OperatorPrompts.test.ts                 | Full diff + public API assertions; durable override, concurrency and auth symlink regressions strengthened, RU passes.                      |
+| src/OperatorPrompts.ts                      | Full diff + source templates/substitution/preprocessor/private-write callers; R3 repaired, containment/hash/validation checked, RU/RW pass. |
+| src/OperatorRuntime.ts                      | Full diff + snapshot creation/hydration/reopening; selected prompt frozen, digest/version/integrity retained, RU/RW pass.                   |
+| src/OperatorServer.ts                       | Full diff + complete route/security/semaphore handling; fixed project/role writes under shared session/origin guard, RU/RW pass.            |
+| src/index.ts                                | Full diff + manifest exports + built public types; documented SDK surface is Effect-free, RB/RA/RW pass.                                    |
+| src/operatorAssets.ts                       | Full diff + script/DOM/CSP consumer; R1 repaired, text-only diff/editor rendering and keyboard behavior verified, RW passes.                |
+| src/OperatorCli.test.ts                     | Full repair diff + OperatorCli/CLI/InitService consumers; exact selected/next-run prompt in real child runtime, RU passes.                  |
+| .changeset/preserve-prompt-editor-drafts.md | Entire new artifact + existing entries/manifest; distinct patch for R1/R3, RA passes.                                                       |
+
+The relevant prompt ADRs and CONTEXT terminology were checked. Effect owns
+production IO/error channels, exported APIs have JSDoc, path comparisons
+normalize separators, host paths use host joins, and tests observe public seams
+without mocking internal collaborators. Root Markdown guides are not website
+build inputs (`docs/source.config.ts` points to content/docs); no website gate
+applies. No product-scope or task-contract changes were made.
+
+### Final reviewer ledger
+
+RU/RW/RT/RB bind to the fingerprint/environment above and are fresh reviewer
+runs. RA/RD additionally cover the final documentation/changesets and inspected
+diff. U/W exact test names are defined above; no acceptance relies on a nearby
+test alone. Implementation columns name the observable path checked against
+each assertion. All branch rows are owned by the reviewer.
+
+| ID  | requirement                                                      | implementation evidence                                | test evidence                                                | receipt/applicability                                                                                   | owner             | status              |
+| --- | ---------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | ----------------- | ------------------- |
+| P1a | Five role editors and default/override status                    | operatorAssets role fieldsets and status text          | W3 all labels/statuses                                       | RW, public browser                                                                                      | reviewer          | pass                |
+| P1b | Edit/save/reload                                                 | prompt PUT and persistent role record                  | W1, W5                                                       | RW, public browser/HTTP                                                                                 | reviewer          | pass                |
+| P1c | Persistence across web restart                                   | project record resolution on GET                       | W3 restart                                                   | RW, new operator instance                                                                               | reviewer          | pass                |
+| P1d | Reset to current default                                         | null override resolution                               | W1, U1, U5, W4                                               | RU/RW, browser/SDK                                                                                      | reviewer          | pass                |
+| P1e | Readable editor/default and changed-default diffs                | text-only signed diff against default/base             | W1 both signs and keyboard opening                           | RW, browser                                                                                             | reviewer          | pass                |
+| P2a | Override distinct from default/base version                      | content-addressed ProjectPrompt base/default           | U1, W4                                                       | RU/RW, public resolution                                                                                | reviewer          | pass                |
+| P2b | Untouched prompts receive current defaults                       | packagedDefault with retained adoption bases           | W4 package template update                                   | RW, isolated installed SDK                                                                              | reviewer          | pass                |
+| P2c | Customized prompts survive updates and show changed-default diff | override/base retained; defaultChanged surfaced        | W4 preserved customization; W1 displayed diff                | RW, installed SDK + browser                                                                             | reviewer          | pass                |
+| P2d | Existing customized project files survive adoption               | local source classified as project override            | U5; W4 source unchanged after reset                          | RU/RW, SDK/source ownership                                                                             | reviewer          | pass                |
+| P3a | Validate role names                                              | fixed operatorRoles allowlist                          | U4 traversal role                                            | RU, prompt HTTP                                                                                         | reviewer          | pass                |
+| P3b | Validate missing/unknown/malformed template arguments            | validate placeholder scanner and base requirements     | U2, W1                                                       | RU/RW, SDK + browser                                                                                    | reviewer          | pass                |
+| P3c | Runtime whitespace/mixed-case syntax compatible                  | matching substitution syntax                           | U6; 40 substitution tests                                    | RU, public resolution + compatibility                                                                   | reviewer          | pass                |
+| P3d | Required completion/output literals preserved                    | validation of base's completion/output tags            | U2, U6                                                       | RU, public saves                                                                                        | reviewer          | pass                |
+| P3e | Actionable invalid-save errors preserve prior prompt             | validation before atomic private record write          | U2 saved override preserved; W1 error/reload                 | RU/RW, public save/read                                                                                 | reviewer          | pass                |
+| P3f | Prompt content rendered as data                                  | textarea.value and diff.textContent                    | W1 literal script/diff and absent script DOM                 | RW, browser                                                                                             | reviewer          | pass                |
+| P4a | Fake model receives selected prompt                              | frozen runtime promptFile through run()                | W2 fake executable stdin                                     | RW, public model/run seam                                                                               | reviewer          | pass                |
+| P4b | Record exact selected content/digest/version                     | immutable RuntimeRecord and reopen integrity           | U3, U9                                                       | RU, SDK content and independently known digest                                                          | reviewer          | pass                |
+| P4c | Edits during execution cannot change active prompt               | snapshot files isolated from live overrides            | U3, W2                                                       | RU/RW, active SDK/browser runtime                                                                       | reviewer          | pass                |
+| P4d | Next-run and CLI/shared resolution                               | createProjectRuntime shared loader; CLI child reopen   | U3, strengthened U8, W2                                      | RU/RW, SDK/real CLI/browser                                                                             | reviewer          | pass                |
+| P5a | Writes confined to selected managed project                      | canonical directory guards and fixed role filenames    | U4, U11, W3                                                  | RU/RW, SDK/HTTP/project isolation                                                                       | reviewer          | pass                |
+| P5b | Traversal and authentication writes rejected                     | strict HTTP fields; symlink read guards                | U4 auth/path fields; U11 record/root symlinks                | RU, rejection + unchanged external auth bytes                                                           | reviewer          | pass                |
+| P5c | Local session and exact Origin/Host remain authoritative         | pre-route OperatorServer guard                         | U4 prompt session/origin cases; U7 wrong Host                | RU, HTTP boundary                                                                                       | reviewer          | pass                |
+| P5d | Web cannot add host shell execution                              | shell-expression allowlist + control-marker rejection  | U2, U6; 12 preprocessor tests                                | RU, public save + runtime expansion compatibility                                                       | reviewer          | pass                |
+| P6  | Browser/public tests cover all AC6 named scenarios               | editor/HTTP/SDK/runtime/CLI seams                      | W1–W5, U1–U11 as mapped above                                | RU/RW, edit/save/reload/reset/invalid/default-change/keyboard/next-run                                  | reviewer          | pass                |
+| P6a | Customization/upgrade ownership documented                       | README link and operator SDK/HTTP/ownership guide      | documented-artifact validator                                | RA/RD, actual exports and artifacts                                                                     | reviewer          | pass                |
+| P6b | Correct changesets without duplicates                            | manifest-named minor feature and distinct patch repair | validator + full changeset inspection                        | RA/RD, project standard                                                                                 | reviewer          | pass                |
+| R1  | Retain other drafts and keyboard focus on save/reset             | refresh saved role only; restore action focus          | W5 RED then GREEN                                            | RW, public browser regression                                                                           | reviewer          | pass                |
+| R2  | CLI prompt evidence gap closed                                   | real CLI child's frozen promptFile read                | strengthened U8 first/next-run exact content                 | RU, coverage-only repair                                                                                | reviewer          | pass                |
+| R3  | Concurrent first saves preserve every role                       | idempotent mkdir followed by containment check         | U10 RED then GREEN                                           | RU, public SDK regression                                                                               | reviewer          | pass                |
+| B1  | Affected type checks                                             | public interfaces + final typed tests                  | npm run typecheck                                            | RT, final typed source                                                                                  | reviewer          | pass                |
+| B2  | Affected build/consumer checks                                   | bundled SDK/CLI/templates/declarations                 | npm run build; RU CLI; RW built SDK                          | RB/RU/RW, final production source                                                                       | reviewer          | pass                |
+| B3  | Scoped diff, standards, formatting and clean committed branch    | full original/repair file inspection                   | diff check + Prettier + final status                         | RD, final artifacts                                                                                     | reviewer          | pass                |
+| I1  | Future integrated full/cumulative gate                           | exact final integrated candidate                       | bash .sandcastle/scripts/verify-affected.sh <batch-base-sha> | Immutable integration batch baseline; includes typecheck, full npm test, build, Agent Map browser gates | integration owner | pending-integration |
+
+Branch-ready for integration; task #3 remains open. No full-gate result or
+issue closure is claimed. No unresolved in-scope failures remain.
