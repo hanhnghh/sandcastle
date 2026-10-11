@@ -1,3 +1,4 @@
+import { loadProjectPrompts, saveProjectPrompt } from "./OperatorPrompts.js";
 import { Cause, Effect, Option, Runtime } from "effect";
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
@@ -180,6 +181,56 @@ export const startOperator = (options: {
               response.writeHead(302, { Location: dashboard.url });
               response.end();
               return;
+            }
+            if (url.pathname === "/api/prompts") {
+              const promptOptions = {
+                cwd,
+                promptFiles: options.adapter.promptFiles,
+              };
+              if (request.method === "GET") {
+                response.end(
+                  JSON.stringify({
+                    prompts: yield* attempt(() =>
+                      loadProjectPrompts(promptOptions),
+                    ),
+                  }),
+                );
+                return;
+              }
+              if (request.method === "PUT") {
+                const body = yield* requestBody(request);
+                if (
+                  !body ||
+                  typeof body !== "object" ||
+                  Array.isArray(body) ||
+                  Object.keys(body).sort().join(",") !== "content,role" ||
+                  typeof (body as { role: unknown }).role !== "string" ||
+                  !(
+                    (body as { content: unknown }).content === null ||
+                    typeof (body as { content: unknown }).content === "string"
+                  )
+                )
+                  return yield* Effect.fail(
+                    new RequestError(
+                      400,
+                      "Prompt save accepts exactly role and content (null resets); paths/auth are not editable",
+                    ),
+                  );
+                const input = body as { role: string; content: string | null };
+                yield* lock.withPermits(1)(
+                  attempt(() =>
+                    saveProjectPrompt({ ...promptOptions, ...input }),
+                  ),
+                );
+                response.end(
+                  JSON.stringify({
+                    prompts: yield* attempt(() =>
+                      loadProjectPrompts(promptOptions),
+                    ),
+                  }),
+                );
+                return;
+              }
             }
             if (url.pathname === "/api/config") {
               if (request.method === "GET") {

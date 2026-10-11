@@ -168,6 +168,8 @@ Open the printed URL, choose models/effort and save. New reviewed Codex and
 Planner/implementer default to low effort; reviewer/merger/readiness to high.
 Init preserves the selected model; missing config defaults to gpt-6.1-sol.
 Runs freeze settings, prompts and image identity; saves affect the next run.
+The Prompts editors save/reset project overrides, show default/base diffs, and
+preserve customization when explicitly adopted packaged defaults change.
 See the [operator guide](docs/operator.md) for SDK/HTTP interfaces, custom
 project adapters and legacy workflow compatibility.
 

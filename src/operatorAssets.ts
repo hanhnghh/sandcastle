@@ -1,7 +1,7 @@
 export const operatorPage =
-  '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandcastle operator</title><link rel="stylesheet" href="/style.css"><body><main><h1>Sandcastle operator</h1><p id="project"></p><p>Settings saved during a run apply to the next run.</p><form id="roles"><div id="fields"></div><button type="submit">Save settings</button></form><p id="feedback" role="status" aria-live="polite"></p><button id="start" type="button">Start run</button><p id="run" role="status" aria-live="polite"></p><a href="/dashboard" target="_blank" rel="noopener">Observe runs and logs</a></main><script src="/app.js"></script></body></html>';
+  '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandcastle operator</title><link rel="stylesheet" href="/style.css"><body><main><h1>Sandcastle operator</h1><p id="project"></p><p>Settings saved during a run apply to the next run.</p><nav><a href="#prompts">Prompts</a></nav><form id="roles"><div id="fields"></div><button type="submit">Save settings</button></form><section id="prompts"><h2>Prompts</h2><p>Compare with the current default. Overrides remain project-owned across default updates.</p><div id="prompt-fields"></div></section><p id="feedback" role="status" aria-live="polite"></p><button id="start" type="button">Start run</button><p id="run" role="status" aria-live="polite"></p><a href="/dashboard" target="_blank" rel="noopener">Observe runs and logs</a></main><script src="/app.js"></script></body></html>';
 export const operatorStyles =
-  "body{font:16px system-ui;background:#f6f8fa;color:#18212b;margin:0}main{max-width:850px;margin:2rem auto;padding:1rem}fieldset{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding:1rem;border:1px solid #bbc4cf}[hidden]{display:none!important}label{display:grid;gap:.4rem}input,select,button{font:inherit;padding:.5rem}button{cursor:pointer}legend{font-weight:600}a{color:#135bac}#feedback[data-error=true]{color:#a11}input:focus,select:focus,button:focus,a:focus{outline:3px solid #2479d4;outline-offset:2px}";
+  "body{font:16px system-ui;background:#f6f8fa;color:#18212b;margin:0}main{max-width:850px;margin:2rem auto;padding:1rem}fieldset{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding:1rem;border:1px solid #bbc4cf}[hidden]{display:none!important}label{display:grid;gap:.4rem}input,select,button,textarea{font:inherit;padding:.5rem}button{cursor:pointer}legend{font-weight:600}a{color:#135bac}#feedback[data-error=true]{color:#a11}textarea:focus,input:focus,select:focus,button:focus,a:focus{outline:3px solid #2479d4;outline-offset:2px}";
 export const operatorScript = `
 let config;
 const fields = document.getElementById('fields');
@@ -90,6 +90,51 @@ document.getElementById('start').addEventListener('click', async () => {
     await observe();
   } catch (error) { message(error.message, true); }
 });
+function diff(before, after) {
+  if (before === after) return 'No changes.';
+  const left = before.split('\\n'), right = after.split('\\n');
+  let start = 0, end = 0;
+  while (start < left.length && start < right.length && left[start] === right[start]) start++;
+  while (end < left.length - start && end < right.length - start && left[left.length - end - 1] === right[right.length - end - 1]) end++;
+  return left.slice(0, start).map(line => '  ' + line).concat(left.slice(start, left.length-end).map(line => '- ' + line), right.slice(start, right.length-end).map(line => '+ ' + line), left.slice(left.length-end).map(line => '  ' + line)).join('\\n');
+}
+async function loadPrompts() {
+  const data = await request('/api/prompts');
+  const container = document.getElementById('prompt-fields');
+  container.replaceChildren();
+  for (const [role, prompt] of Object.entries(data.prompts)) {
+    const form = document.createElement('form');
+    const group = document.createElement('fieldset');
+    group.style.display = 'block';
+    const legend = document.createElement('legend');
+    legend.textContent = role[0].toUpperCase() + role.slice(1);
+    group.append(legend);
+    if (!prompt) { const text = document.createElement('p'); text.textContent = 'No prompt configured by the project adapter.'; group.append(text); form.append(group); container.append(form); continue; }
+    const status = document.createElement('p');
+    status.textContent = (prompt.status === 'override' ? 'Override' : 'Default') + (prompt.defaultChanged ? ' · default changed' : '') + ' · default ' + prompt.default.version.slice(0,12) + ' · base ' + prompt.base.version.slice(0,12);
+    const label = document.createElement('label');
+    label.textContent = legend.textContent + ' prompt';
+    const editor = document.createElement('textarea');
+    editor.id = role + '-prompt'; editor.rows = 12; editor.style.width = '95%'; editor.value = prompt.content; editor.required = true;
+    label.htmlFor = editor.id; label.append(editor);
+    const changes = document.createElement('pre'); changes.style.whiteSpace = 'pre-wrap'; changes.setAttribute('aria-label', legend.textContent + ' prompt diff');
+    const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Diff against current default (− default, + editor)'; details.append(summary, changes);
+    const update = () => changes.textContent = diff(prompt.default.content, editor.value);
+    editor.addEventListener('input', update); update();
+    const defaultDetails = document.createElement('details'); const defaultSummary = document.createElement('summary'); defaultSummary.textContent = 'Changed default diff (− original base, + current default)';
+    const defaultDiff = document.createElement('pre'); defaultDiff.id = role + '-default-diff'; defaultDiff.style.whiteSpace = 'pre-wrap'; defaultDiff.textContent = diff(prompt.base.content, prompt.default.content); defaultDetails.append(defaultSummary, defaultDiff);
+    const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save ' + role + ' prompt';
+    const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset ' + role + ' prompt';
+    async function persist(content) {
+      save.disabled = reset.disabled = true;
+      try { await request('/api/prompts', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({role, content})}); await loadPrompts(); message(role + ' prompt ' + (content === null ? 'reset' : 'saved') + '. Applies to the next run.'); }
+      catch (error) { message(error.message, true); }
+      finally { save.disabled = reset.disabled = false; }
+    }
+    form.addEventListener('submit', event => { event.preventDefault(); persist(editor.value); }); reset.addEventListener('click', () => persist(null));
+    group.append(status, label, details, defaultDetails, save, reset); form.append(group); container.append(form);
+  }
+}
 async function observe() {
   try {
     const data = await request('/api/run');
@@ -99,6 +144,7 @@ async function observe() {
       Object.entries(data.run.config.roles).map(([role, settings]) => role + ': ' + settings.model + ' / ' + settings.effort).join(' · ');
   } catch (error) { run.textContent = 'Cannot observe run: ' + error.message; }
 }
+loadPrompts().catch(error => message(error.message, true));
 load().catch(error => message(error.message, true));
 observe();
 setInterval(observe, 1000);

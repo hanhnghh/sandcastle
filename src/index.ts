@@ -155,3 +155,14 @@ export type {
 } from "./OperatorRuntime.js";
 export { startOperator } from "./OperatorServer.js";
 export type { OperatorProjectAdapter } from "./OperatorServer.js";
+
+export {
+  loadProjectPrompts,
+  saveProjectPrompt,
+  usePackagedPromptDefaults,
+} from "./OperatorPrompts.js";
+export type {
+  ProjectPromptOptions,
+  ProjectPrompt,
+  PromptVersion,
+} from "./OperatorPrompts.js";

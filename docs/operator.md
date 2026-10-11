@@ -74,6 +74,62 @@ counter or concurrency token; competing saves use last successful write wins.
 Reads verify the stored revision. Pass the current loaded document to save
 rather than hand-writing a revision.
 
+## Prompt customization and upgrades
+
+Open **Prompts** to edit any configured role. Each editor shows default/override
+ownership, content-addressed default/base versions, a text diff against the
+current default and a separate changed-default diff. **Save** stores a private,
+atomic project override in `.sandcastle/prompts/<role>.json`. **Reset** selects
+the current default; it does not rewrite the project source file. Native forms
+support keyboard save/reset. Reloads and operator restarts retain overrides.
+
+`loadProjectPrompts({ cwd, promptFiles })` exposes the same resolution used by
+CLI, web and `createProjectRuntime`. `saveProjectPrompt({ cwd, promptFiles,
+role, content })` saves a template; pass `content: null` to reset. The adapter's
+trusted `promptFiles` remain source defaults unless the project explicitly
+adopts packaged defaults. Null source paths disable a role. Existing custom
+adapters and copied prompts keep their project ownership.
+
+To use the installed package's `parallel-planner-with-review` defaults, run this
+once from trusted host automation, supplying the project's tracker commands:
+
+```ts
+import { usePackagedPromptDefaults } from "@ai-hero/sandcastle";
+
+await usePackagedPromptDefaults({
+  cwd: "/path/to/project",
+  templateArgs: {
+    VIEW_TASK_COMMAND: "gh issue view <ID>",
+    CLOSE_TASK_COMMAND: "gh issue close <ID>",
+  },
+});
+```
+
+This records selection and original defaults in
+`.sandcastle/prompts/defaults.json`. It preserves existing copied files that
+differ from the packaged defaults as overrides, including project-specific
+Codex AFK guidance. It never migrates the workflow, standards, gates or auth.
+Review compatibility before explicitly resetting a customized role. Untouched
+copies (or missing source files) receive current installed defaults. Customized
+roles retain their original base and selected content after package updates;
+the editor shows changed-default diffs. Package updates and project migration
+remain separate operations. The base version is a SHA-256 of rendered default
+text; runtime evidence additionally records the installed package version and
+exact selected content/digest. Keep prompt configuration and override files in
+project version control as appropriate for their sensitivity; keep runtime
+snapshots private.
+
+Saves preserve required placeholders from the customization's base, reject
+unknown or malformed placeholders, and preserve completion signals and output
+tag literals present in that base. Placeholder syntax matches runtime
+substitution, including whitespace and mixed-case names. Errors identify the
+role and missing contract; rejected saves leave the durable prompt intact.
+New shell expressions and control markers are rejected: executable expansion
+policy belongs in trusted source defaults. Existing source shell expressions
+can be retained. Prompt text and diffs render as data. Templates are limited to
+1,048,576 UTF-16 code units; the HTTP request limit below also applies.
+Settings and prompt edits during a run apply only to the next frozen runtime.
+
 ## Shared runtime SDK and project adapter
 
 `createProjectRuntime({ cwd, promptFiles, sandboxIdentity })` freezes effective
@@ -139,13 +195,15 @@ Any supplied Origin must exactly match that host/port. All mutations additionall
 require that Origin and the HttpOnly, SameSite=Strict local session cookie
 established by opening `GET /`. There are no credential-valued APIs.
 
-| Route             | Behavior                                                                                    |
-| ----------------- | ------------------------------------------------------------------------------------------- |
-| `GET /api/config` | Validated config, declared model/effort capability and selected project                     |
-| `PUT /api/config` | Complete config document; returns the saved config/revision                                 |
-| `POST /api/run`   | Empty JSON object only; freezes settings, invokes the fixed adapter; 202 with ID/revision   |
-| `GET /api/run`    | Current operator-session run status and frozen settings/identity, excluding prompt contents |
-| `GET /dashboard`  | Opens the project's read-only Agent Map                                                     |
+| Route              | Behavior                                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `GET /api/prompts` | Effective role templates, ownership, default/base contents and versions, changed-default status      |
+| `PUT /api/prompts` | Exactly `{ "role": "implementer", "content": "..." }`; null content resets; returns resolved prompts |
+| `GET /api/config`  | Validated config, declared model/effort capability and selected project                              |
+| `PUT /api/config`  | Complete config document; returns the saved config/revision                                          |
+| `POST /api/run`    | Empty JSON object only; freezes settings, invokes the fixed adapter; 202 with ID/revision            |
+| `GET /api/run`     | Current operator-session run status and frozen settings/identity, excluding prompt contents          |
+| `GET /dashboard`   | Opens the project's read-only Agent Map                                                              |
 
 Mutations require `Content-Type: application/json` and at most 16 KiB.
 Invalid config/body returns 400 with actionable diagnostics; invalid session,

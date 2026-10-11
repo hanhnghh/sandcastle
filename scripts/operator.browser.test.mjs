@@ -27,13 +27,18 @@ async function fixture(t, sharedContext) {
   await mkdir(bin);
   await mkdir(join(cwd, ".sandcastle"));
   await writeFile(
+    join(cwd, ".sandcastle/default-prompt.md"),
+    "Default browser prompt <promise>COMPLETE</promise>",
+  );
+  await writeFile(
     join(cwd, ".sandcastle/.gitignore"),
     "runtime/\nruns/\nlogs/\nfixture-gitconfig\n",
   );
   await writeFile(
     join(bin, "codex"),
     `#!/usr/bin/env node
-console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: process.argv.slice(2).join(" ") + " <promise>COMPLETE</promise>" } }));
+let input = ""; for await (const chunk of process.stdin) input += chunk;
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: process.argv.slice(2).join(" ") + " " + input + " <promise>COMPLETE</promise>" } }));
 `,
   );
   await chmod(join(bin, "codex"), 0o755);
@@ -57,20 +62,22 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
     completed = resolve;
   });
   let didStart = false;
+  const runtimes = [];
   const server = await startOperator({
     cwd,
     port: 0,
     adapter: {
       promptFiles: {
-        planner: null,
-        implementer: null,
-        reviewer: null,
-        merger: null,
-        readiness: null,
+        planner: ".sandcastle/default-prompt.md",
+        implementer: ".sandcastle/default-prompt.md",
+        reviewer: ".sandcastle/default-prompt.md",
+        merger: ".sandcastle/default-prompt.md",
+        readiness: ".sandcastle/default-prompt.md",
       },
       sandboxIdentity: async () => "fake-browser-image",
       run: async (runtime) => {
         didStart = true;
+        runtimes.push(runtime);
         const map = await runtime.createAgentMap("Browser fake provider");
         await map.track(
           { batch: 1, role: "implementer", title: "Fake run", branch: "main" },
@@ -88,7 +95,7 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
                   ),
                 },
               }),
-              prompt: "Observe configured fake provider",
+              promptFile: runtime.promptFile("implementer"),
               logging,
             });
             providerOutput = result.stdout;
@@ -124,6 +131,7 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
     ready,
     context,
     providerOutput: () => providerOutput,
+    runtimes,
     release: finish,
   };
 }
@@ -266,4 +274,161 @@ test("saving during a run leaves its displayed settings frozen and opens recorde
     .first()
     .click();
   await dashboard.getByRole("tab", { name: "Logs", exact: true }).waitFor();
+});
+
+test("prompt editor saves with keyboard, reloads, resets and renders data", async (t) => {
+  const { page, server, cwd } = await fixture(t);
+  await page.getByRole("link", { name: "Prompts", exact: true }).click();
+  const editor = page.getByLabel("Implementer prompt", { exact: true });
+  await editor.fill(
+    "Customized <script>window.promptExecuted=true</script> <promise>COMPLETE</promise>",
+  );
+  await page
+    .getByRole("button", { name: "Save implementer prompt", exact: true })
+    .focus();
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("status")
+    .filter({ hasText: "implementer prompt saved" })
+    .waitFor();
+  await page.reload();
+  assert.ok((await editor.inputValue()).includes("Customized"));
+  assert.equal(await page.evaluate(() => window.promptExecuted), undefined);
+  await editor.fill("Invalid");
+  await page
+    .getByRole("button", { name: "Save implementer prompt", exact: true })
+    .click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "preserve required runtime output" })
+    .waitFor();
+  await page.reload();
+  assert.ok((await editor.inputValue()).includes("Customized"));
+  await writeFile(
+    join(cwd, ".sandcastle/default-prompt.md"),
+    "Updated default <promise>COMPLETE</promise>",
+  );
+  await page.reload();
+  await page
+    .getByText("Override · default changed", { exact: false })
+    .waitFor();
+  assert.ok(
+    (await page.locator("#implementer-default-diff").textContent()).includes(
+      "+ Updated default",
+    ),
+  );
+  await page
+    .locator("#implementer-default-diff")
+    .locator("..")
+    .locator("summary")
+    .focus();
+  await page.keyboard.press("Enter");
+  assert.equal(
+    await page.locator("#implementer-default-diff").isVisible(),
+    true,
+  );
+  await page
+    .getByRole("button", { name: "Reset implementer prompt", exact: true })
+    .focus();
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("status")
+    .filter({ hasText: "implementer prompt reset" })
+    .waitFor();
+  assert.equal(
+    await editor.inputValue(),
+    "Updated default <promise>COMPLETE</promise>",
+  );
+});
+
+test("fake model receives selected prompt while edits apply to the next run", async (t) => {
+  const { page, ready, release, server, runtimes, providerOutput } =
+    await fixture(t);
+  const editor = page.getByLabel("Implementer prompt", { exact: true });
+  await editor.fill("Selected browser prompt <promise>COMPLETE</promise>");
+  await page
+    .getByRole("button", { name: "Save implementer prompt", exact: true })
+    .click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "implementer prompt saved" })
+    .waitFor();
+  await page.getByRole("button", { name: "Start run", exact: true }).click();
+  await ready;
+  assert.ok(providerOutput().includes("Selected browser prompt"));
+  await editor.fill("Next browser prompt <promise>COMPLETE</promise>");
+  await page
+    .getByRole("button", { name: "Save implementer prompt", exact: true })
+    .click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "implementer prompt saved" })
+    .waitFor();
+  assert.equal(
+    runtimes[0].record.prompts.implementer.content,
+    "Selected browser prompt <promise>COMPLETE</promise>",
+  );
+  release();
+  await page.getByRole("status").filter({ hasText: "· completed ·" }).waitFor();
+  await page.getByRole("button", { name: "Start run", exact: true }).click();
+  await page.waitForFunction((id) => {
+    const text = document.getElementById("run").textContent;
+    return !text.includes(id) && text.includes("· completed ·");
+  }, runtimes[0].record.id);
+  assert.equal(
+    runtimes[1].record.prompts.implementer.content,
+    "Next browser prompt <promise>COMPLETE</promise>",
+  );
+  assert.ok(providerOutput().includes("Next browser prompt"));
+});
+
+test("prompt overrides persist across an operator web restart and isolate projects", async (t) => {
+  const first = await fixture(t);
+  const second = await fixture(t, first.context);
+  const editor = first.page.getByLabel("Reviewer prompt", { exact: true });
+  await editor.fill("Restart-persistent review <promise>COMPLETE</promise>");
+  await first.page
+    .getByRole("button", { name: "Save reviewer prompt", exact: true })
+    .click();
+  await first.page
+    .getByRole("status")
+    .filter({ hasText: "reviewer prompt saved" })
+    .waitFor();
+  await first.server.close();
+  const restarted = await startOperator({
+    cwd: first.cwd,
+    port: 0,
+    adapter: {
+      promptFiles: Object.fromEntries(
+        ["planner", "implementer", "reviewer", "merger", "readiness"].map(
+          (role) => [role, ".sandcastle/default-prompt.md"],
+        ),
+      ),
+      sandboxIdentity: async () => "fake-browser-image",
+      run: async () => {},
+    },
+  });
+  t.after(() => restarted.close());
+  await first.page.goto(restarted.url);
+  assert.equal(
+    await editor.inputValue(),
+    "Restart-persistent review <promise>COMPLETE</promise>",
+  );
+  assert.equal(
+    await second.page
+      .getByLabel("Reviewer prompt", { exact: true })
+      .inputValue(),
+    "Default browser prompt <promise>COMPLETE</promise>",
+  );
+  for (const role of [
+    "Planner",
+    "Implementer",
+    "Reviewer",
+    "Merger",
+    "Readiness",
+  ])
+    assert.equal(
+      await first.page.getByLabel(role + " prompt", { exact: true }).count(),
+      1,
+    );
 });

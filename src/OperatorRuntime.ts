@@ -1,3 +1,4 @@
+import { loadProjectPromptsEffect } from "./OperatorPrompts.js";
 import { FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
@@ -166,6 +167,7 @@ export const createProjectRuntime = (
         "runtime",
         randomUUID(),
       );
+      const selected = yield* loadProjectPromptsEffect(options);
       const prompts = {} as RuntimeRecord["prompts"];
       for (const role of operatorRoles) {
         const path = options.promptFiles[role];
@@ -173,7 +175,7 @@ export const createProjectRuntime = (
           prompts[role] = null;
           continue;
         }
-        const content = yield* fs.readFileString(resolve(options.cwd, path));
+        const content = selected[role]!.content;
         prompts[role] = {
           content,
           digest: createHash("sha256").update(content).digest("hex"),
