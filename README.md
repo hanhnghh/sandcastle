@@ -157,6 +157,20 @@ activity viewer. Choose a session and batch, filter agents by issue or status,
 then open **Logs** to search, copy, or download recent recorded activity.
 See the [dashboard guide](docs/agent-map.md) for navigation and retention limits.
 
+Configure Codex role models and effort, then start and observe a project run:
+
+```sh
+npx sandcastle operator --cwd /path/to/project --port 4319
+```
+
+Open the printed URL, choose models/effort and save. New reviewed Codex and
+`codex-afk` workflows consume `.sandcastle/roles.json` through a shared runtime.
+Planner/implementer default to low effort; reviewer/merger/readiness to high.
+Init preserves the selected model; missing config defaults to gpt-6.1-sol.
+Runs freeze settings, prompts and image identity; saves affect the next run.
+See the [operator guide](docs/operator.md) for SDK/HTTP interfaces, custom
+project adapters and legacy workflow compatibility.
+
 Open the read-only dashboard in a second host terminal:
 
 ```bash

@@ -1,3 +1,4 @@
+import { defaultRoleConfig, saveRoleConfigEffect } from "./Operator.js";
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname, join } from "node:path";
@@ -1728,6 +1729,131 @@ const copyToWorktree: string[] = [];`,
       .pipe(Effect.mapError((e) => new Error(e.message)));
   });
 
+const configureRoleRuntime = (
+  configDir: string,
+  mainFilename: string,
+  model: string,
+  sandboxProvider: SandboxProviderEntry,
+): Effect.Effect<void, InitError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const mainPath = join(configDir, mainFilename);
+    let content = yield* fs
+      .readFileString(mainPath)
+      .pipe(
+        Effect.mapError(
+          () => new InitError({ message: "Cannot read reviewed workflow" }),
+        ),
+      );
+    // Preserve project-owned provider session options, without retaining role settings in copied code.
+    const isolated = content.includes("const codexAgent =");
+    if (isolated) {
+      content = content.replace(
+        /const codexAgent = \(effort:[\s\S]*?\n  \}\);/,
+        "",
+      );
+    }
+    const roles = ["readiness", "planner", "implementer", "reviewer", "merger"];
+    let index = 0;
+    content = content.replace(
+      /agent: (?:sandcastle\.codex\([^\n]*\)|codexAgent\([^\n]*\)),/g,
+      () => {
+        const role = roles[index++];
+        const session = isolated
+          ? ", { sessionStorage: { hostSessionsDir: `\${CODEX_HOME_HOST}/sessions`, sandboxSessionsDir: `\${CODEX_HOME_SANDBOX}/sessions` } }"
+          : "";
+        return `agent: runtime.agent("${role}"${session}),`;
+      },
+    );
+    if (index !== roles.length)
+      return yield* Effect.fail(
+        new InitError({
+          message:
+            "Reviewed workflow role anchors changed; refusing incomplete runtime wiring",
+        }),
+      );
+    for (const [role, file] of [
+      ["planner", "plan"],
+      ["implementer", "implement"],
+      ["reviewer", "review"],
+      ["merger", "merge"],
+      ["readiness", "readiness"],
+    ]) {
+      content = content.replace(
+        `promptFile: "./.sandcastle/${file}-prompt.md"`,
+        `promptFile: runtime.promptFile("${role}")`,
+      );
+    }
+    const engine = sandboxProvider.cliNamespace;
+    const imageBased = engine === "docker" || engine === "podman";
+    if (imageBased) {
+      content = content.replace(
+        `import { ${engine} }`,
+        `import { ${engine}, defaultImageName }`,
+      );
+      content = content.replaceAll(
+        `${engine}({`,
+        `${engine}({ imageName: runtime.record.sandboxIdentity,`,
+      );
+    }
+    const inputs = `{
+  cwd: process.cwd(),
+  promptFiles: {
+    planner: ".sandcastle/plan-prompt.md", implementer: ".sandcastle/implement-prompt.md",
+    reviewer: ".sandcastle/review-prompt.md", merger: ".sandcastle/merge-prompt.md",
+    readiness: ".sandcastle/readiness-prompt.md",
+  },
+  sandboxIdentity: ${
+    imageBased
+      ? `(await runHost("${engine}", ["image", "inspect", defaultImageName(process.cwd()), "--format", "{{.Id}}"])).trim()`
+      : JSON.stringify(engine)
+  },
+}`;
+    const runtime = `const runtime = process.env.SANDCASTLE_RUNTIME_ID
+  ? await sandcastle.openProjectRuntime({ cwd: process.cwd(), id: process.env.SANDCASTLE_RUNTIME_ID })
+  : await sandcastle.createProjectRuntime(${inputs});
+
+`;
+    content = content.replace(
+      "const MAX_ITERATIONS = 10;",
+      runtime + "const MAX_ITERATIONS = 10;",
+    );
+    content = content.replace(
+      /const agentMap = await sandcastle\.createAgentMap\(\{[\s\S]*?\}\);/,
+      'const agentMap = await runtime.createAgentMap("Parallel planner with review");',
+    );
+    yield* fs.writeFileString(mainPath, content).pipe(
+      Effect.mapError(
+        () =>
+          new InitError({
+            message: "Cannot write reviewed runtime workflow",
+          }),
+      ),
+    );
+    yield* saveRoleConfigEffect({
+      cwd: dirname(configDir),
+      config: defaultRoleConfig(model),
+    }).pipe(
+      Effect.mapError((error) => new InitError({ message: error.message })),
+    );
+    const ignorePath = join(configDir, ".gitignore");
+    const ignore = yield* fs
+      .readFileString(ignorePath)
+      .pipe(
+        Effect.mapError(
+          () => new InitError({ message: "Cannot read runtime ignore rules" }),
+        ),
+      );
+    yield* fs
+      .writeFileString(ignorePath, ignore + "\nruntime/\n")
+      .pipe(
+        Effect.mapError(
+          () =>
+            new InitError({ message: "Cannot ignore private runtime inputs" }),
+        ),
+      );
+  });
+
 const configureCodexAfkPrompts = (
   configDir: string,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
@@ -2376,6 +2502,18 @@ export const scaffold = (
         });
       }
       yield* scaffoldCodexAfkReadyScript(configDir);
+    }
+
+    if (
+      agent.name === "codex" &&
+      ["parallel-planner-with-review", "codex-afk"].includes(templateName)
+    ) {
+      yield* configureRoleRuntime(
+        configDir,
+        mainFilename,
+        model,
+        sandboxProvider,
+      );
     }
 
     // Replace issue tracker template arguments in all text files (must run before label stripping)

@@ -61,6 +61,7 @@ const nodeSchema = z.object({
   startedAt: z.string().optional(),
   endedAt: z.string().optional(),
   model: z.string().optional(),
+  effort: z.string().optional(),
   provider: z.string().optional(),
   error: z.string().optional(),
   sessionId: z.string().optional(),
@@ -110,6 +111,8 @@ export interface AgentMapTask {
   readonly model?: string;
   /** Agent provider name, when known. */
   readonly provider?: string;
+  /** Effective provider effort for this invocation. */
+  readonly effort?: string;
 }
 const snapshotSchema = z.object({
   id: z.string().uuid(),
@@ -121,6 +124,14 @@ const snapshotSchema = z.object({
     z.object({ number: z.number(), decisions: z.array(decisionSchema) }),
   ),
   nodes: z.array(nodeSchema),
+  runtime: z
+    .object({
+      id: z.string(),
+      configRevision: z.string(),
+      version: z.string(),
+      sandboxIdentity: z.string(),
+    })
+    .optional(),
 });
 
 /** Selected tasks and the planner's explanation for every candidate. */
@@ -187,6 +198,13 @@ export const createAgentMap = (options: {
   cwd: string;
   /** Human-readable session name. */
   name: string;
+  /** Frozen project runtime identity, when the caller uses a shared runtime. */
+  runtime?: {
+    id: string;
+    configRevision: string;
+    version: string;
+    sandboxIdentity: string;
+  };
 }): Promise<AgentMap> =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -201,6 +219,7 @@ export const createAgentMap = (options: {
         updatedAt: now,
         batches: [],
         nodes: [],
+        runtime: options.runtime,
       };
       const lock = yield* Effect.makeSemaphore(1);
       const save = lock.withPermits(1)(

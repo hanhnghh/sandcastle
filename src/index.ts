@@ -139,3 +139,19 @@ export type {
   MergeToHeadBranchStrategy,
   NamedBranchStrategy,
 } from "./SandboxProvider.js";
+export {
+  defaultRoleConfig,
+  loadRoleConfig,
+  saveRoleConfig,
+  operatorRoles,
+  codexCapability,
+} from "./Operator.js";
+export type { RoleConfig, OperatorRole } from "./Operator.js";
+export { createProjectRuntime, openProjectRuntime } from "./OperatorRuntime.js";
+export type {
+  ProjectRuntime,
+  ProjectRuntimeOptions,
+  RuntimeRecord,
+} from "./OperatorRuntime.js";
+export { startOperator } from "./OperatorServer.js";
+export type { OperatorProjectAdapter } from "./OperatorServer.js";

@@ -48,6 +48,71 @@ const runScaffold = (repoDir: string, options?: Partial<ScaffoldOptions>) =>
 // ---------------------------------------------------------------------------
 
 describe("InitService scaffold", () => {
+  it("rejects a Codex init model that cannot form valid shared role configuration", async () => {
+    const dir = await makeDir();
+    await expect(
+      runScaffold(dir, {
+        templateName: "parallel-planner-with-review",
+        agent: codexAgent,
+        model: "invalid model",
+      }),
+    ).rejects.toThrow(/model/);
+    await expect(
+      readFile(join(dir, ".sandcastle", "roles.json")),
+    ).rejects.toThrow();
+  });
+
+  it.each(["parallel-planner-with-review", "codex-afk"])(
+    "%s Codex consumers use the shared runtime and preserve the selected model",
+    async (templateName) => {
+      const dir = await makeDir();
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ scripts: { test: "vitest run" } }),
+      );
+      await runScaffold(dir, {
+        templateName,
+        agent: codexAgent,
+        model: "selected-model",
+      });
+      const configDir = join(dir, ".sandcastle");
+      const config = JSON.parse(
+        await readFile(join(configDir, "roles.json"), "utf8"),
+      );
+      expect(
+        Object.values(config.roles).map(
+          (role: unknown) => (role as { model: string }).model,
+        ),
+      ).toEqual(Array(5).fill("selected-model"));
+      const main = await readFile(join(configDir, "main.mts"), "utf8");
+      const syntax = ts.transpileModule(main, {
+        compilerOptions: {
+          target: ts.ScriptTarget.ESNext,
+          module: ts.ModuleKind.ESNext,
+        },
+        reportDiagnostics: true,
+      });
+      expect(syntax.diagnostics).toEqual([]);
+      expect(main).toContain("sandcastle.createProjectRuntime");
+      expect(main).toContain("sandcastle.openProjectRuntime");
+      for (const role of [
+        "planner",
+        "implementer",
+        "reviewer",
+        "merger",
+        "readiness",
+      ]) {
+        expect(main).toContain('runtime.agent("' + role + '"');
+        expect(main).toContain('runtime.promptFile("' + role + '")');
+      }
+      expect(main).toContain("runtime.createAgentMap");
+      expect(main).not.toContain("sandcastle.codex(");
+      expect(main).not.toContain("codexAgent(");
+      expect(main).toContain("admitGitHubReadinessBatch");
+      expect(main).toContain("Merge did not complete");
+    },
+  );
+
   it.each(["parallel-planner-with-review", "codex-afk"])(
     "%s assigns focused branch evidence and a cumulative integration owner",
     async (templateName) => {
@@ -298,7 +363,11 @@ describe("InitService scaffold", () => {
     );
     expect(main).toContain("sandboxPath: CODING_STANDARDS_SANDBOX");
     expect(main).toContain("readonly: true");
-    expect(main).toContain('agent: codexAgent("xhigh")');
+    expect(main).toContain('agent: runtime.agent("reviewer"');
+    const roles = JSON.parse(
+      await readFile(join(dir, ".sandcastle", "roles.json"), "utf8"),
+    );
+    expect(roles.roles.reviewer.effort).toBe("high");
     expect(main).toContain("TASK_ID: issue.id");
     expect(main).toContain("ISSUE_TITLE: issue.title");
 

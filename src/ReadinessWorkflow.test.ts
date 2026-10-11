@@ -13,7 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { afterEach, expect, it } from "vitest";
 import { getAgent, scaffold } from "./InitService.js";
@@ -52,6 +52,11 @@ else throw Error('Unexpected GitHub request '+endpoint);
 const fakeAgent = `
 import fs from 'node:fs'; import {execFileSync} from 'node:child_process';
 const prompt=fs.readFileSync(0,'utf8');
+if(process.env.READINESS_FIXTURE_CODEX==='1') {
+  const rawLog=console.log, messages=[];
+  console.log=text=>messages.push(text);
+  process.on('exit',()=>rawLog(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:messages.join(String.fromCharCode(10))}})));
+}
 const git=(...args)=>execFileSync('git',args,{encoding:'utf8'}).trim();
 const record=(value)=>fs.appendFileSync(process.env.READINESS_FIXTURE_TRACE,value+'\\n');
 if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
@@ -67,7 +72,11 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
 } else if(prompt.includes('Integrate the following completed branches')) {
   const branches=[...new Set(prompt.match(/sandcastle\\/issue-\\d+/g))];
   for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); execFileSync('gh',['issue','close',String(number)]); }
-} else if(prompt.includes('Review task ')) { const number=prompt.match(/Review task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('review:'+number); }
+  if(process.env.READINESS_FIXTURE_MERGE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
+} else if(prompt.includes('Review task ')) {
+  const number=prompt.match(/Review task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('review:'+number);
+  if(process.env.READINESS_FIXTURE_REVIEW_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
+}
 else if(prompt.includes('Implement task ')) {
   const number=prompt.match(/Implement task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('implement:'+number);
   if(process.env.READINESS_FIXTURE_NO_PROGRESS!=='1' && !(number==='22' && process.env.READINESS_FIXTURE_RETAINED==='1')) {fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);}
@@ -174,14 +183,47 @@ async function execute(extraEnv: Record<string, string> = {}) {
   await writeFile(join(bin, "gh"), fakeGh);
   await chmod(join(bin, "gh"), 0o755);
   await writeFile(join(root, "agent.mjs"), fakeAgent);
+  if (extraEnv.READINESS_FIXTURE_CODEX === "1") {
+    await writeFile(
+      join(bin, "codex"),
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(process.env.READINESS_FIXTURE_MODELS, JSON.stringify(process.argv.slice(2)) + String.fromCharCode(10));
+import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
+`,
+    );
+    await chmod(join(bin, "codex"), 0o755);
+    await writeFile(
+      join(bin, "docker"),
+      "#!/usr/bin/env sh\nprintf 'sha256:fixture-image\\n'\n",
+    );
+    await chmod(join(bin, "docker"), 0o755);
+    await writeFile(join(root, "models.jsonl"), "");
+  }
   await writeFile(join(root, "verify.mjs"), verifier);
   await Effect.runPromise(
     scaffold(cwd, {
-      agent: getAgent("claude-code")!,
+      agent: getAgent(
+        extraEnv.READINESS_FIXTURE_CODEX === "1" ? "codex" : "claude-code",
+      )!,
       model: "fixture",
       templateName: "parallel-planner-with-review",
     }).pipe(Effect.provide(NodeFileSystem.layer)),
   );
+  if (extraEnv.READINESS_FIXTURE_CODEX === "1") {
+    const { loadRoleConfig, saveRoleConfig } = await import("./index.js");
+    const config = await loadRoleConfig({ cwd });
+    for (const [role, value] of Object.entries(config.roles)) {
+      value.model = "configured-" + role;
+      value.effort =
+        role === "implementer"
+          ? "medium"
+          : role === "merger"
+            ? "xhigh"
+            : value.effort;
+    }
+    await saveRoleConfig({ cwd, config });
+  }
   const mainPath = join(cwd, ".sandcastle/main.mts");
   let main = await readFile(mainPath, "utf8");
   main = main
@@ -203,6 +245,13 @@ async function execute(extraEnv: Record<string, string> = {}) {
       'const copyToWorktree = ["node_modules"];',
       "const copyToWorktree: string[] = [];",
     );
+  if (extraEnv.READINESS_FIXTURE_CODEX === "1") {
+    main = main.replace(
+      'import { docker, defaultImageName } from "@ai-hero/sandcastle/sandboxes/docker";',
+      `import { noSandbox as docker } from ${JSON.stringify(new URL("./sandboxes/no-sandbox.ts", import.meta.url).href)};
+const defaultImageName = () => "fixture-image";`,
+    );
+  }
   main =
     `const scriptedAgent = () => ({ name: "fixture", env: {}, captureSessions: false, buildPrintCommand: ({prompt}) => ({command: ${JSON.stringify(`${process.execPath} ${JSON.stringify(join(root, "agent.mjs"))}`)}, stdin: prompt}), parseStreamLine: text => [{type: "text", text}] });\n` +
     main;
@@ -261,10 +310,12 @@ async function execute(extraEnv: Record<string, string> = {}) {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
+          GIT_CONFIG_GLOBAL: join(root, "fixture-gitconfig"),
           GH_TOKEN: "fake-host-token",
           READINESS_FIXTURE_STATE: state,
           READINESS_FIXTURE_POLICY: policyPath,
           READINESS_FIXTURE_TRACE: trace,
+          READINESS_FIXTURE_MODELS: join(root, "models.jsonl"),
           ...extraEnv,
         },
       },
@@ -286,6 +337,14 @@ async function execute(extraEnv: Record<string, string> = {}) {
   return {
     error,
     stdout,
+    modelArgs:
+      extraEnv.READINESS_FIXTURE_CODEX === "1"
+        ? (await readFile(join(root, "models.jsonl"), "utf8"))
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as string[])
+        : [],
     trace: (await readFile(trace, "utf8")).trim().split("\n"),
     issues: JSON.parse(await readFile(state, "utf8")),
     snapshots,
@@ -400,3 +459,73 @@ it("reports pending external qualification without implementing or closing its i
   expect(result.issues[0].state).toBe("open");
   expect(result.snapshots[0].status).toBe("completed");
 }, 90_000);
+
+it("generated Codex workflow consumes saved models and effort for all roles through real provider commands and records", async () => {
+  const result = await execute({ READINESS_FIXTURE_CODEX: "1" });
+  expect(result.error).toBeUndefined();
+  for (const [role, effort] of [
+    ["planner", "low"],
+    ["implementer", "medium"],
+    ["reviewer", "high"],
+    ["merger", "xhigh"],
+    ["readiness", "high"],
+  ]) {
+    const args = result.modelArgs.find((args) =>
+      args.includes("configured-" + role),
+    );
+    expect(args).toBeDefined();
+    expect(args).toContain('model_reasoning_effort="' + effort + '"');
+    const nodes = result.snapshots.flatMap((snapshot) => snapshot.nodes);
+    expect(
+      nodes.find((node) => node.role === role && node.status === "completed"),
+    ).toMatchObject({
+      model: "configured-" + role,
+      effort,
+      provider: "codex",
+    });
+  }
+  expect(result.snapshots[0].runtime.configRevision).toMatch(/^[a-f0-9]{64}$/);
+  expect(result.snapshots[0].runtime.version).toMatch(/^0\./);
+}, 60_000);
+
+it.each([
+  {
+    scenario: "fresh admission",
+    flag: "READINESS_FIXTURE_STALE_PLAN",
+    forbidden: ["implement:22"],
+  },
+  {
+    scenario: "blocked completion",
+    flag: "READINESS_FIXTURE_BLOCKED",
+    forbidden: ["review:22", "merge:22"],
+  },
+  {
+    scenario: "blocked review",
+    flag: "READINESS_FIXTURE_REVIEW_BLOCKED",
+    forbidden: ["merge:22", "readiness:post-merge"],
+  },
+  {
+    scenario: "merger completion",
+    flag: "READINESS_FIXTURE_MERGE_BLOCKED",
+    forbidden: ["readiness:post-merge", "plan:20", "implement:20"],
+  },
+  {
+    scenario: "readiness checkout integrity",
+    flag: "READINESS_FIXTURE_DIRTY",
+    forbidden: ["plan:22"],
+  },
+  {
+    scenario: "post-merge verification",
+    flag: "READINESS_FIXTURE_FAIL_VERIFY",
+    forbidden: ["plan:20", "implement:20"],
+  },
+])(
+  "shared Codex runtime preserves $scenario guards",
+  async ({ flag, forbidden }) => {
+    const result = await execute({ READINESS_FIXTURE_CODEX: "1", [flag]: "1" });
+    expect(result.error).toBeDefined();
+    for (const event of forbidden) expect(result.trace).not.toContain(event);
+    expect(result.snapshots[0].status).toBe("failed");
+  },
+  90_000,
+);

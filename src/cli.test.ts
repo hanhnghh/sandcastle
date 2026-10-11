@@ -30,6 +30,13 @@ const runCli = (args: string, cwd: string) =>
   execAsync(`node ${cliPath} ${args}`, { cwd });
 
 describe("sandcastle CLI", () => {
+  it("offers an operator command requiring an explicit host project", async () => {
+    const { stdout } = await runCli("operator --help", process.cwd());
+    expect(stdout).toContain("$ operator --cwd");
+    expect(stdout).toContain("--cwd");
+    expect(stdout).toContain("--port");
+    await expect(runCli("operator --port 0", process.cwd())).rejects.toThrow();
+  });
   it("offers a dashboard command with host directory and port options", async () => {
     const { stdout } = await runCli("dashboard --help", process.cwd());
     expect(stdout).toContain("--port");
@@ -276,7 +283,11 @@ describe("sandcastle CLI", () => {
     );
     expect(main).toContain("CODEX_HOME_HOST");
     expect(main).toContain("prepareCodeGraphCache");
-    expect(main).toContain('sandcastle.codex("gpt-5.6-sol"');
+    expect(main).toContain('runtime.agent("implementer"');
+    const roles = JSON.parse(
+      await readFile(join(hostDir, ".sandcastle", "roles.json"), "utf8"),
+    );
+    expect(roles.roles.implementer.model).toBe("gpt-5.6-sol");
     expect(dockerfile).toContain("@colbymchenry/codegraph@1.5.0");
   });
 

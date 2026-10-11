@@ -36,6 +36,8 @@ import type {
 import { ConfigDirError, InitError } from "./errors.js";
 import { ensureCodexSubscriptionLogin } from "./CodexSubscription.js";
 import { VERSION } from "./version.js";
+import { startOperator } from "./OperatorServer.js";
+import { operatorCliAdapter } from "./OperatorCli.js";
 import { DashboardError, startDashboard } from "./AgentMap.js";
 
 // --- Shared options ---
@@ -841,6 +843,41 @@ const dashboardCommand = Command.make(
     ),
 );
 
+const operatorCommand = Command.make(
+  "operator",
+  {
+    cwd: Options.text("cwd").pipe(
+      Options.withDescription("Explicit host project directory"),
+    ),
+    port: Options.integer("port").pipe(
+      Options.withDefault(4319),
+      Options.withDescription("Loopback HTTP port (0 chooses a free port)"),
+    ),
+  },
+  ({ cwd, port }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* Effect.acquireRelease(
+          Effect.tryPromise({
+            try: () =>
+              startOperator({ cwd, port, adapter: operatorCliAdapter(cwd) }),
+            catch: (cause) =>
+              new DashboardError({
+                message: `Cannot start operator: ${cause instanceof Error ? cause.message : "project configuration error"}`,
+              }),
+          }),
+          (server) => Effect.promise(() => server.close()),
+        );
+        yield* Effect.sync(() =>
+          console.log(
+            `Operator: ${server.url}\nProject: ${cwd}\nOpen this URL in your browser. Press Ctrl+C to close.`,
+          ),
+        );
+        yield* Effect.never;
+      }),
+    ),
+);
+
 const rootCommand = Command.make("sandcastle", {}, () =>
   Effect.gen(function* () {
     const d = yield* Display;
@@ -855,6 +892,7 @@ export const sandcastle = rootCommand.pipe(
     dockerCommand,
     podmanCommand,
     dashboardCommand,
+    operatorCommand,
   ]),
 );
 
