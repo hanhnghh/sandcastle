@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
+import { loadWorkflowConfig, saveWorkflowConfig } from "./OperatorWorkflow.js";
 import { loadRoleConfig } from "./Operator.js";
 
 test("operator CLI serves only its explicit project and hands its frozen runtime to the fixed workflow", async () => {
@@ -52,6 +53,7 @@ const provider = docker({imageName:runtime.record.sandboxIdentity, mounts:[{host
 const handle = await provider.create({hostRepoPath:process.cwd(),worktreePath:process.cwd(),mounts:[{hostPath:process.cwd(),sandboxPath:'/home/agent/workspace'}],env:{}});
 await handle.close();
 await writeFile(".sandcastle/observed.json", JSON.stringify({
+  workflow: runtime.workflow.config,
   id: runtime.record.id, model: runtime.record.config.roles.planner.model,
   effort: runtime.record.config.roles.planner.effort, image: runtime.record.sandboxIdentity,
   prompt: await readFile(runtime.promptFile("implementer"), "utf8"),
@@ -94,6 +96,27 @@ if (runtime.record.sandboxIdentity === 'sha256:'+'b'.repeat(64)) {
     });
     const cookie = (await fetch(url)).headers.get("set-cookie")!.split(";")[0]!;
     const headers = { cookie, origin: url, "content-type": "application/json" };
+    const workflow = await loadWorkflowConfig({ cwd });
+    expect(
+      (
+        await fetch(url + "/api/workflow", {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({
+            ...workflow,
+            repository: "owner/project",
+            limits: { ...workflow.limits, cycles: 2, concurrency: 1 },
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        (await (await fetch(url + "/api/workflow")).json()) as {
+          config: unknown;
+        }
+      ).config,
+    ).toEqual(await loadWorkflowConfig({ cwd }));
     const config = await loadRoleConfig({ cwd });
     config.roles.planner.model = "cli-selected";
     config.roles.planner.effort = "medium";
@@ -174,6 +197,17 @@ if (runtime.record.sandboxIdentity === 'sha256:'+'b'.repeat(64)) {
     const observed = JSON.parse(
       await readFile(join(configDir, "observed.json"), "utf8"),
     );
+    expect(observed.workflow).toMatchObject({
+      repository: "owner/project",
+      limits: { cycles: 2, concurrency: 1 },
+    });
+    await saveWorkflowConfig({
+      cwd,
+      config: {
+        ...(await loadWorkflowConfig({ cwd })),
+        repository: "later/project",
+      },
+    });
     expect(observed).toMatchObject({
       model: "cli-selected",
       effort: "medium",
@@ -217,6 +251,7 @@ if (runtime.record.sandboxIdentity === 'sha256:'+'b'.repeat(64)) {
     const nextObserved = JSON.parse(
       await readFile(join(configDir, "observed.json"), "utf8"),
     );
+    expect(nextObserved.workflow.repository).toBe("later/project");
     expect(nextObserved).toMatchObject({
       id: nextRun.id,
       prompt: "CLI next prompt",

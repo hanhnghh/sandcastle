@@ -1817,7 +1817,43 @@ const configureRoleRuntime = (
 `;
     content = content.replace(
       "const MAX_ITERATIONS = 10;",
-      runtime + "const MAX_ITERATIONS = 10;",
+      runtime + "const MAX_ITERATIONS = runtime.workflow.config.limits.cycles;",
+    );
+    content = content.replace(
+      "        console.log(\n          `Local implementation is complete;",
+      '        await runtime.reportOutcome({code:"qualification-pending",issues:qualification});\n        console.log(\n          `Local implementation is complete;',
+    );
+    content = content.replace(
+      '      await agentMap.finishBatch(iteration);\n      throw new Error(\n        "No verified implementation progress.',
+      '      await agentMap.finishBatch(iteration);\n      await runtime.reportOutcome({code:"no-progress",issues:issues.map(issue => Number(issue.id))});\n      throw new Error(\n        "No verified implementation progress.',
+    );
+    content = content.replace(
+      '  throw new Error(\n    "Iteration limit reached;',
+      '  await runtime.reportOutcome({code:"iteration-limit",issues:[]});\n  throw new Error(\n    "Iteration limit reached;',
+    );
+    content = content.replace(
+      "async function executeWorkflow() {",
+      'async function executeWorkflow() {\n  if (!readiness.repository) throw new Error("Explicit repository required; configure owner/repository in operator Workflow settings before starting.");',
+    );
+    content = content.replace(
+      "const MAX_PLANNER_ATTEMPTS = 3;",
+      "const MAX_PLANNER_ATTEMPTS = runtime.workflow.config.limits.plannerAttempts;",
+    );
+    content = content.replace(
+      /const readiness = z[\s\S]*?\.parse\(JSON\.parse\(readFileSync\("\.sandcastle\/readiness\.json", "utf8"\)\)\);/,
+      "const readiness = runtime.readiness;",
+    );
+    content = content.replace(
+      /verify: readiness\.verifyCommand[\s\S]*?: undefined,/,
+      "verify: runtime.workflow.config.readiness.verifier ? input => runtime.verifyReadiness(input) : undefined,",
+    );
+    content = content.replace(
+      "const settled = await Promise.allSettled(\n      issues.map(async (issue) => {",
+      "const settled = await runtime.settleIssues(issues, async (issue) => {",
+    );
+    content = content.replace(
+      "      }),\n    );\n\n    // Log any agents",
+      "      },\n    );\n\n    // Log any agents",
     );
     content = content.replace(
       /const agentMap = await sandcastle\.createAgentMap\(\{[\s\S]*?\}\);/,

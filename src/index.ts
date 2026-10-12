@@ -152,6 +152,7 @@ export type {
   ProjectRuntime,
   ProjectRuntimeOptions,
   RuntimeRecord,
+  WorkflowDiagnostic,
 } from "./OperatorRuntime.js";
 export { startOperator } from "./OperatorServer.js";
 export type { OperatorProjectAdapter } from "./OperatorServer.js";
@@ -175,3 +176,10 @@ export type {
   EnvironmentConfig,
   EnvironmentPolicy,
 } from "./OperatorEnvironment.js";
+
+export {
+  loadWorkflowConfig,
+  saveWorkflowConfig,
+  inspectWorkflow,
+} from "./OperatorWorkflow.js";
+export type { WorkflowConfig } from "./OperatorWorkflow.js";

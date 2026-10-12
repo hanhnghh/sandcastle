@@ -124,17 +124,22 @@ async function execute(
         number,
         title: `Task ${number}`,
         body:
-          extraEnv.READINESS_FIXTURE_QUALIFICATION_ONLY === "1"
-            ? "**Kind:** live-validation\nLive protocol still required"
-            : number === 20
-              ? "## Dependencies\n- #22"
-              : "Implement slice",
+          extraEnv.READINESS_FIXTURE_META === "1"
+            ? "**Kind:** meta\nParent tracking task"
+            : extraEnv.READINESS_FIXTURE_QUALIFICATION_ONLY === "1"
+              ? "**Kind:** live-validation\nLive protocol still required"
+              : number === 20
+                ? "## Dependencies\n- #22"
+                : "Implement slice",
         state: "open",
         state_reason: null,
         updated_at: "now",
         labels: [
           { name: "Sandcastle" },
           { name: number === 20 ? "blocked" : "ready-for-agent" },
+          ...(extraEnv.READINESS_FIXTURE_HOLD === "1"
+            ? [{ name: "readiness:hold" }]
+            : []),
         ],
       })),
     ),
@@ -281,6 +286,25 @@ const defaultImageName = () => "fixture-image";`,
       ],
     }),
   );
+  if (
+    extraEnv.READINESS_FIXTURE_CYCLES ||
+    extraEnv.READINESS_FIXTURE_CODEX === "1"
+  ) {
+    const { loadWorkflowConfig, saveWorkflowConfig } =
+      await import("./index.js");
+    const config = await loadWorkflowConfig({ cwd });
+    await saveWorkflowConfig({
+      cwd,
+      config: {
+        ...config,
+        limits: {
+          ...config.limits,
+          cycles: Number(extraEnv.READINESS_FIXTURE_CYCLES ?? 3),
+          concurrency: 1,
+        },
+      },
+    });
+  }
   await writeFile(
     join(cwd, "package.json"),
     JSON.stringify({ type: "module" }),
@@ -357,6 +381,14 @@ const defaultImageName = () => "fixture-image";`,
     trace: (await readFile(trace, "utf8")).trim().split("\n"),
     issues: JSON.parse(await readFile(state, "utf8")),
     snapshots,
+    diagnostics:
+      extraEnv.READINESS_FIXTURE_CODEX === "1"
+        ? await (
+            await (
+              await import("./index.js")
+            ).openProjectRuntime({ cwd, id: snapshots[0].runtime.id })
+          ).diagnostics()
+        : [],
   };
 }
 
@@ -546,4 +578,56 @@ it.each([
     expect(result.snapshots[0].status).toBe("failed");
   },
   90_000,
+);
+
+it.each(["parallel-planner-with-review", "codex-afk"])(
+  "generated %s stops at the saved cycle limit without starting a later task",
+  async (template) => {
+    const result = await execute(
+      { READINESS_FIXTURE_CODEX: "1", READINESS_FIXTURE_CYCLES: "1" },
+      template,
+    );
+    expect(result.error).toBeDefined();
+    expect(result.trace).toContain("merge:22");
+    expect(result.trace).not.toContain("plan:20");
+    expect(
+      result.issues.find((issue: { number: number }) => issue.number === 20)
+        .state,
+    ).toBe("open");
+    expect(result.snapshots[0].status).toBe("failed");
+  },
+  90000,
+);
+
+it.each([
+  { flag: "READINESS_FIXTURE_NO_PROGRESS", code: "no-progress", failed: true },
+  {
+    flag: "READINESS_FIXTURE_QUALIFICATION_ONLY",
+    code: "qualification-pending",
+    failed: false,
+  },
+])(
+  "configured Codex workflow records $code without closing unfinished issues",
+  async ({ flag, code, failed }) => {
+    const result = await execute({ READINESS_FIXTURE_CODEX: "1", [flag]: "1" });
+    expect(Boolean(result.error)).toBe(failed);
+    expect(result.diagnostics).toEqual([{ code, issues: [22] }]);
+    expect(result.trace).not.toContain("merge:22");
+    expect(
+      result.issues.every((issue: { state: string }) => issue.state === "open"),
+    ).toBe(true);
+  },
+  90000,
+);
+it.each(["READINESS_FIXTURE_HOLD", "READINESS_FIXTURE_META"])(
+  "configured Codex workflow cannot implement held or meta tasks: %s",
+  async (flag) => {
+    const result = await execute({ READINESS_FIXTURE_CODEX: "1", [flag]: "1" });
+    expect(result.trace).not.toContain("implement:22");
+    expect(result.trace).not.toContain("implement:20");
+    expect(
+      result.issues.every((issue: { state: string }) => issue.state === "open"),
+    ).toBe(true);
+  },
+  90000,
 );

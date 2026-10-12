@@ -1,3 +1,4 @@
+import { loadWorkflowConfig, saveWorkflowConfig } from "./OperatorWorkflow.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { execFile } from "node:child_process";
@@ -116,22 +117,38 @@ if(args[0]==='run') { console.error('fixture stops at container launch'); proces
       );
       for (const name of ["gh", "docker"])
         await chmod(join(cwd, "bin", name), 0o755);
-      expect(
-        (
-          await runHost(
-            "git",
-            [
-              "add",
-              ".sandcastle",
-              "package.json",
-              "settings.gradle.kts",
-            ].filter(
-              (arg) => project === "android" || arg !== "settings.gradle.kts",
-            ),
-          )
-        ).code,
-      ).toBe(0);
+      await writeFile(
+        join(cwd, ".gitignore"),
+        "node_modules/\nbin/\ndocker-calls.jsonl\n",
+      );
+      expect((await runHost("git", ["add", "."])).code).toBe(0);
       expect((await runHost("git", ["commit", "-m", "Fixture"])).code).toBe(0);
+      const missingRepository = await runHost(process.execPath, [
+        "--import",
+        "tsx",
+        ".sandcastle/" + mainFilename,
+      ]);
+      expect(missingRepository.code).toBe(1);
+      expect(missingRepository.stderr).toContain(
+        "Explicit repository required",
+      );
+      expect(
+        (await readFile(join(cwd, "docker-calls.jsonl"), "utf8")).includes(
+          '"run"',
+        ),
+      ).toBe(false);
+      const workflow = await loadWorkflowConfig({ cwd });
+      await saveWorkflowConfig({
+        cwd,
+        config: { ...workflow, repository: "owner/project" },
+      });
+      expect(
+        (await runHost("git", ["add", ".sandcastle/workflow.json"])).code,
+      ).toBe(0);
+      expect(
+        (await runHost("git", ["commit", "-m", "Configure explicit tracker"]))
+          .code,
+      ).toBe(0);
       const result = await runHost(process.execPath, [
         "--import",
         "tsx",

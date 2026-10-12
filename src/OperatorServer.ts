@@ -1,3 +1,4 @@
+import { inspectWorkflow, saveWorkflowConfig } from "./OperatorWorkflow.js";
 import { resolveEnv } from "./EnvResolver.js";
 import {
   inspectEnvironment,
@@ -506,6 +507,24 @@ export const startOperator = (options: {
                 return;
               }
             }
+            if (url.pathname === "/api/workflow") {
+              if (request.method === "GET") {
+                response.end(
+                  JSON.stringify(
+                    yield* attempt(() => inspectWorkflow({ cwd })),
+                  ),
+                );
+                return;
+              }
+              if (request.method === "PUT") {
+                const config = yield* requestBody(request);
+                const saved = yield* lock.withPermits(1)(
+                  attempt(() => saveWorkflowConfig({ cwd, config })),
+                );
+                response.end(JSON.stringify({ config: saved }));
+                return;
+              }
+            }
             if (url.pathname === "/api/config") {
               if (request.method === "GET") {
                 const config = yield* attempt(() => loadRoleConfig({ cwd }));
@@ -536,6 +555,10 @@ export const startOperator = (options: {
                       ? {
                           id: record.id,
                           config: record.config,
+                          workflow: record.workflow?.config,
+                          diagnostics: yield* attempt(() =>
+                            current!.runtime.diagnostics(),
+                          ),
                           runtimeVersion: record.runtimeVersion,
                           sandboxIdentity: record.sandboxIdentity,
                           status: current!.status,

@@ -1,7 +1,7 @@
 export const operatorPage =
-  '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandcastle operator</title><link rel="stylesheet" href="/style.css"><body><main><h1>Sandcastle operator</h1><p id="project"></p><p>Settings saved during a run apply to the next run.</p><nav><a href="#environment">Environment</a> · <a href="#prompts">Prompts</a></nav><form id="roles"><div id="fields"></div><button type="submit">Save settings</button></form><section id="environment"><h2>Environment</h2><p>Choose a host-installed image or enter a custom name. Save applies to the next run. Build and preflight use saved settings.</p><p id="image-availability" role="status"></p><form id="environment-form"><label>Docker image<select id="docker-image" aria-label="Docker image"></select></label><label id="custom-image-label">Custom Docker image<input id="custom-image" maxlength="255" aria-label="Custom Docker image"></label><label>Dockerfile<input id="dockerfile" required aria-label="Dockerfile"></label><label>Build arguments (KEY=value, one per line)<textarea id="build-args" rows="3" aria-label="Build arguments"></textarea></label><button type="submit">Save environment</button></form><button id="build-image" type="button">Build image</button> <button id="preflight" type="button">Run preflight</button> <button id="cancel-environment" type="button" disabled>Cancel environment job</button><p id="environment-job" role="status" aria-live="polite"></p><pre id="environment-logs" aria-label="Environment job logs" tabindex="0"></pre></section><section id="prompts"><h2>Prompts</h2><p>Compare with the current default. Overrides remain project-owned across default updates.</p><div id="prompt-fields"></div></section><p id="feedback" role="status" aria-live="polite"></p><button id="start" type="button">Start run</button><p id="run" role="status" aria-live="polite"></p><a href="/dashboard" target="_blank" rel="noopener">Observe runs and logs</a></main><script src="/app.js"></script></body></html>';
+  '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandcastle operator</title><link rel="stylesheet" href="/style.css"><body><main><h1>Sandcastle operator</h1><p id="project"></p><p>Settings saved during a run apply to the next run.</p><nav><a href="#workflow">Workflow</a> · <a href="#environment">Environment</a> · <a href="#prompts">Prompts</a></nav><form id="roles"><div id="fields"></div><button type="submit">Save settings</button></form><section id="workflow"><h2>Workflow</h2><p>Repository routing is explicit. Settings apply to the next run. Commands and qualification policy remain project-owned.</p><form id="workflow-form"><div id="workflow-fields"></div><button type="submit">Save workflow</button></form><p id="workflow-diagnostics" role="status" aria-live="polite"></p></section><section id="environment"><h2>Environment</h2><p>Choose a host-installed image or enter a custom name. Save applies to the next run. Build and preflight use saved settings.</p><p id="image-availability" role="status"></p><form id="environment-form"><label>Docker image<select id="docker-image" aria-label="Docker image"></select></label><label id="custom-image-label">Custom Docker image<input id="custom-image" maxlength="255" aria-label="Custom Docker image"></label><label>Dockerfile<input id="dockerfile" required aria-label="Dockerfile"></label><label>Build arguments (KEY=value, one per line)<textarea id="build-args" rows="3" aria-label="Build arguments"></textarea></label><button type="submit">Save environment</button></form><button id="build-image" type="button">Build image</button> <button id="preflight" type="button">Run preflight</button> <button id="cancel-environment" type="button" disabled>Cancel environment job</button><p id="environment-job" role="status" aria-live="polite"></p><pre id="environment-logs" aria-label="Environment job logs" tabindex="0"></pre></section><section id="prompts"><h2>Prompts</h2><p>Compare with the current default. Overrides remain project-owned across default updates.</p><div id="prompt-fields"></div></section><p id="feedback" role="status" aria-live="polite"></p><button id="start" type="button">Start run</button><p id="run" role="status" aria-live="polite"></p><a href="/dashboard" target="_blank" rel="noopener">Observe runs and logs</a></main><script src="/app.js"></script></body></html>';
 export const operatorStyles =
-  "body{font:16px system-ui;background:#f6f8fa;color:#18212b;margin:0}main{max-width:850px;margin:2rem auto;padding:1rem}fieldset{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding:1rem;border:1px solid #bbc4cf}[hidden]{display:none!important}label{display:grid;gap:.4rem}input,select,button,textarea{font:inherit;padding:.5rem}button{cursor:pointer}legend{font-weight:600}a{color:#135bac}#feedback[data-error=true]{color:#a11}#environment-form{display:grid;gap:1rem;margin-bottom:1rem}#environment-logs{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;background:#fff;padding:1rem}textarea:focus,input:focus,select:focus,button:focus,a:focus{outline:3px solid #2479d4;outline-offset:2px}";
+  "body{font:16px system-ui;background:#f6f8fa;color:#18212b;margin:0}main{max-width:850px;margin:2rem auto;padding:1rem}fieldset{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding:1rem;border:1px solid #bbc4cf}[hidden]{display:none!important}label{display:grid;gap:.4rem}input,select,button,textarea{font:inherit;padding:.5rem}button{cursor:pointer}legend{font-weight:600}a{color:#135bac}#feedback[data-error=true]{color:#a11}#workflow-fields,#environment-form{display:grid;gap:1rem;margin-bottom:1rem}#environment-logs{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;background:#fff;padding:1rem}textarea:focus,input:focus,select:focus,button:focus,a:focus{outline:3px solid #2479d4;outline-offset:2px}";
 export const operatorScript = `
 let config;
 const fields = document.getElementById('fields');
@@ -150,9 +150,64 @@ async function observe() {
     if (!data.run) { run.textContent = 'No run started in this operator session.'; return; }
     document.getElementById('start').disabled = data.run.status === 'running';
     run.textContent = 'Run ' + data.run.id + ' · ' + data.run.status + ' · revision ' + data.run.config.revision.slice(0,12) + ' · runtime ' + data.run.runtimeVersion + '\\n' +
-      Object.entries(data.run.config.roles).map(([role, settings]) => role + ': ' + settings.model + ' / ' + settings.effort).join(' · ');
+      Object.entries(data.run.config.roles).map(([role, settings]) => role + ': ' + settings.model + ' / ' + settings.effort).join(' · ') +
+      (data.run.workflow ? '\\nRepository: ' + (data.run.workflow.repository || 'not configured') + ' · concurrency ' + data.run.workflow.limits.concurrency + ' · cycles ' + data.run.workflow.limits.cycles + ' · workflow revision ' + data.run.workflow.revision.slice(0,12) : '') +
+      (data.run.diagnostics || []).map(diagnostic => '\\n' + ({'qualification-pending':'External qualification pending: ' + diagnostic.issues.join(', '),'no-progress':'No verified implementation progress. Inspect runs and logs before resuming.','iteration-limit':'Workflow iteration limit reached. Inspect the remaining backlog.','feedback-failed':'Project feedback gate or verifier failed. Inspect project declarations and runs/logs.'}[diagnostic.code] || '')).join('');
   } catch (error) { run.textContent = 'Cannot observe run: ' + error.message; }
 }
+let workflowConfig;
+const workflowFields = document.getElementById('workflow-fields');
+function workflowDiagnostic(data) {
+  document.getElementById('workflow-diagnostics').textContent = data.diagnostics.join(' ') +
+    ' Project-required holds: ' + (data.requiredHoldLabels.join(', ') || 'none') +
+    ' · required gates: ' + (data.requiredGates.join(', ') || 'none');
+}
+async function loadWorkflow() {
+  const data = await request('/api/workflow'); workflowConfig = data.config;
+  workflowFields.replaceChildren();
+  function input(key, title, value, type = 'text', min, max) {
+    const label = document.createElement('label'); label.textContent = title;
+    const field = document.createElement(key === 'holdLabels' ? 'textarea' : 'input');
+    field.id = 'workflow-' + key; field.setAttribute('aria-label', title);
+    field.value = value; if (key !== 'holdLabels') field.type = type;
+    field.required = key !== 'repository' && key !== 'holdLabels';
+    if (min !== undefined) { field.min = min; field.max = max; field.step = 1; }
+    label.append(field); workflowFields.append(label);
+  }
+  input('repository', 'Repository (owner/repository)', workflowConfig.repository || '');
+  for(const [key, title] of [['scopeLabel','Scope label'],['readyLabel','Ready label'],['blockedLabel','Blocked label']]) input(key,title,workflowConfig[key]);
+  input('holdLabels','Hold labels (one per line)',workflowConfig.holdLabels.join('\\n'));
+  for(const [key,title,min,max] of [['cycles','Workflow cycles',1,1000],['concurrency','Issue concurrency',1,100],['plannerAttempts','Planner attempts',1,10]]) input(key,title,workflowConfig.limits[key],'number',min,max);
+  function select(key,title,values,current) {
+    const label=document.createElement('label'); label.textContent=title;
+    const field=document.createElement('select');field.id='workflow-'+key;field.setAttribute('aria-label',title);
+    for(const value of values) {const option=document.createElement('option');option.value=value;option.textContent=value || 'Not configured';field.append(option);}
+    field.value=current || '';label.append(field);workflowFields.append(label);
+  }
+  select('mode','Readiness mode',['report-only','apply'],workflowConfig.readiness.mode);
+  select('verifier','Trusted verifier',['',...data.references.verifiers],workflowConfig.readiness.verifier);
+  const gates=document.createElement('fieldset'); const legend=document.createElement('legend');legend.textContent='Project feedback gates';gates.append(legend);
+  for(const id of data.references.gates) {
+    const label=document.createElement('label');label.textContent=id;
+    const field=document.createElement('input');field.type='checkbox';field.dataset.gate=id;field.setAttribute('aria-label','Feedback gate '+id);field.checked=workflowConfig.readiness.gates.includes(id);label.append(field);gates.append(label);
+  }
+  workflowFields.append(gates);workflowDiagnostic(data);
+}
+document.getElementById('workflow-form').addEventListener('submit',async event=>{
+  event.preventDefault();event.submitter.disabled=true;
+  try {
+    const next=structuredClone(workflowConfig);
+    const value=key=>document.getElementById('workflow-'+key).value;
+    next.repository=value('repository') || null;
+    for(const key of ['scopeLabel','readyLabel','blockedLabel']) next[key]=value(key);
+    next.holdLabels=value('holdLabels').split('\\n').map(label=>label.trim()).filter(Boolean);
+    for(const key of ['cycles','concurrency','plannerAttempts']) next.limits[key]=Number(value(key));
+    next.readiness={mode:value('mode'),verifier:value('verifier') || null,gates:[...workflowFields.querySelectorAll('input[data-gate]:checked')].map(field=>field.dataset.gate)};
+    workflowConfig=(await request('/api/workflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)})).config;
+    workflowDiagnostic(await request('/api/workflow'));message('Workflow saved. Revision '+workflowConfig.revision.slice(0,12)+'. Applies to the next run.');
+  } catch(error) {message(error.message,true);} finally {event.submitter.disabled=false;}
+});
+loadWorkflow().catch(error=>message(error.message,true));
 let environmentConfig, environmentJob, environmentEvents;
 const imageSelect = document.getElementById('docker-image');
 const customImage = document.getElementById('custom-image');

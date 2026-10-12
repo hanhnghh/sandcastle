@@ -157,7 +157,7 @@ activity viewer. Choose a session and batch, filter agents by issue or status,
 then open **Logs** to search, copy, or download recent recorded activity.
 See the [dashboard guide](docs/agent-map.md) for navigation and retention limits.
 
-Configure Codex roles and Docker images, then build, preflight and observe a project run:
+Configure Codex roles, workflow settings and Docker images, then observe a project run:
 
 ```sh
 npx sandcastle operator --cwd /path/to/project --port 4319
@@ -173,6 +173,11 @@ Dockerfile/build arguments. Explicit build/preflight jobs stream logs and report
 success, failure or cancellation; Save never builds, cleans up or publishes images.
 The Prompts editors save/reset project overrides, show default/base diffs, and
 preserve customization when explicitly adopted packaged defaults change.
+The Workflow form saves an explicit repository, scope/state/hold labels, cycle
+and concurrency limits, and trusted verifier/feedback gate references to
+`.sandcastle/workflow.json`. Readiness defaults to report-only; apply requires
+a project-declared verifier. Run diagnostics explain feedback failures,
+iteration limits, no progress and pending external qualification.
 See the [operator guide](docs/operator.md) for SDK/HTTP interfaces, custom
 project adapters and legacy workflow compatibility.
 

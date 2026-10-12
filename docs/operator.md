@@ -75,6 +75,113 @@ counter or concurrency token; competing saves use last successful write wins.
 Reads verify the stored revision. Pass the current loaded document to save
 rather than hand-writing a revision.
 
+## Workflow limits, tracker and feedback gates
+
+**Workflow** edits `.sandcastle/workflow.json` through the same validated
+`loadWorkflowConfig({ cwd })` / `saveWorkflowConfig({ cwd, config })` host API
+used by the CLI child runtime. Choose the explicit GitHub `owner/repository`,
+scope label, ready/blocked state labels, and hold labels (one per line). New
+reviewed Codex workflows require an explicit repository before tracker or agent
+execution; they never fall back to an upstream remote. Custom SDK adapters
+continue to own their tracker boundary. Existing copied workflows need explicit
+adoption of the runtime methods below; the operator does not rewrite them.
+
+```json
+{
+  "schemaVersion": 1,
+  "revision": "<computed SHA-256 content revision>",
+  "repository": "owner/project",
+  "scopeLabel": "Sandcastle",
+  "readyLabel": "ready-for-agent",
+  "blockedLabel": "blocked",
+  "holdLabels": ["readiness:hold"],
+  "limits": { "cycles": 10, "concurrency": 100, "plannerAttempts": 3 },
+  "readiness": { "mode": "report-only", "verifier": null, "gates": [] }
+}
+```
+
+Cycle limits count plan/execute/review/merge rounds, not individual agent
+invocations. Cycles accept integers 1–1000, concurrent issue pipelines 1–100,
+and planner validation attempts 1–10. Review and merge completion guards and
+existing per-role invocation limits stay authoritative. Bounded scheduling
+settles every pipeline in input order, including failures, before integration.
+No-progress stops immediately; reaching the cycle limit with remaining work
+fails the run. Qualification-only backlogs report pending external qualification
+and leave their issues open.
+
+Labels accept 1–50 letters/digits, spaces, dots, underscores, colons, slashes
+or hyphens, starting with a letter/digit; surrounding whitespace is trimmed.
+Scope, state and hold labels must be distinct; duplicate holds/gates are rejected.
+Reference names accept letters/digits, dots, underscores and hyphens, starting
+with a letter/digit (maximum 100 characters). Unknown fields, repositories,
+limits or references fail atomically with safe errors. Configuration files and
+the configuration directory cannot redirect writes through symlinks.
+
+A missing workflow file derives tracker defaults from project-owned
+`.sandcastle/readiness.json`; a missing readiness file uses the example's labels,
+null repository and report-only mode. Existing project apply mode is retained
+only with its declared verifier. The shared runtime uses report-only for legacy
+disabled readiness when an explicit repository is configured, preserving the
+host admission checks. A saved workflow file becomes the editable source;
+changes to trusted project policy are separate from saving its settings.
+Malformed files and mismatched revisions fail closed. Save recomputes the digest
+and uses the same private atomic persistence as role configuration. Competing
+saves use the last successful complete write.
+
+Commands remain host-owned. The existing `readiness.json.verifyCommand` argv
+is exposed only as the reserved verifier reference **readiness**. Projects can
+also declare references by creating `.sandcastle/feedback-gates.json` through
+trusted host automation:
+
+```json
+{
+  "verifiers": { "project": ["node", ".sandcastle/verify-readiness.mjs"] },
+  "gates": { "tests": ["npm", "test", "--", "--run"] },
+  "requiredGates": ["tests"]
+}
+```
+
+The web lists names and selects references; it cannot accept executable text,
+auth values, or edit these declarations. Declared argv runs on the selected host
+project, without an implicit shell, with a five-minute timeout per command.
+Each gate must exit successfully; then the selected verifier receives the full
+readiness input as JSON on stdin and must return the existing readiness
+verification JSON contract. Gates/verifiers are trusted host programs with the
+host's environment. Keep authentication in project-owned environment/auth
+references. Their output is not returned to the operator; failures produce safe
+status diagnostics. A passing feedback command does not approve an agent's
+proposal: the existing full-contract, source freshness, dependency completion
+and integration, review, publication and readback checks still apply.
+
+Project-required gates always run even if unchecked in the editable form.
+Project-owned hold labels are unioned with editable holds; removing an editable
+hold never removes a project hold. Qualification labels, parent context,
+publication policy, standards and qualification adapters remain project-owned.
+Readiness defaults to **report-only**. **Apply** requires an explicit repository
+and a selected trusted project verifier. The form explains missing verifier
+requirements; the run view reports feedback failures, no-progress, cycle limits
+and pending qualification beside **Observe runs and logs**.
+
+`inspectWorkflow({ cwd })` exposes only config, declared reference names,
+required holds/gates and safe configuration diagnostics. At runtime:
+
+- `runtime.workflow` exposes the frozen snapshot to trusted SDK callers.
+- `runtime.readiness` supplies frozen effective tracker/readiness options.
+- `runtime.settleIssues(issues, execute)` applies frozen issue concurrency.
+- `runtime.verifyReadiness(input)` executes frozen required/selected gates and
+  verifier; pass it to the existing readiness API's trusted `verify` callback.
+- `runtime.reportOutcome({ code, issues })` records safe outcome codes
+  `qualification-pending`, `no-progress`, `iteration-limit` or `feedback-failed`.
+  `runtime.diagnostics()` reads them across the child-process boundary.
+
+Settings and declaration argv are frozen privately at run start, with a digest
+checked when reopening. Editing settings or declarations affects a later run.
+Host command files remain project-owned programs; changing their contents can
+change those programs, so do not modify gates during a run. Legacy role-only runtime records still reopen for their original role/prompt
+operations. Workflow operations require the new frozen snapshot and fail with
+an actionable message on those legacy records; start a new run rather than
+inventing policy from live settings.
+
 ## Docker environment and jobs
 
 **Environment** shows the configured name, installed host images, availability
@@ -271,22 +378,24 @@ Any supplied Origin must exactly match that host/port. All mutations additionall
 require that Origin and the HttpOnly, SameSite=Strict local session cookie
 established by opening `GET /`. There are no credential-valued APIs.
 
-| Route                                      | Behavior                                                                                                   |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `GET /api/environment`                     | Saved environment config, installed images, availability and resolved identity                             |
-| `PUT /api/environment`                     | Complete validated environment document; atomic save only                                                  |
-| `POST /api/environment/jobs`               | Exactly `{ "kind": "build" }` or `{ "kind": "preflight" }`; 202 with job snapshot                          |
-| `GET /api/environment/jobs`                | Last 20 operator-session jobs, including latest logs/results                                               |
-| `GET /api/environment/jobs/<UUID>`         | Project-session job snapshot and terminal result                                                           |
-| `GET /api/environment/jobs/<UUID>/events`  | SSE `data` messages containing snapshots; bounded log replay, then live updates; closes at terminal status |
-| `POST /api/environment/jobs/<UUID>/cancel` | Empty object; 202 after requesting cancellation, 409 during promotion                                      |
-| `GET /api/prompts`                         | Effective role templates, ownership, default/base contents and versions, changed-default status            |
-| `PUT /api/prompts`                         | Exactly `{ "role": "implementer", "content": "..." }`; null content resets; returns resolved prompts       |
-| `GET /api/config`                          | Validated config, declared model/effort capability and selected project                                    |
-| `PUT /api/config`                          | Complete config document; returns the saved config/revision                                                |
-| `POST /api/run`                            | Empty JSON object only; freezes settings, invokes the fixed adapter; 202 with ID/revision                  |
-| `GET /api/run`                             | Current operator-session run status and frozen settings/identity, excluding prompt contents                |
-| `GET /dashboard`                           | Opens the project's read-only Agent Map                                                                    |
+| Route                                      | Behavior                                                                                                                        |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/environment`                     | Saved environment config, installed images, availability and resolved identity                                                  |
+| `PUT /api/environment`                     | Complete validated environment document; atomic save only                                                                       |
+| `POST /api/environment/jobs`               | Exactly `{ "kind": "build" }` or `{ "kind": "preflight" }`; 202 with job snapshot                                               |
+| `GET /api/environment/jobs`                | Last 20 operator-session jobs, including latest logs/results                                                                    |
+| `GET /api/environment/jobs/<UUID>`         | Project-session job snapshot and terminal result                                                                                |
+| `GET /api/environment/jobs/<UUID>/events`  | SSE `data` messages containing snapshots; bounded log replay, then live updates; closes at terminal status                      |
+| `POST /api/environment/jobs/<UUID>/cancel` | Empty object; 202 after requesting cancellation, 409 during promotion                                                           |
+| `GET /api/prompts`                         | Effective role templates, ownership, default/base contents and versions, changed-default status                                 |
+| `PUT /api/prompts`                         | Exactly `{ "role": "implementer", "content": "..." }`; null content resets; returns resolved prompts                            |
+| `GET /api/workflow`                        | Workflow settings, trusted reference names, required holds/gates and safe diagnostics                                           |
+| `PUT /api/workflow`                        | Complete validated reference-only workflow document; atomic save                                                                |
+| `GET /api/config`                          | Validated config, declared model/effort capability and selected project                                                         |
+| `PUT /api/config`                          | Complete config document; returns the saved config/revision                                                                     |
+| `POST /api/run`                            | Empty JSON object only; freezes settings, invokes the fixed adapter; 202 with ID/revision                                       |
+| `GET /api/run`                             | Current operator-session status, frozen role/workflow settings and safe workflow diagnostics, excluding prompt/command contents |
+| `GET /dashboard`                           | Opens the project's read-only Agent Map                                                                                         |
 
 Mutations require `Content-Type: application/json` and at most 16 KiB.
 Invalid config/body returns 400 with actionable diagnostics; invalid session,
