@@ -31,6 +31,14 @@ One Linux full-suite run failed that timing assertion while another passed it.
 Do not skip it or treat a retry as proof that this fixture is deterministic.
 Any new or persistent failure still blocks the cumulative merge gate.
 
+The real-process recovery fixture separates Node/tsx startup (30 seconds) from
+checkpoint and recovery checks (15 seconds each), with bounded owner-exclusion
+and child-reaping phases. Its outer test budget is 90 seconds, not a product
+timeout. IPC confirms startup/checkpoint progress, and owned children are reaped
+before fixture cleanup even after failure. On a controlled 0.25-CPU Linux probe,
+startup took 21.7 seconds while recovery took 0.2 seconds: the former combined
+15-second budget could fail on startup rather than a recovery invariant.
+
 Readiness is **apply**, bounded by `readiness-policy.json` for approved #2–#7
 and the pinned parent PRD #1. Before assessment the host independently runs the
 Linux package/browser gate at the integration HEAD, with no model. The read-only

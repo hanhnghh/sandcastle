@@ -9,7 +9,12 @@ import { z } from "zod";
 import { withWorkflowRecovery } from "./WorkflowRecovery.js";
 
 const roots: string[] = [];
+const childCleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  // Reap owned children before removing fixtures, even if Vitest has timed out
+  // a callback that is still awaiting a child message.
+  for (const cleanup of childCleanups) await cleanup();
+  childCleanups.length = 0;
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -266,10 +271,15 @@ it("refuses changed inputs, stale Git evidence and skipped checkpoints", async (
 it("recovers verified work after a real runner SIGKILL without stealing a live PID", async () => {
   const { options, git } = await fixture();
   const sha = git("rev-parse", "HEAD");
-  const code = `import {withWorkflowRecovery} from ${JSON.stringify(new URL("./WorkflowRecovery.ts", import.meta.url).href)};
+  // Loading Node/tsx/Effect is an environment prerequisite, not recovery latency.
+  // IPC frames progress explicitly; a stdout chunk is not a checkpoint receipt.
+  const code = `const {withWorkflowRecovery} = await import(${JSON.stringify(new URL("./WorkflowRecovery.ts", import.meta.url).href)});
+    const start = new Promise(resolve => process.once('message', resolve));
+    process.send('READY');
+    if (await start !== 'START') throw new Error('Invalid runner handshake');
     await withWorkflowRecovery(${JSON.stringify(options)}, async run => {
       await run.step({key:'implement',input:{issue:20},schema:{parse:v=>v},execute:async()=>${JSON.stringify(sha)},verify:async()=>true});
-      console.log('CHECKPOINT'); await new Promise(()=>setInterval(()=>{},1000));
+      process.send('CHECKPOINT'); await new Promise(()=>setInterval(()=>{},1000));
     });`;
   const child = spawn(
     process.execPath,
@@ -280,35 +290,93 @@ it("recovers verified work after a real runner SIGKILL without stealing a live P
       "-e",
       code,
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { stdio: ["ignore", "ignore", "pipe", "ipc"] },
   );
   const exited = once(child, "exit");
-  try {
-    const ready = await Promise.race([
-      once(child.stdout!, "data").then(([data]) => String(data)),
-      exited.then(() => "early exit"),
+  // A spawn error may arrive before a phase starts awaiting this promise.
+  void exited.catch(() => {});
+  let stderr = "";
+  child.stderr!.on("data", (data) => {
+    stderr = (stderr + String(data)).slice(-2000);
+  });
+  const timings: Record<string, number> = {};
+  const phase = async <T>(
+    name: string,
+    budgetMs: number,
+    execute: () => Promise<T>,
+  ): Promise<T> => {
+    const started = performance.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(execute),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Recovery test phase '${name}' exceeded ${budgetMs}ms; prior phases ${JSON.stringify(timings)}; child stderr: ${stderr || "(empty)"}`,
+                ),
+              ),
+            budgetMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      timings[name] = Math.round(performance.now() - started);
+    }
+  };
+  const message = () =>
+    Promise.race([
+      once(child, "message").then(([value]) => value),
+      exited.then(([code, signal]) => {
+        throw new Error(
+          `Recovery runner exited before handshake (${code}, ${signal}); ${stderr}`,
+        );
+      }),
     ]);
-    expect(ready).toContain("CHECKPOINT");
-    await expect(
-      withWorkflowRecovery(options, async () => "duplicate"),
-    ).rejects.toThrow(/owned|locked/);
+  const stop = async () => {
+    if (!child.pid) return;
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
+    await phase("child cleanup", 5000, () => exited);
+  };
+  // Vitest timeouts do not cancel the test callback: clean the owned child even
+  // if an outer deadline fires before the callback reaches its finally block.
+  childCleanups.push(stop);
+  try {
+    expect(await phase("Node/tsx startup", 30000, message)).toBe("READY");
+    const checkpoint = message();
+    child.send("START");
+    expect(await phase("verified checkpoint", 15000, () => checkpoint)).toBe(
+      "CHECKPOINT",
+    );
+    await phase("live owner exclusion", 10000, async () => {
+      await expect(
+        withWorkflowRecovery(options, async () => "duplicate"),
+      ).rejects.toThrow(/owned|locked/);
+    });
   } finally {
-    child.kill("SIGKILL");
-    await exited;
+    await stop();
   }
-  const value = await withWorkflowRecovery(options, (run) =>
-    run.step({
-      key: "implement",
-      input: { issue: 20 },
-      schema: z.string(),
-      execute: async () => {
-        throw new Error("must not rerun");
-      },
-      verify: async (value) => value === git("rev-parse", "HEAD"),
-    }),
+  expect(await exited).toEqual([null, "SIGKILL"]);
+  const value = await phase("checkpoint recovery", 15000, () =>
+    withWorkflowRecovery(options, (run) =>
+      run.step({
+        key: "implement",
+        input: { issue: 20 },
+        schema: z.string(),
+        execute: async () => {
+          throw new Error("must not rerun");
+        },
+        verify: async (value) => value === git("rev-parse", "HEAD"),
+      }),
+    ),
   );
   expect(value).toBe(sha);
-}, 15000);
+  // Sum of bounded phases plus fixture/setup overhead; not a product timeout.
+}, 90000);
 
 it("does not start fresh work or a replacement run while a prior attempt is unresolved", async () => {
   const { options } = await fixture();
