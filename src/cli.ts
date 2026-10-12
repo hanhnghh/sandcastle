@@ -1,3 +1,8 @@
+import {
+  planRuntimeUpdate,
+  installRuntimeUpdate,
+  rollbackRuntimeUpdate,
+} from "./OperatorUpdates.js";
 import { Command, Options } from "@effect/cli";
 import { FileSystem } from "@effect/platform";
 import { Effect, Option } from "effect";
@@ -878,6 +883,46 @@ const operatorCommand = Command.make(
     ),
 );
 
+const updatesCommand = Command.make(
+  "updates",
+  {
+    cwd: Options.text("cwd"),
+    version: Options.text("version").pipe(Options.optional),
+    dryRun: Options.boolean("dry-run"),
+    install: Options.boolean("install"),
+    rollback: Options.boolean("rollback"),
+  },
+  ({ cwd, version, dryRun, install, rollback }) =>
+    Effect.tryPromise({
+      try: async () => {
+        if ([dryRun, install, rollback].filter(Boolean).length > 1)
+          throw new DashboardError({
+            message: "Choose one of --dry-run, --install or --rollback",
+          });
+        if (rollback) {
+          await rollbackRuntimeUpdate({ cwd });
+          return { status: "rolled-back" };
+        }
+        return install
+          ? installRuntimeUpdate({
+              cwd,
+              version: Option.getOrNull(version),
+              expectedRevision: null,
+              onProgress: (phase) => console.error(phase),
+            })
+          : planRuntimeUpdate({ cwd, version: Option.getOrNull(version) });
+      },
+      catch: (cause) =>
+        new DashboardError({
+          message: `Runtime update failed: ${String(cause)}`,
+        }),
+    }).pipe(
+      Effect.tap((plan) =>
+        Effect.sync(() => console.log(JSON.stringify(plan))),
+      ),
+    ),
+);
+
 const rootCommand = Command.make("sandcastle", {}, () =>
   Effect.gen(function* () {
     const d = yield* Display;
@@ -893,6 +938,7 @@ export const sandcastle = rootCommand.pipe(
     podmanCommand,
     dashboardCommand,
     operatorCommand,
+    updatesCommand,
   ]),
 );
 

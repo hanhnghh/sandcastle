@@ -183,3 +183,16 @@ export {
   inspectWorkflow,
 } from "./OperatorWorkflow.js";
 export type { WorkflowConfig } from "./OperatorWorkflow.js";
+
+export { VERSION as runtimeVersion } from "./version.js";
+export {
+  planRuntimeUpdate,
+  installRuntimeUpdate,
+  rollbackRuntimeUpdate,
+} from "./OperatorUpdates.js";
+export type {
+  RuntimeUpdateConfig,
+  RuntimeUpdatePlan,
+  RuntimeCandidate,
+  RuntimeInstallation,
+} from "./OperatorUpdates.js";

@@ -1,3 +1,9 @@
+import {
+  planRuntimeUpdate,
+  installRuntimeUpdate,
+  rollbackRuntimeUpdate,
+  claimRuntimeRun,
+} from "./OperatorUpdates.js";
 import { inspectWorkflow, saveWorkflowConfig } from "./OperatorWorkflow.js";
 import { resolveEnv } from "./EnvResolver.js";
 import {
@@ -143,7 +149,16 @@ export const startOperator = (options: {
             response.end();
         }
       };
+      type UpdateJob = {
+        id: string;
+        status: "running" | "completed" | "failed";
+        logs: string[];
+        error?: string;
+      };
+      let updateJob: UpdateJob | null = null;
+      let updateDone = Promise.resolve();
       let running = false;
+      let runDone = Promise.resolve();
       let current:
         | {
             runtime: ProjectRuntime;
@@ -232,6 +247,126 @@ export const startOperator = (options: {
             if (request.method === "GET" && url.pathname === "/dashboard") {
               response.writeHead(302, { Location: dashboard.url });
               response.end();
+              return;
+            }
+            if (
+              url.pathname === "/api/updates/job" &&
+              request.method === "GET"
+            ) {
+              response.end(JSON.stringify({ job: updateJob }));
+              return;
+            }
+            if (url.pathname === "/api/updates" && request.method === "GET") {
+              response.end(
+                JSON.stringify(
+                  yield* attempt(() =>
+                    planRuntimeUpdate({ cwd, version: null }),
+                  ),
+                ),
+              );
+              return;
+            }
+            if (
+              [
+                "/api/updates/plan",
+                "/api/updates/install",
+                "/api/updates/rollback",
+              ].includes(url.pathname) &&
+              request.method === "POST"
+            ) {
+              const body = yield* requestBody(request);
+              const value = body as {
+                version: string | null;
+                revision: string;
+              };
+              const rollback = url.pathname.endsWith("/rollback"),
+                install = url.pathname.endsWith("/install");
+              const keys =
+                body && typeof body === "object" && !Array.isArray(body)
+                  ? Object.keys(body).sort().join(",")
+                  : "invalid";
+              if (
+                keys !==
+                  (rollback ? "" : install ? "revision,version" : "version") ||
+                (!rollback &&
+                  value.version !== null &&
+                  typeof value.version !== "string") ||
+                (install && !/^[a-f0-9]{64}$/.test(value.revision))
+              )
+                return yield* Effect.fail(
+                  new RequestError(
+                    400,
+                    "Updates accepts only selected version and reviewed revision; project identity and execution policy cannot be overridden",
+                  ),
+                );
+              if (!install && !rollback) {
+                const plan = yield* attempt(() =>
+                  planRuntimeUpdate({ cwd, version: value.version }),
+                );
+                response.end(JSON.stringify(plan));
+                return;
+              }
+              const state = yield* lock.withPermits(1)(
+                Effect.gen(function* () {
+                  if (running)
+                    return yield* Effect.fail(
+                      new RequestError(
+                        409,
+                        "Active project run; finish it before changing the installed runtime",
+                      ),
+                    );
+                  if (updateJob?.status === "running")
+                    return yield* Effect.fail(
+                      new RequestError(
+                        409,
+                        "A runtime update job is already active",
+                      ),
+                    );
+                  const state: UpdateJob = {
+                    id: randomUUID(),
+                    status: "running",
+                    logs: [
+                      rollback
+                        ? "Restoring previous runtime"
+                        : "Starting reviewed runtime installation",
+                    ],
+                  };
+                  updateJob = state;
+                  return state;
+                }),
+              );
+              updateDone = Effect.runPromise(
+                attempt(async () => {
+                  if (rollback) await rollbackRuntimeUpdate({ cwd });
+                  else
+                    await installRuntimeUpdate({
+                      cwd,
+                      version: value.version,
+                      expectedRevision: value.revision,
+                      onProgress: (phase) => {
+                        state.logs.push(phase);
+                        state.logs = state.logs.slice(-20);
+                      },
+                    });
+                }).pipe(
+                  Effect.match({
+                    onSuccess: () => {
+                      state.status = "completed";
+                      state.logs.push(
+                        rollback
+                          ? "Rollback completed"
+                          : "Installation completed; restart the operator to load the installed runtime",
+                      );
+                    },
+                    onFailure: (error) => {
+                      state.status = "failed";
+                      state.error = error.message;
+                    },
+                  }),
+                ),
+              );
+              response.writeHead(202);
+              response.end(JSON.stringify(state));
               return;
             }
             if (
@@ -548,6 +683,8 @@ export const startOperator = (options: {
             }
             if (url.pathname === "/api/run") {
               if (request.method === "GET") {
+                if (current && current.status !== "running")
+                  yield* attempt(() => runDone);
                 const record = current?.runtime.record;
                 response.end(
                   JSON.stringify({
@@ -582,14 +719,29 @@ export const startOperator = (options: {
                       "Run accepts only an empty JSON object; the project owns execution policy",
                     ),
                   );
+                if (updateJob?.status === "running")
+                  return yield* Effect.fail(
+                    new RequestError(
+                      409,
+                      "A runtime update is active; wait before starting a run",
+                    ),
+                  );
                 if (running)
                   return yield* Effect.fail(
                     new RequestError(409, "A project run is already active"),
                   );
+                let releaseRun: (() => Promise<void>) | null = null;
                 running = true;
                 const runtime = yield* lock
                   .withPermits(1)(
                     Effect.gen(function* () {
+                      releaseRun = yield* attempt(() =>
+                        claimRuntimeRun(cwd),
+                      ).pipe(
+                        Effect.mapError(
+                          (error) => new RequestError(409, error.message),
+                        ),
+                      );
                       const sandboxIdentity = yield* attempt(() =>
                         options.adapter.sandboxIdentity(),
                       );
@@ -604,13 +756,14 @@ export const startOperator = (options: {
                   )
                   .pipe(
                     Effect.tapError(() =>
-                      Effect.sync(() => {
+                      Effect.gen(function* () {
+                        if (releaseRun) yield* attempt(releaseRun);
                         running = false;
                       }),
                     ),
                   );
                 current = { runtime, status: "running" };
-                void Effect.runPromise(
+                runDone = Effect.runPromise(
                   attempt(() => options.adapter.run(runtime)).pipe(
                     Effect.match({
                       onFailure: () => {
@@ -621,7 +774,9 @@ export const startOperator = (options: {
                       },
                     }),
                     Effect.ensuring(
-                      Effect.sync(() => {
+                      Effect.gen(function* () {
+                        if (releaseRun)
+                          yield* attempt(releaseRun).pipe(Effect.orDie);
                         running = false;
                       }),
                     ),
@@ -678,6 +833,9 @@ export const startOperator = (options: {
         close: () =>
           Effect.runPromise(
             Effect.gen(function* () {
+              yield* attempt(() => updateDone);
+              if (current && current.status !== "running")
+                yield* attempt(() => runDone);
               for (const job of jobs.values())
                 if (job.state.status === "running") job.controller.abort();
               yield* attempt(() =>

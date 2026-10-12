@@ -406,3 +406,156 @@ Invalid config/body returns 400 with actionable diagnostics; invalid session,
 origin or host returns 403; wrong content type 415; oversized body 413;
 overlapping starts in one operator session 409. Query overrides are rejected.
 Execution failures report failed status; inspect workflow logs and host output.
+
+## Runtime Updates
+
+Create the project-owned `.sandcastle/updates.json` before using **Updates**:
+
+```json
+{
+  "schemaVersion": 1,
+  "package": "@your-org/sandcastle-fork",
+  "dependency": "@ai-hero/sandcastle",
+  "registry": "https://registry.npmjs.org",
+  "channel": "latest",
+  "manifest": ".sandcastle/package.json",
+  "source": { "kind": "registry" }
+}
+```
+
+Replace the example identity with your maintainer's actual fork name. The
+`dependency` key preserves existing workflow imports through an npm alias.
+Registry, package, channel, destination and source are explicit; the operator
+never tries the upstream namespace when fork resolution fails. Registry URLs
+use HTTPS (HTTP is allowed for loopback test registries) without embedded
+credentials. Keep npm authentication in your own `.npmrc` or npm environment;
+status/errors never return tokens or raw npm output. The trusted project config
+is edited on the host, not through browser input.
+
+Use `.sandcastle/package.json` for isolated automation, including a fresh
+consumer. Choose `package.json` only for an existing declared runtime dependency
+in `dependencies` or `devDependencies`. Installation preserves that section and
+pins the resolved exact fork version. It updates the selected manifest,
+`package-lock.json` and `node_modules` together after staging and verification.
+Use npm-managed manifests; workspace/link dependencies or installations needing
+lifecycle scripts may need project-owned installation outside this facility.
+Other package managers and copied workflow migrations are separate operations.
+
+```sh
+sandcastle updates --cwd /path/to/project --dry-run
+sandcastle updates --cwd /path/to/project --version '^0.13.0' --dry-run
+sandcastle updates --cwd /path/to/project --version 0.13.0-fork.123 --install
+sandcastle updates --cwd /path/to/project --install
+sandcastle updates --cwd /path/to/project --rollback
+```
+
+Without an action flag the CLI prints a plan. Dry-run resolves metadata without
+changing the consumer manifest, lock or installation. Plans include installed
+version/archive/integrity/source, selected exact version, release notes,
+destination and a content revision. Legacy installed archives without release
+provenance are identified explicitly and can be replaced by the selected fork;
+they are not misrepresented as source-qualified releases. CLI phase progress
+goes to stderr and the result is printed as JSON on stdout. Select one action
+flag at a time.
+
+For a development archive, change `source` to:
+
+```json
+{
+  "kind": "archive",
+  "path": "releases/your-org-sandcastle-fork-0.13.0-fork.123.tgz"
+}
+```
+
+Paths resolve against the selected project, or may be absolute host paths.
+The archive's embedded package identity must match the configured fork. Its
+SHA-512 integrity and provenance are displayed. This source is **pinned**:
+it never follows npm latest and rejects version selection; choose a new archive
+path explicitly. Old upstream development archives are supported as existing
+installations, while new install candidates must carry fork release metadata.
+
+The Updates form previews the same plan and has an explicit **Install/update
+runtime** action and **Roll back runtime** action. A browser install is bound
+to the reviewed revision; changed candidate/manifest/lock requires another
+preview. Progress and failures are polled asynchronously, keeping run observation
+responsive. Active operator runs, running Agent Map recordings (including stale
+unreconciled runs), and Git recovery ownership block install/rollback. A project
+execution claim also excludes a second operator instance or CLI update when a custom adapter does not record Agent Map sessions. There is
+no force override. Starting an operator run during its update job is rejected.
+Restart the operator after success to load the new runtime.
+
+Installs disable lifecycle scripts, stage dependencies away from the active
+installation, verify installed package exports/version, source and integrity,
+and preserve workflows, prompts, standards, configuration, gates and auth.
+Host manifest/lock or runtime-identity edits during staging reject promotion and
+retain those edits. The managed evidence directory writes its own ignore rule so
+private staging/rollback files stay out of consumer Git status.
+An install does not adopt or rewrite copied workflows/defaults; use the explicit
+SDK/default-adoption procedures above when needed. Root dependency installations
+replace the selected manifest's complete dependency tree with npm's verified
+staged result, so review compatibility and stop all project execution first.
+
+Private `.sandcastle/updates/<UUID>/record.json` retains target/previous evidence,
+original-file backups and phase state. The latest successful install retains
+rollback access even after a later attempt fails. Failures before promotion
+leave the active installation intact; promotion failures restore its backups.
+After a process interruption, stop/reconcile the recorded npm/host processes,
+inspect the private record and operation lock, then remove the stale
+`.sandcastle/updates/operation.lock` only after proving its owner has stopped.
+Run `--rollback` to restore a staging/promoting attempt before starting another
+install. Never expire or steal a lock by age. Keep this entire directory private
+and ignored: staging may contain copies of npm auth references and dependencies.
+
+The host SDK exports `runtimeVersion`, `planRuntimeUpdate({ cwd, version })`,
+`installRuntimeUpdate({ cwd, version, expectedRevision, onProgress })` and
+`rollbackRuntimeUpdate({ cwd })`. Pass `null` for the configured channel (or
+archive), and the plan revision for a reviewed install. Trusted CLI-style
+automation may use `expectedRevision: null` to resolve immediately.
+
+| Updates route                | Contract                                                                           |
+| ---------------------------- | ---------------------------------------------------------------------------------- |
+| `GET /api/updates`           | Configured-channel/pinned-source plan                                              |
+| `POST /api/updates/plan`     | Exactly `{ "version": null }` or a string tag/version/constraint; same plan        |
+| `POST /api/updates/install`  | Exactly `{ "version": null, "revision": "<plan revision>" }`; 202 asynchronous job |
+| `POST /api/updates/rollback` | Empty object; 202 asynchronous job                                                 |
+| `GET /api/updates/job`       | Latest operator-session job, safe phase progress and terminal failure/result       |
+
+All existing session, origin, host, content-type and project-scope protections
+apply. Runtime installation is a maintainer-trusted package operation; the web
+cannot change package identity, registry, source paths or host command policy.
+
+## Preparing a fork release candidate
+
+Build and check the reviewed source first. Then prepare a distinct fork package
+without changing the source package identity or publishing anything:
+
+```sh
+npm ci
+npm run typecheck
+npm run build
+node scripts/pack-fork.mjs --name @your-org/sandcastle-fork --out /tmp/fork-candidates
+# Optional: --version 0.13.0-fork.20261012.1 --notes /path/to/release-notes.md
+```
+
+The default version includes the source version, timestamp and Git commit.
+An explicit version must be a unique prerelease; an existing candidate filename
+in the destination is rejected. Use a clean reviewed checkout and a fresh build.
+The artifact includes all built public exports, CLI and operator UI, default
+templates, MIT license, README, release notes, and `runtime-source.json`.
+The package manifest embeds `sandcastleRuntime` with schema version 1, repository,
+40-character source commit and the exact package version. `sandcastleChangelog`
+contains release notes. A sibling `.tgz.json` receipt records source, file
+inventory and independently calculated SHA-512 archive integrity.
+
+Test the archive in a temporary consumer and exercise the same registry contract
+with the loopback fake registry/real npm browser suite:
+
+```sh
+node --test scripts/operator-updates.browser.test.mjs
+```
+
+Registry candidates must expose the same embedded metadata through npm's
+version metadata and use a tarball from the configured registry origin. Real
+registry publication, registry accounts and channel promotion remain
+maintainer-owned. This preparation command only packs a candidate; it does not
+publish, run npm lifecycle scripts, change accounts or edit consumer projects.

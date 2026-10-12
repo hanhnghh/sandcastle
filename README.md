@@ -178,6 +178,13 @@ and concurrency limits, and trusted verifier/feedback gate references to
 `.sandcastle/workflow.json`. Readiness defaults to report-only; apply requires
 a project-declared verifier. Run diagnostics explain feedback failures,
 iteration limits, no progress and pending external qualification.
+
+Use **Updates** or `sandcastle updates --cwd /path/to/project --dry-run` to
+preview an explicitly configured fork runtime. Install/update and rollback are
+explicit actions; local archives remain pinned. See the
+[release and consumer update procedures](docs/operator.md#runtime-updates) for
+project configuration, versioned candidate packing and recovery.
+
 See the [operator guide](docs/operator.md) for SDK/HTTP interfaces, custom
 project adapters and legacy workflow compatibility.
 

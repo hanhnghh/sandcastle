@@ -13,3 +13,6 @@ dist
 .sandcastle/locks/
 .sandcastle/.env
 .codegraph/
+
+# Private staged runtime installations, rollback backups and npm auth references.
+.sandcastle/updates/
