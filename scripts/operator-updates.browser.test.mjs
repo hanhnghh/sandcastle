@@ -104,9 +104,13 @@ async function fixture(t) {
       res.end(
         JSON.stringify({
           name: "@test/fork",
-          "dist-tags": { latest: "0.13.2", beta: "0.14.0-beta.1" },
+          "dist-tags": {
+            latest: "0.13.2",
+            beta: "0.14.0-beta.1",
+            release_candidate: "0.14.0-beta.1",
+          },
           versions: Object.fromEntries(
-            ["0.13.1", "0.13.2", "0.14.0-beta.1"].map((version) => [
+            ["0.13.2", "0.13.1", "0.14.0-beta.1"].map((version) => [
               version,
               {
                 name: "@test/fork",
@@ -199,9 +203,46 @@ test("CLI dry-run resolves only configured fork and selected version without ins
     ).stdout,
   );
   assert.equal(selected.target.version, "0.13.2");
+  assert.equal(
+    (await cli(f, "--version", "0.13.*", "--dry-run")).target.version,
+    "0.13.2",
+  );
   await assert.rejects(readFile(join(f.cwd, ".sandcastle/package.json")), {
     code: "ENOENT",
   });
+});
+
+test("explicit fork registry wins over npm scope mappings for CLI preview and installation", async (t) => {
+  const f = await fixture(t),
+    other = await fixture(t);
+  const version = "0.13.0-fork.registry";
+  await registryReleases(f, [version]);
+  await writeFile(
+    join(f.cwd, ".npmrc"),
+    `@test:registry=${other.config.registry}\n`,
+  );
+  assert.equal((await cli(f, "--dry-run")).target.version, version);
+  assert.equal((await cli(f, "--install")).installed.version, version);
+  assert.deepEqual(other.requests, []);
+  assert.equal(
+    (await cli(f, "--dry-run")).installed.archive,
+    f.config.registry + "/fork-" + version + ".tgz",
+  );
+});
+
+test("CLI rejects malformed installed runtime evidence instead of advertising it in a plan", async (t) => {
+  const f = await fixture(t);
+  await registryReleases(f, ["0.13.0-fork.evidence"]);
+  await cli(f, "--install");
+  const path = join(
+    f.cwd,
+    ".sandcastle/node_modules/@ai-hero/sandcastle/package.json",
+  );
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  await writeFile(path, JSON.stringify({ ...manifest, name: null }));
+  await assert.rejects(cli(f, "--dry-run"), (error) =>
+    error.stdout.includes("Invalid installed runtime metadata"),
+  );
 });
 
 test("uniquely versioned candidate packs required runtime assets and installs into an isolated consumer with verified version", async (t) => {
@@ -230,6 +271,18 @@ test("uniquely versioned candidate packs required runtime assets and installs in
     (await exec("git", ["rev-parse", "HEAD"])).stdout.trim(),
   );
   assert.equal(release.source.source, "https://github.com/hanhnghh/sandcastle");
+  await assert.rejects(
+    exec(process.execPath, [
+      resolve("scripts/pack-fork.mjs"),
+      "--name",
+      "@test/fork",
+      "--out",
+      out,
+      "--version",
+      "0.13.0-fork.20261012.1",
+    ]),
+    (error) => error.stderr.includes("Candidate version already exists"),
+  );
   const config = {
     ...f.config,
     source: { kind: "archive", path: release.archive },
@@ -256,6 +309,21 @@ test("uniquely versioned candidate packs required runtime assets and installs in
   assert.equal(
     manifest.devDependencies["@ai-hero/sandcastle"],
     "file:" + release.archive,
+  );
+  await exec(
+    "npm",
+    [
+      "ci",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--registry",
+      f.config.registry,
+    ],
+    {
+      cwd: join(f.cwd, ".sandcastle"),
+      env: { ...process.env, npm_config_cache: join(f.cwd, "ci-cache") },
+    },
   );
   const installed = join(f.cwd, ".sandcastle/node_modules/@ai-hero/sandcastle");
   assert.equal(
@@ -464,6 +532,10 @@ test("real registry root dependency installs selected fork, updates manifest and
   );
   const beforeManifest = await readFile(join(f.cwd, "package.json"), "utf8"),
     beforeLock = await readFile(join(f.cwd, "package-lock.json"), "utf8");
+  assert.equal(
+    (await cli(f, "--version", versions[0], "--dry-run")).action,
+    "current",
+  );
   const plan = await cli(f, "--dry-run");
   assert.equal(plan.target.version, versions[1]);
   assert.equal(plan.installed.version, versions[0]);
@@ -521,6 +593,16 @@ test("configured fork channel, missing fork and missing authentication never fal
     JSON.stringify({ ...f.config, channel: "beta" }),
   );
   assert.equal((await cli(f, "--dry-run")).target.version, "0.14.0-beta.1");
+  await writeFile(
+    join(f.cwd, ".sandcastle/updates.json"),
+    JSON.stringify({ ...f.config, channel: "release_candidate" }),
+  );
+  assert.equal((await cli(f, "--dry-run")).target.version, "0.14.0-beta.1");
+  assert.equal(
+    (await cli(f, "--version", "release_candidate", "--dry-run")).target
+      .version,
+    "0.14.0-beta.1",
+  );
   for (const mode of ["missing", "auth"]) {
     f.setMode(mode);
     await assert.rejects(
@@ -646,7 +728,15 @@ test("installed exports/version verification rejects a bad archive without runni
     "dist/templates/parallel-planner-with-review/implement-prompt.md",
   ])
     await writeFile(join(dir, path), "fixture");
-  await writeFile(join(dir, "runtime-source.json"), JSON.stringify(provenance));
+  await writeFile(
+    join(dir, "runtime-source.json"),
+    JSON.stringify({
+      version,
+      commit: provenance.commit,
+      source: provenance.source,
+      schemaVersion: 1,
+    }),
+  );
   await writeFile(
     join(dir, "dist/index.js"),
     "export const runtimeVersion='wrong'; export const startOperator=()=>{}; export const openProjectRuntime=()=>{};export const planRuntimeUpdate=()=>{};export const installRuntimeUpdate=()=>{};",
@@ -853,7 +943,7 @@ test("consumer can plan and replace a declared legacy upstream archive with the 
       ...pkg,
       scripts: {},
       name: "@ai-hero/sandcastle",
-      version: "0.12.0",
+      version,
     }),
   );
   const packed = JSON.parse(
@@ -893,10 +983,12 @@ test("consumer can plan and replace a declared legacy upstream archive with the 
   );
   const plan = await cli(f, "--dry-run");
   assert.equal(plan.installed.package, "@ai-hero/sandcastle");
-  assert.equal(plan.installed.version, "0.12.0");
+  assert.equal(plan.installed.version, version);
   assert.equal(plan.installed.provenance, null);
   assert.equal(plan.target.package, "@test/fork");
+  assert.equal(plan.action, "update");
   assert.equal((await cli(f, "--install")).installed.version, version);
+  assert.equal((await cli(f, "--dry-run")).installed.package, "@test/fork");
 });
 
 test("CLI rejects active recovery-owned project runs even without an Agent Map recording", async (t) => {
@@ -997,6 +1089,12 @@ test("reviewed browser revision rejects changed manifests and candidate identity
       Cookie: response.headers.get("set-cookie").split(";")[0],
     };
   const plan = await (await fetch(server.url + "/api/updates")).json();
+  const invalidRevision = await fetch(server.url + "/api/updates/install", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ version: null, revision: [plan.revision] }),
+  });
+  assert.equal(invalidRevision.status, 400);
   await writeFile(
     join(f.cwd, ".sandcastle/package.json"),
     JSON.stringify({ private: true, description: "Host edited after preview" }),

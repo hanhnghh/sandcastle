@@ -7,11 +7,13 @@ import { gunzipSync } from "node:zlib";
 import { writePrivateRecord } from "./writePrivateRecord.js";
 import { join, resolve, dirname } from "node:path";
 import { z } from "zod";
+import { rcompare, valid } from "semver";
 import { OperatorError } from "./Operator.js";
 
 const packageName = z
   .string()
   .regex(/^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*$/);
+const releaseVersion = z.string().refine((value) => valid(value) !== null);
 const configSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -150,12 +152,20 @@ const npm = (cwd: string, args: string[]) =>
     );
     return Effect.sync(() => child.kill());
   });
+const registryArgs = (config: RuntimeUpdateConfig): string[] => [
+  "--registry",
+  config.registry,
+  // npm scope mappings take precedence over its default registry setting.
+  ...(config.package.startsWith("@")
+    ? [`--${config.package.split("/")[0]}:registry=${config.registry}`]
+    : []),
+];
 const candidate = (metadata: unknown, config: RuntimeUpdateConfig) =>
   parse(() => {
     const data = z
       .object({
         name: z.string(),
-        version: z.string(),
+        version: releaseVersion,
         dist: z.object({
           tarball: z.string(),
           integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]+=*$/),
@@ -216,7 +226,20 @@ const readInstalled = (
       ),
     );
     if (!(yield* fs.exists(path))) return null;
-    const data = yield* json(yield* fs.readFileString(path));
+    const metadata = yield* json(yield* fs.readFileString(path));
+    const data = yield* parse(
+      () =>
+        z
+          .object({
+            name: packageName,
+            version: z.string().min(1),
+            sandcastleRuntime: provenanceSchema.nullish(),
+            sandcastleChangelog: z.string().optional(),
+            description: z.string().optional(),
+          })
+          .parse(metadata),
+      "Invalid installed runtime metadata; reconcile the installed package before updating",
+    );
     const lockPath = yield* safePath(
       fs,
       root,
@@ -227,22 +250,31 @@ const readInstalled = (
         "Installed runtime has no package lock; reconcile before updating",
       );
     const lock = yield* json(yield* fs.readFileString(lockPath));
-    const record = lock.packages?.["node_modules/" + config.dependency];
-    if (!record || record.version !== data.version || !record.integrity)
+    const record = yield* parse(
+      () =>
+        z
+          .object({
+            version: z.string().min(1),
+            resolved: z.string().min(1),
+            integrity: z.string().min(1),
+          })
+          .parse(lock.packages?.["node_modules/" + config.dependency]),
+      "Installed runtime does not match its package lock; reconcile before updating",
+    );
+    if (record.version !== data.version)
       return yield* fail(
         "Installed runtime does not match its package lock; reconcile before updating",
       );
-    const provenance = data.sandcastleRuntime
-      ? yield* parse(
-          () => provenanceSchema.parse(data.sandcastleRuntime),
-          "Invalid installed runtime provenance",
-        )
-      : null;
+    const provenance = data.sandcastleRuntime ?? null;
+    if (provenance && provenance.version !== data.version)
+      return yield* fail(
+        "Invalid installed runtime provenance version; reconcile before updating",
+      );
     return {
-      package: data.name as string,
-      version: data.version as string,
-      archive: record.resolved as string,
-      integrity: record.integrity as string,
+      package: data.name,
+      version: data.version,
+      archive: record.resolved,
+      integrity: record.integrity,
       provenance,
       changelog:
         data.sandcastleChangelog ??
@@ -315,7 +347,7 @@ const planEffect = (cwd: string, selection: string | null) =>
     } else {
       const version = selection ?? config.channel;
       if (
-        !/^[A-Za-z0-9*~^<>=][A-Za-z0-9.*+~^<>=| -]*$/.test(version) ||
+        !/^[A-Za-z0-9*~^<>=][A-Za-z0-9._*+~^<>=| -]*$/.test(version) ||
         version.length > 128
       )
         return yield* fail("Select a version, npm tag or semver constraint");
@@ -323,16 +355,23 @@ const planEffect = (cwd: string, selection: string | null) =>
         "view",
         config.package + "@" + version,
         "--json",
-        "--registry",
-        config.registry,
+        ...registryArgs(config),
         "--fetch-retries=0",
         "--fetch-timeout=10000",
       ]);
       const metadata = yield* json(output);
-      target = yield* candidate(
-        Array.isArray(metadata) ? metadata.at(-1) : metadata,
-        config,
+      const releases = yield* parse(
+        () =>
+          z
+            .array(z.object({ version: releaseVersion }).passthrough())
+            .parse(Array.isArray(metadata) ? metadata : [metadata])
+            .sort((a, b) => rcompare(a.version, b.version)),
+        "Configured fork returned invalid version metadata",
       );
+      const selected = releases[0];
+      if (!selected)
+        return yield* fail("Configured fork has no matching release");
+      target = yield* candidate(selected, config);
     }
     const lockPath = yield* safePath(
       fs,
@@ -363,10 +402,14 @@ const planEffect = (cwd: string, selection: string | null) =>
       action:
         installed === null
           ? "install"
-          : installed.version === target.version
+          : installed.package === target.package &&
+              installed.version === target.version &&
+              installed.integrity === target.integrity &&
+              JSON.stringify(installed.provenance) ===
+                JSON.stringify(target.provenance)
             ? "current"
             : "update",
-    } as RuntimeUpdatePlan;
+    } satisfies RuntimeUpdatePlan;
   });
 const run = <T, E>(effect: Effect.Effect<T, E, FileSystem.FileSystem>) =>
   Effect.runPromise(
@@ -685,6 +728,20 @@ export const installRuntimeUpdate = (options: {
               join(stage, "package.json"),
               JSON.stringify(manifest, null, 2) + "\n",
             );
+            const stageLock = join(stage, "package-lock.json");
+            if (yield* fs.exists(stageLock)) {
+              const lock = yield* json(yield* fs.readFileString(stageLock));
+              // Resolve the reviewed runtime anew, even when a legacy package has
+              // the same version. Keep unrelated dependencies locked.
+              if (lock.packages)
+                delete lock.packages["node_modules/" + config.dependency];
+              if (lock.dependencies)
+                delete lock.dependencies[config.dependency];
+              yield* fs.writeFileString(
+                stageLock,
+                JSON.stringify(lock, null, 2) + "\n",
+              );
+            }
             options.onProgress(
               "Installing in isolated staging directory (lifecycle scripts disabled)",
             );
@@ -697,8 +754,7 @@ export const installRuntimeUpdate = (options: {
               "--ignore-scripts",
               "--no-audit",
               "--no-fund",
-              "--registry",
-              config.registry,
+              ...registryArgs(config),
               "--fetch-retries=0",
               "--fetch-timeout=10000",
             ]);
@@ -710,6 +766,8 @@ export const installRuntimeUpdate = (options: {
               !installed ||
               installed.package !== plan.target.package ||
               installed.version !== plan.target.version ||
+              (config.source.kind === "registry" &&
+                installed.archive !== plan.target.archive) ||
               installed.integrity !== plan.target.integrity ||
               JSON.stringify(installed.provenance) !==
                 JSON.stringify(plan.target.provenance)
@@ -734,10 +792,14 @@ export const installRuntimeUpdate = (options: {
                 return yield* fail(
                   "Installed runtime is missing required CLI/UI/default/license/source assets",
                 );
-            const source = yield* json(
+            const sourceMetadata = yield* json(
               yield* fs.readFileString(
                 join(packageDirectory, "runtime-source.json"),
               ),
+            );
+            const source = yield* parse(
+              () => provenanceSchema.parse(sourceMetadata),
+              "Invalid installed source metadata",
             );
             if (JSON.stringify(source) !== JSON.stringify(installed.provenance))
               return yield* fail(

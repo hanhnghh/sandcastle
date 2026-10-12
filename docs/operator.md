@@ -426,8 +426,9 @@ Create the project-owned `.sandcastle/updates.json` before using **Updates**:
 Replace the example identity with your maintainer's actual fork name. The
 `dependency` key preserves existing workflow imports through an npm alias.
 Registry, package, channel, destination and source are explicit; the operator
-never tries the upstream namespace when fork resolution fails. Registry URLs
-use HTTPS (HTTP is allowed for loopback test registries) without embedded
+never tries the upstream namespace when fork resolution fails. The configured
+fork registry takes precedence over npm scope mappings. Registry URLs use HTTPS
+(HTTP is allowed for loopback test registries) without embedded
 credentials. Keep npm authentication in your own `.npmrc` or npm environment;
 status/errors never return tokens or raw npm output. The trusted project config
 is edited on the host, not through browser input.
@@ -450,11 +451,15 @@ sandcastle updates --cwd /path/to/project --rollback
 ```
 
 Without an action flag the CLI prints a plan. Dry-run resolves metadata without
-changing the consumer manifest, lock or installation. Plans include installed
-version/archive/integrity/source, selected exact version, release notes,
+changing the consumer manifest, lock or installation. Version constraints select
+the highest matching release regardless of registry metadata order. Plans include
+installed version/archive/integrity/source, selected exact version, release notes,
 destination and a content revision. Legacy installed archives without release
 provenance are identified explicitly and can be replaced by the selected fork;
-they are not misrepresented as source-qualified releases. CLI phase progress
+they are not misrepresented as source-qualified releases. Plans label a runtime
+as current only when its package, version, integrity and source
+provenance match the candidate. Malformed installation evidence requires host
+reconciliation before preview or installation. CLI phase progress
 goes to stderr and the result is printed as JSON on stdout. Select one action
 flag at a time.
 
@@ -483,6 +488,17 @@ unreconciled runs), and Git recovery ownership block install/rollback. A project
 execution claim also excludes a second operator instance or CLI update when a custom adapter does not record Agent Map sessions. There is
 no force override. Starting an operator run during its update job is rejected.
 Restart the operator after success to load the new runtime.
+
+Relaunch using the selected manifest's installed CLI. For the isolated manifest
+and the dependency alias shown above:
+
+```sh
+node /path/to/project/.sandcastle/node_modules/@ai-hero/sandcastle/dist/main.js operator --cwd /path/to/project
+```
+
+For a root manifest, use `/path/to/project/node_modules/` instead. Adjust the
+dependency path if configured differently. A global CLI installation is a
+separate installation; restarting that executable keeps its own runtime version.
 
 Installs disable lifecycle scripts, stage dependencies away from the active
 installation, verify installed package exports/version, source and integrity,

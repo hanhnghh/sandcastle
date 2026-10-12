@@ -12,7 +12,7 @@ before(async () => {
 after(async () => {
   await browser?.close();
 });
-async function fixture(t) {
+async function fixture(t, delayMs = 40) {
   const cwd = await mkdtemp(join(tmpdir(), "workflow-browser-"));
   await mkdir(join(cwd, ".sandcastle"));
   let outcome = "qualification-pending",
@@ -66,7 +66,7 @@ async function fixture(t) {
         await runtime.settleIssues([7, 8, 9], async () => {
           active++;
           maximum = Math.max(maximum, active);
-          await new Promise((resolve) => setTimeout(resolve, 40));
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
           active--;
         });
         await runtime.reportOutcome({ code: outcome, issues: [7] });
@@ -78,7 +78,23 @@ async function fixture(t) {
   await page.goto(server.url);
   t.after(async () => {
     await context.close();
-    await server.close();
+    let run;
+    try {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const response = await fetch(server.url + "/api/run");
+        assert.equal(response.status, 200);
+        ({ run } = await response.json());
+        if (run?.status !== "running") break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.notEqual(
+        run?.status,
+        "running",
+        "Owned fixture run must settle before removing its project",
+      );
+    } finally {
+      await server.close();
+    }
     await rm(cwd, { recursive: true, force: true });
   });
   return {
@@ -176,8 +192,8 @@ test("workflow browser configuration and diagnostics: persistence, keyboard, lim
 });
 
 test("workflow browser repository settings and frozen runs isolate selected projects", async (t) => {
-  const first = await fixture(t),
-    second = await fixture(t);
+  const first = await fixture(t, 500),
+    second = await fixture(t, 500);
   await first.page
     .getByLabel("Repository (owner/repository)")
     .fill("owner/first");

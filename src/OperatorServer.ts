@@ -291,7 +291,9 @@ export const startOperator = (options: {
                 (!rollback &&
                   value.version !== null &&
                   typeof value.version !== "string") ||
-                (install && !/^[a-f0-9]{64}$/.test(value.revision))
+                (install &&
+                  (typeof value.revision !== "string" ||
+                    !/^[a-f0-9]{64}$/.test(value.revision)))
               )
                 return yield* Effect.fail(
                   new RequestError(
