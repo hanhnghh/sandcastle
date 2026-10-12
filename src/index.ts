@@ -166,3 +166,12 @@ export type {
   ProjectPrompt,
   PromptVersion,
 } from "./OperatorPrompts.js";
+
+export {
+  loadEnvironmentConfig,
+  saveEnvironmentConfig,
+} from "./OperatorEnvironment.js";
+export type {
+  EnvironmentConfig,
+  EnvironmentPolicy,
+} from "./OperatorEnvironment.js";

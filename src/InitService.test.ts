@@ -106,12 +106,34 @@ describe("InitService scaffold", () => {
         expect(main).toContain('runtime.promptFile("' + role + '")');
       }
       expect(main).toContain("runtime.createAgentMap");
+      expect(main).toContain(
+        "sandcastle.loadEnvironmentConfig({ cwd: process.cwd() })",
+      );
+      expect(main).toContain("imageName: runtime.record.sandboxIdentity");
       expect(main).not.toContain("sandcastle.codex(");
       expect(main).not.toContain("codexAgent(");
       expect(main).toContain("admitGitHubReadinessBatch");
       expect(main).toContain("Merge did not complete");
     },
   );
+
+  it("reviewed Podman Codex workflow preserves its native image resolution", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      templateName: "parallel-planner-with-review",
+      agent: codexAgent,
+      sandboxProvider: getSandboxProvider("podman"),
+    });
+    const main = await readFile(join(dir, ".sandcastle/main.mts"), "utf8");
+    expect(main).toContain("import { podman, defaultImageName }");
+    expect(main).toContain(
+      'runHost("podman", ["image", "inspect", defaultImageName(process.cwd())',
+    );
+    expect(main).toContain(
+      "podman({ imageName: runtime.record.sandboxIdentity,",
+    );
+    expect(main).not.toContain("sandcastle.loadEnvironmentConfig");
+  });
 
   it.each(["parallel-planner-with-review", "codex-afk"])(
     "%s assigns focused branch evidence and a cumulative integration owner",

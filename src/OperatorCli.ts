@@ -1,3 +1,4 @@
+import { loadEnvironmentConfigEffect } from "./OperatorEnvironment.js";
 import { FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
@@ -37,16 +38,13 @@ export const operatorCliAdapter = (project: string): OperatorProjectAdapter => {
                   "Expected one Dockerfile or Containerfile; use an SDK project adapter for custom sandboxes",
               }),
             );
+          const image = docker
+            ? (yield* loadEnvironmentConfigEffect(cwd)).image
+            : defaultImageName(cwd);
           return yield* Effect.async<string, OperatorError>((resume) => {
             execFile(
               docker ? "docker" : "podman",
-              [
-                "image",
-                "inspect",
-                defaultImageName(cwd),
-                "--format",
-                "{{.Id}}",
-              ],
+              ["image", "inspect", image, "--format", "{{.Id}}"],
               { cwd, encoding: "utf8", timeout: 30_000 },
               (error, stdout) => {
                 if (error || !/^sha256:[a-f0-9]{64}$/.test(stdout.trim()))

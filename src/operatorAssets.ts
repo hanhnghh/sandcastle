@@ -1,7 +1,7 @@
 export const operatorPage =
-  '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandcastle operator</title><link rel="stylesheet" href="/style.css"><body><main><h1>Sandcastle operator</h1><p id="project"></p><p>Settings saved during a run apply to the next run.</p><nav><a href="#prompts">Prompts</a></nav><form id="roles"><div id="fields"></div><button type="submit">Save settings</button></form><section id="prompts"><h2>Prompts</h2><p>Compare with the current default. Overrides remain project-owned across default updates.</p><div id="prompt-fields"></div></section><p id="feedback" role="status" aria-live="polite"></p><button id="start" type="button">Start run</button><p id="run" role="status" aria-live="polite"></p><a href="/dashboard" target="_blank" rel="noopener">Observe runs and logs</a></main><script src="/app.js"></script></body></html>';
+  '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandcastle operator</title><link rel="stylesheet" href="/style.css"><body><main><h1>Sandcastle operator</h1><p id="project"></p><p>Settings saved during a run apply to the next run.</p><nav><a href="#environment">Environment</a> · <a href="#prompts">Prompts</a></nav><form id="roles"><div id="fields"></div><button type="submit">Save settings</button></form><section id="environment"><h2>Environment</h2><p>Choose a host-installed image or enter a custom name. Save applies to the next run. Build and preflight use saved settings.</p><p id="image-availability" role="status"></p><form id="environment-form"><label>Docker image<select id="docker-image" aria-label="Docker image"></select></label><label id="custom-image-label">Custom Docker image<input id="custom-image" maxlength="255" aria-label="Custom Docker image"></label><label>Dockerfile<input id="dockerfile" required aria-label="Dockerfile"></label><label>Build arguments (KEY=value, one per line)<textarea id="build-args" rows="3" aria-label="Build arguments"></textarea></label><button type="submit">Save environment</button></form><button id="build-image" type="button">Build image</button> <button id="preflight" type="button">Run preflight</button> <button id="cancel-environment" type="button" disabled>Cancel environment job</button><p id="environment-job" role="status" aria-live="polite"></p><pre id="environment-logs" aria-label="Environment job logs" tabindex="0"></pre></section><section id="prompts"><h2>Prompts</h2><p>Compare with the current default. Overrides remain project-owned across default updates.</p><div id="prompt-fields"></div></section><p id="feedback" role="status" aria-live="polite"></p><button id="start" type="button">Start run</button><p id="run" role="status" aria-live="polite"></p><a href="/dashboard" target="_blank" rel="noopener">Observe runs and logs</a></main><script src="/app.js"></script></body></html>';
 export const operatorStyles =
-  "body{font:16px system-ui;background:#f6f8fa;color:#18212b;margin:0}main{max-width:850px;margin:2rem auto;padding:1rem}fieldset{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding:1rem;border:1px solid #bbc4cf}[hidden]{display:none!important}label{display:grid;gap:.4rem}input,select,button,textarea{font:inherit;padding:.5rem}button{cursor:pointer}legend{font-weight:600}a{color:#135bac}#feedback[data-error=true]{color:#a11}textarea:focus,input:focus,select:focus,button:focus,a:focus{outline:3px solid #2479d4;outline-offset:2px}";
+  "body{font:16px system-ui;background:#f6f8fa;color:#18212b;margin:0}main{max-width:850px;margin:2rem auto;padding:1rem}fieldset{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding:1rem;border:1px solid #bbc4cf}[hidden]{display:none!important}label{display:grid;gap:.4rem}input,select,button,textarea{font:inherit;padding:.5rem}button{cursor:pointer}legend{font-weight:600}a{color:#135bac}#feedback[data-error=true]{color:#a11}#environment-form{display:grid;gap:1rem;margin-bottom:1rem}#environment-logs{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;background:#fff;padding:1rem}textarea:focus,input:focus,select:focus,button:focus,a:focus{outline:3px solid #2479d4;outline-offset:2px}";
 export const operatorScript = `
 let config;
 const fields = document.getElementById('fields');
@@ -153,6 +153,75 @@ async function observe() {
       Object.entries(data.run.config.roles).map(([role, settings]) => role + ': ' + settings.model + ' / ' + settings.effort).join(' · ');
   } catch (error) { run.textContent = 'Cannot observe run: ' + error.message; }
 }
+let environmentConfig, environmentJob, environmentEvents;
+const imageSelect = document.getElementById('docker-image');
+const customImage = document.getElementById('custom-image');
+function showCustomImage() {
+  document.getElementById('custom-image-label').hidden = imageSelect.value !== 'custom';
+  customImage.required = imageSelect.value === 'custom';
+}
+imageSelect.addEventListener('change', showCustomImage);
+function availability(data) {
+  document.getElementById('image-availability').textContent = 'Configured image: ' + data.config.image + ' · ' + (data.available ? 'Available on host · ' + data.identity : 'Unavailable on host; check Docker or build the image.');
+}
+async function loadEnvironment() {
+  const data = await request('/api/environment'); environmentConfig = data.config;
+  imageSelect.replaceChildren();
+  for(const value of [...data.images, 'custom']) {
+    const option = document.createElement('option'); option.value=value; option.textContent=value === 'custom' ? 'Custom image name' : value; imageSelect.append(option);
+  }
+  imageSelect.value = data.images.includes(data.config.image) ? data.config.image : 'custom';
+  customImage.value = data.config.image; showCustomImage();
+  document.getElementById('dockerfile').value = data.config.dockerfile;
+  document.getElementById('build-args').value = Object.entries(data.config.buildArgs).map(([key,value]) => key+'='+value).join('\\n');
+  availability(data);
+}
+document.getElementById('environment-form').addEventListener('submit', async event => {
+  event.preventDefault(); event.submitter.disabled=true;
+  try {
+    const buildArgs = {};
+    for(const line of document.getElementById('build-args').value.split('\\n').filter(line => line.trim())) {
+      const equals = line.indexOf('='); if(equals < 1) throw new Error('Build arguments require KEY=value, one per line.');
+      const key=line.slice(0,equals); if(Object.hasOwn(buildArgs,key)) throw new Error('Duplicate build argument: '+key);
+      Object.defineProperty(buildArgs,key,{value:line.slice(equals+1),enumerable:true});
+    }
+    environmentConfig = (await request('/api/environment',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({schemaVersion:1,image:imageSelect.value === 'custom' ? customImage.value : imageSelect.value,dockerfile:document.getElementById('dockerfile').value,buildArgs})})).config;
+    availability(await request('/api/environment')); message('Environment saved. Applies to the next run.');
+  } catch(error) {message(error.message,true);}
+  finally {event.submitter.disabled=false;}
+});
+function showEnvironmentJob(job) {
+  environmentJob = job;
+  const active = ['running','cancelling','promoting'].includes(job.status);
+  document.getElementById('build-image').disabled = document.getElementById('preflight').disabled = active;
+  document.getElementById('cancel-environment').disabled = job.status !== 'running';
+  document.getElementById('environment-job').textContent = job.kind+' · '+job.status+' · '+job.config.image+(job.identity ? ' · '+job.identity : '')+(job.error ? ' · '+job.error : '');
+  document.getElementById('environment-logs').textContent = job.logs;
+  if(!active) {
+    environmentEvents?.close();
+    request('/api/environment').then(availability).catch(error=>message(error.message,true));
+  }
+}
+function watchEnvironmentJob(job) {
+  showEnvironmentJob(job); environmentEvents?.close();
+  if(!['running','cancelling','promoting'].includes(job.status)) return;
+  environmentEvents = new EventSource('/api/environment/jobs/'+job.id+'/events');
+  environmentEvents.onmessage = event => showEnvironmentJob(JSON.parse(event.data));
+  environmentEvents.onerror = () => { request('/api/environment/jobs/'+job.id).then(showEnvironmentJob).catch(error=>message(error.message,true)); };
+}
+async function startEnvironmentJob(kind) {
+  try {
+    const job = await request('/api/environment/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind})});
+    watchEnvironmentJob(job);
+  } catch(error) {message(error.message,true);}
+}
+document.getElementById('build-image').addEventListener('click',()=>startEnvironmentJob('build'));
+document.getElementById('preflight').addEventListener('click',()=>startEnvironmentJob('preflight'));
+document.getElementById('cancel-environment').addEventListener('click',async()=> {
+  try {showEnvironmentJob(await request('/api/environment/jobs/'+environmentJob.id+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}));} catch(error) {message(error.message,true);}
+});
+loadEnvironment().catch(error => message(error.message,true));
+request('/api/environment/jobs').then(data => {const job=data.jobs.at(-1);if(job) watchEnvironmentJob(job);}).catch(error=>message(error.message,true));
 loadPrompts(null).catch(error => message(error.message, true));
 load().catch(error => message(error.message, true));
 observe();

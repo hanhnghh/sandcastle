@@ -157,7 +157,7 @@ activity viewer. Choose a session and batch, filter agents by issue or status,
 then open **Logs** to search, copy, or download recent recorded activity.
 See the [dashboard guide](docs/agent-map.md) for navigation and retention limits.
 
-Configure Codex role models and effort, then start and observe a project run:
+Configure Codex roles and Docker images, then build, preflight and observe a project run:
 
 ```sh
 npx sandcastle operator --cwd /path/to/project --port 4319
@@ -168,6 +168,9 @@ Open the printed URL, choose models/effort and save. New reviewed Codex and
 Planner/implementer default to low effort; reviewer/merger/readiness to high.
 Init preserves the selected model; missing config defaults to gpt-6.1-sol.
 Runs freeze settings, prompts and image identity; saves affect the next run.
+The Environment form selects installed/custom Docker images and saves validated
+Dockerfile/build arguments. Explicit build/preflight jobs stream logs and report
+success, failure or cancellation; Save never builds, cleans up or publishes images.
 The Prompts editors save/reset project overrides, show default/base diffs, and
 preserve customization when explicitly adopted packaged defaults change.
 See the [operator guide](docs/operator.md) for SDK/HTTP interfaces, custom
