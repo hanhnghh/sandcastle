@@ -25,9 +25,8 @@ export const operatorCliAdapter = (project: string): OperatorProjectAdapter => {
       Effect.runPromise(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const docker = yield* fs.exists(
-            join(cwd, ".sandcastle", "Dockerfile"),
-          );
+          const environment = yield* loadEnvironmentConfigEffect(cwd);
+          const docker = yield* fs.exists(resolve(cwd, environment.dockerfile));
           const podman = yield* fs.exists(
             join(cwd, ".sandcastle", "Containerfile"),
           );
@@ -38,9 +37,7 @@ export const operatorCliAdapter = (project: string): OperatorProjectAdapter => {
                   "Expected one Dockerfile or Containerfile; use an SDK project adapter for custom sandboxes",
               }),
             );
-          const image = docker
-            ? (yield* loadEnvironmentConfigEffect(cwd)).image
-            : defaultImageName(cwd);
+          const image = docker ? environment.image : defaultImageName(cwd);
           return yield* Effect.async<string, OperatorError>((resume) => {
             execFile(
               docker ? "docker" : "podman",

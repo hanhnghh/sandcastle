@@ -335,6 +335,7 @@ export const startOperator = (options: {
                         state.status = "promoting";
                         notify(job);
                       },
+                      secrets,
                     )
                   : preflightEnvironmentEffect(
                       cwd,

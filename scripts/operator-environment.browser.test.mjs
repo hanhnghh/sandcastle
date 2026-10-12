@@ -100,6 +100,10 @@ test("environment forms persist selection and stream cancellable jobs", async (t
     .getByRole("status")
     .filter({ hasText: "Environment saved" })
     .waitFor();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "Configured image: fixture:custom" })
+    .waitFor();
   await restart();
   await page
     .getByRole("status")

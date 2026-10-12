@@ -172,6 +172,8 @@ else if (args[0]==='tag') {
 }
 else if (args[0]==='build') {
  console.log('live build output');
+ if(fs.existsSync('partial-progress')) process.stdout.write('progress without newline');
+ if(fs.existsSync('held-secret')) {process.stdout.write('credential-');process.stderr.write('stderr progress without newline');const secretTimer=setInterval(()=>{if(fs.existsSync('release-secret')) {clearInterval(secretTimer);process.stdout.write('should-not-appear');}},20);}
  if(fs.existsSync('split-secret')) {process.stdout.write('credential-');setTimeout(()=>process.stdout.write('should-not-appear\\n'),30);}
  const timer=setInterval(()=>{if(fs.existsSync('finish-build')) {clearInterval(timer); if(fs.readFileSync('finish-build','utf8')==='fail') process.exit(1); fs.writeFileSync('staged-image','built'); process.exit(0);}},20);
 }
@@ -363,6 +365,20 @@ else if (args[0]==='build') {
           ).available,
         ).toBe(false);
       if (!failure) {
+        const calls = (await readFile(join(cwd, "docker-calls.jsonl"), "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as string[]);
+        const probes = calls.filter((args) => args[0] === "run");
+        expect(probes.length).toBeGreaterThan(0);
+        for (const args of probes) {
+          expect(args[args.indexOf("--network") + 1]).toBe("none");
+          expect(args).not.toContain("-v");
+          expect(args).not.toContain("--mount");
+          expect(args).not.toContain("-e");
+          const name = args[args.indexOf("--name") + 1]!;
+          expect(calls).toContainEqual(["rm", "-f", name]);
+        }
         for (const text of [
           "Daemon: ready",
           "Image: sha256:",
@@ -409,6 +425,20 @@ else if (args[0]==='build') {
     expect(result.logs).toContain("Auth Codex: missing");
   });
 
+  test("build streams partial lines while the process is still running", async () => {
+    const { request, cwd } = await dockerFixture();
+    await writeFile(join(cwd, "partial-progress"), "true");
+    const { id } = (await (
+      await request("/api/environment/jobs", "POST", { kind: "build" })
+    ).json()) as { id: string };
+    await expect
+      .poll(async () => (await jobState(request, id)).logs, { timeout: 3000 })
+      .toContain("progress without newline");
+    expect((await jobState(request, id)).status).toBe("running");
+    await request("/api/environment/jobs/" + id + "/cancel", "POST", {});
+    expect((await terminal(request, id)).status).toBe("cancelled");
+  });
+
   test("build logs redact declared credentials across output chunks", async () => {
     const { request, cwd } = await dockerFixture();
     await writeFile(
@@ -434,6 +464,65 @@ else if (args[0]==='build') {
     expect(result.logs).toContain("[redacted]");
     expect(result.logs).not.toContain("credential-");
     expect(result.logs).not.toContain("should-not-appear");
+  });
+
+  test.each(["completed", "cancelled"])(
+    "build redaction withholds a credential prefix while stderr continues streaming: %s",
+    async (outcome) => {
+      const { request, cwd } = await dockerFixture();
+      await writeFile(
+        join(cwd, ".sandcastle/.env"),
+        "GH_TOKEN=credential-should-not-appear\n",
+      );
+      await writeFile(join(cwd, "held-secret"), "true");
+      const { id } = (await (
+        await request("/api/environment/jobs", "POST", { kind: "build" })
+      ).json()) as { id: string };
+      await expect
+        .poll(async () => (await jobState(request, id)).logs)
+        .toContain("stderr progress without newline");
+      expect((await jobState(request, id)).logs).not.toContain("credential-");
+      if (outcome === "completed") {
+        await writeFile(join(cwd, "release-secret"), "true");
+        await expect
+          .poll(async () => (await jobState(request, id)).logs)
+          .toContain("[redacted]");
+        await writeFile(join(cwd, "finish-build"), "success");
+      } else
+        await request("/api/environment/jobs/" + id + "/cancel", "POST", {});
+      const result = await terminal(request, id);
+      expect(result.status).toBe(outcome);
+      expect(result.logs).toContain("[redacted]");
+      expect(result.logs).not.toContain("credential-");
+      expect(result.logs).not.toContain("should-not-appear");
+    },
+  );
+
+  test("closing the server cleans up a build snapshot while saved settings change", async () => {
+    const { request, cwd, server } = await dockerFixture();
+    const original = await loadEnvironmentConfig({ cwd });
+    const { id } = (await (
+      await request("/api/environment/jobs", "POST", { kind: "build" })
+    ).json()) as { id: string };
+    await expect
+      .poll(async () => (await jobState(request, id)).logs)
+      .toContain("live build output");
+    const next = { ...original, image: "fixture:next" };
+    expect((await request("/api/environment", "PUT", next)).status).toBe(200);
+    const snapshot = (await (
+      await request("/api/environment/jobs/" + id)
+    ).json()) as { config: EnvironmentConfig };
+    expect(snapshot.config).toEqual(original);
+    await server.close();
+    expect(await loadEnvironmentConfig({ cwd })).toEqual(next);
+    const calls = (await readFile(join(cwd, "docker-calls.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(calls.filter((args) => args[0] === "tag")).toEqual([]);
+    expect(
+      calls.filter((args) => args[0] === "image" && args[1] === "rm"),
+    ).toEqual([["image", "rm", "sandcastle-operator-build:" + id]]);
   });
 
   test("cancellation settles even when the build process ignores termination", async () => {
@@ -665,10 +754,11 @@ else if (args[0]==='build') {
 
   test("trusted SDK preflight policy observes project tools UID and auth file presence", async () => {
     const { request, cwd } = await dockerFixture({
-      uid: process.getuid?.() ?? 1000,
+      uid: 99999,
       tools: ["project-tool"],
       authFiles: { Project: "project-auth.json" },
     });
+    await writeFile(join(cwd, "wrong-uid"), "true");
     await writeFile(
       join(cwd, "project-auth.json"),
       "credential-should-not-appear",
@@ -678,6 +768,7 @@ else if (args[0]==='build') {
     ).json()) as { id: string };
     const result = await terminal(request, id);
     expect(result.status).toBe("completed");
+    expect(result.logs).toContain("UID: matches");
     expect(result.logs).toContain("Tool project-tool: ready");
     expect(result.logs).toContain("Auth Project: present");
     expect(result.logs).not.toContain("credential-should-not-appear");
@@ -698,6 +789,26 @@ else if (args[0]==='build') {
     expect(result.logs).toContain("Auth Project: missing");
   });
 
+  test("web builds align the image UID and GID with the host by default", async () => {
+    const { request, cwd } = await dockerFixture();
+    await writeFile(join(cwd, "finish-build"), "success");
+    const response = await request("/api/environment/jobs", "POST", {
+      kind: "build",
+    });
+    expect(response.status).toBe(202);
+    const { id } = (await response.json()) as { id: string };
+    expect((await terminal(request, id)).status).toBe("completed");
+    const calls = (await readFile(join(cwd, "docker-calls.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    const build = calls.find((args) => args[0] === "build")!;
+    if (process.getuid)
+      expect(build).toContain("AGENT_UID=" + process.getuid());
+    if (process.getgid)
+      expect(build).toContain("AGENT_GID=" + process.getgid());
+  });
+
   test("build uses the saved project's Dockerfile and literal argument vector", async () => {
     const { request, cwd } = await dockerFixture();
     await mkdir(join(cwd, "docker"));
@@ -706,7 +817,7 @@ else if (args[0]==='build') {
       schemaVersion: 1,
       image: "fixture:custom-build",
       dockerfile: "docker/Dockerfile.dev",
-      buildArgs: { AGENT_UID: "1000", VERSION: "1.2.3" },
+      buildArgs: { AGENT_UID: "1000", AGENT_GID: "2000", VERSION: "1.2.3" },
     };
     expect((await request("/api/environment", "PUT", config)).status).toBe(200);
     await writeFile(join(cwd, "finish-build"), "success");
@@ -724,6 +835,8 @@ else if (args[0]==='build') {
       join(cwd, "docker/Dockerfile.dev"),
       "--build-arg",
       "AGENT_UID=1000",
+      "--build-arg",
+      "AGENT_GID=2000",
       "--build-arg",
       "VERSION=1.2.3",
       cwd,

@@ -103,6 +103,8 @@ letters/digits or `._/:@,+-`, up to 1,000 characters. The form accepts one
 `KEY=value` per line. Arguments are passed directly, without a host shell.
 Keep credentials in project-owned auth references rather than build arguments.
 Build context is the selected project root, with the configured Dockerfile.
+As with CLI builds, `AGENT_UID`/`AGENT_GID` default to the host UID/GID where
+available; explicitly saved arguments override those defaults.
 
 **Build image** and **Run preflight** start explicit asynchronous jobs using a
 snapshot of saved settings. Output streams into a keyboard-focusable log viewer;

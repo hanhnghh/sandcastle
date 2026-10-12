@@ -3,8 +3,8 @@ import { FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
-import { join, relative, resolve } from "node:path";
+import type { Readable } from "node:stream";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { OperatorError } from "./Operator.js";
 import { defaultImageName } from "./mountUtils.js";
@@ -128,7 +128,7 @@ export const saveEnvironmentConfig = (options: {
       if (
         path.startsWith("../") ||
         path === ".." ||
-        path.startsWith("/") ||
+        isAbsolute(path) ||
         (yield* fs.stat(dockerfile)).type !== "File"
       )
         return yield* Effect.fail(
@@ -153,6 +153,50 @@ export const saveEnvironmentConfig = (options: {
     ),
   );
 
+// Keep only a possible credential prefix between chunks, separately for each
+// stream. Partial lines can then be emitted immediately without exposing secrets.
+const streamDockerLogs = (
+  stream: Readable,
+  secrets: readonly string[],
+  onLog: (text: string) => void,
+) => {
+  const values = [...new Set(secrets)]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  let pending = "";
+  const emit = (text: string, final: boolean) => {
+    pending += text;
+    let safe = "";
+    let offset = 0;
+    while (offset < pending.length) {
+      const rest = pending.slice(offset);
+      if (
+        values.some(
+          (secret) => secret.startsWith(rest) && secret.length > rest.length,
+        )
+      ) {
+        if (!final) break;
+        // Cancellation can end a stream mid-credential; never flush that prefix.
+        safe += "[redacted]";
+        offset = pending.length;
+        break;
+      }
+      const secret = values.find((secret) => rest.startsWith(secret));
+      if (secret) {
+        safe += "[redacted]";
+        offset += secret.length;
+      } else {
+        safe += pending[offset++];
+      }
+    }
+    pending = pending.slice(offset);
+    if (safe) onLog(safe);
+  };
+  stream.setEncoding("utf8");
+  stream.on("data", (text: string) => emit(text, false));
+  stream.on("end", () => emit("", true));
+};
+
 /** Execute Docker with argument vectors and real-time output; diagnostics never include stderr in failures. */
 export const dockerCommand = (
   cwd: string,
@@ -161,6 +205,7 @@ export const dockerCommand = (
     /** Abort the owned process. */ signal?: AbortSignal;
     /** Maximum duration; defaults to 30 seconds. */ timeoutMs?: number;
     /** Receive output as it arrives. */ onLog?: (text: string) => void;
+    /** Credential values withheld and redacted separately on stdout/stderr. */ redact?: readonly string[];
   } = {},
 ): Effect.Effect<string, OperatorError> =>
   Effect.async((resume) => {
@@ -179,12 +224,8 @@ export const dockerCommand = (
     };
     child.stdout.on("data", read);
     if (options.onLog)
-      for (const stream of [child.stdout, child.stderr]) {
-        createInterface({ input: stream, crlfDelay: Infinity }).on(
-          "line",
-          (line) => options.onLog!(line + "\n"),
-        );
-      }
+      for (const stream of [child.stdout, child.stderr])
+        streamDockerLogs(stream, options.redact ?? [], options.onLog);
     else child.stderr.resume();
     let force: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
@@ -273,6 +314,7 @@ export const buildEnvironmentEffect = (
   signal: AbortSignal,
   onLog: (text: string) => void,
   onPromotion: () => void,
+  secrets: readonly string[],
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -282,7 +324,7 @@ export const buildEnvironmentEffect = (
     if (
       inside === ".." ||
       inside.startsWith("../") ||
-      inside.startsWith("/") ||
+      isAbsolute(inside) ||
       (yield* fs.stat(path)).type !== "File"
     )
       return yield* Effect.fail(
@@ -292,6 +334,12 @@ export const buildEnvironmentEffect = (
       return yield* Effect.fail(
         safeError("Build requires a mutable image tag, not a digest"),
       );
+    const buildArgs: Record<string, string> = {};
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+    if (uid !== undefined) buildArgs.AGENT_UID = String(uid);
+    if (gid !== undefined) buildArgs.AGENT_GID = String(gid);
+    Object.assign(buildArgs, config.buildArgs);
     const temporary = `sandcastle-operator-build:${id}`;
     return yield* Effect.gen(function* () {
       yield* dockerCommand(
@@ -302,13 +350,13 @@ export const buildEnvironmentEffect = (
           temporary,
           "-f",
           path,
-          ...Object.entries(config.buildArgs).flatMap(([key, value]) => [
+          ...Object.entries(buildArgs).flatMap(([key, value]) => [
             "--build-arg",
             `${key}=${value}`,
           ]),
           root,
         ],
-        { signal, onLog, timeoutMs: 30 * 60_000 },
+        { signal, onLog, redact: secrets, timeoutMs: 30 * 60_000 },
       );
       const identity = yield* resolveDockerImageEffect(cwd, temporary);
       if (signal.aborted)

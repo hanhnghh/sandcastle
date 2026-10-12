@@ -20,7 +20,7 @@ test("operator CLI serves only its explicit project and hands its frozen runtime
   const bin = join(cwd, "bin");
   await mkdir(configDir);
   await mkdir(bin);
-  await writeFile(join(configDir, "Dockerfile"), "FROM fixture");
+  await writeFile(join(configDir, "Dockerfile.custom"), "FROM fixture");
   await writeFile(
     join(cwd, "package.json"),
     JSON.stringify({ type: "module" }),
@@ -121,7 +121,7 @@ if (runtime.record.sandboxIdentity === 'sha256:'+'b'.repeat(64)) {
     const environment = {
       schemaVersion: 1,
       image: "fixture:selected",
-      dockerfile: ".sandcastle/Dockerfile",
+      dockerfile: ".sandcastle/Dockerfile.custom",
       buildArgs: {},
     };
     expect(
