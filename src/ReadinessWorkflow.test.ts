@@ -67,6 +67,7 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   console.log('<readiness>'+JSON.stringify({head:snapshot.head,decisions:snapshot.issues.map(i=>({number:i.number,status:i.body.includes('**Kind:** live-validation')?'not-implementation':i.dependencies.some(d=>d.state!=='closed')?'blocked':'ready-for-agent',reason:'fixture contract',evidence:[{path:'host:integration',claim:'Host gate'}],gates:[{id:'integration',status:'satisfied',reason:'Host gate',evidence:[{path:'host:integration',claim:'Host gate'}]}]}))})+'</readiness>');
 } else if(prompt.includes('# CANDIDATE INVENTORY')) {
   const issues=JSON.parse(prompt.match(/<issues-json>([\\s\\S]*?)<\\/issues-json>/)[1]); record('plan:'+issues.map(i=>i.number).join(','));
+  if(process.env.READINESS_FIXTURE_INVALID_PLAN==='1' && fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').split('plan:22').length===2) { console.log('<plan>'+JSON.stringify({issues:[],decisions:[]})+'</plan>'); console.log('<promise>COMPLETE</promise>'); process.exit(0); }
   if(process.env.READINESS_FIXTURE_STALE_PLAN==='1') { const state=JSON.parse(fs.readFileSync(process.env.READINESS_FIXTURE_STATE,'utf8'));state.find(i=>i.number===22).labels.push({name:'blocked'});fs.writeFileSync(process.env.READINESS_FIXTURE_STATE,JSON.stringify(state)); }
   console.log('<plan>'+JSON.stringify({issues:issues.map(i=>({id:String(i.number),title:i.title,branch:'sandcastle/issue-'+i.number})),decisions:issues.map(i=>({id:String(i.number),disposition:'selected',reason:'independent',likelyAreas:['task-'+i.number]}))})+'</plan>');
 } else if(prompt.includes('Integrate the following completed branches')) {
@@ -301,6 +302,10 @@ const defaultImageName = () => "fixture-image";`,
           ...config.limits,
           cycles: Number(extraEnv.READINESS_FIXTURE_CYCLES ?? 3),
           concurrency: 1,
+          plannerAttempts: Number(
+            extraEnv.READINESS_FIXTURE_PLANNER_ATTEMPTS ??
+              config.limits.plannerAttempts,
+          ),
         },
       },
     });
@@ -590,6 +595,9 @@ it.each(["parallel-planner-with-review", "codex-afk"])(
     expect(result.error).toBeDefined();
     expect(result.trace).toContain("merge:22");
     expect(result.trace).not.toContain("plan:20");
+    expect(result.diagnostics).toEqual([
+      { code: "iteration-limit", issues: [] },
+    ]);
     expect(
       result.issues.find((issue: { number: number }) => issue.number === 20)
         .state,
@@ -628,6 +636,38 @@ it.each(["READINESS_FIXTURE_HOLD", "READINESS_FIXTURE_META"])(
     expect(
       result.issues.every((issue: { state: string }) => issue.state === "open"),
     ).toBe(true);
+  },
+  90000,
+);
+
+it.each([1, 2])(
+  "configured Codex workflow enforces %s planner attempts before implementation",
+  async (attempts) => {
+    const result = await execute({
+      READINESS_FIXTURE_CODEX: "1",
+      READINESS_FIXTURE_INVALID_PLAN: "1",
+      READINESS_FIXTURE_PLANNER_ATTEMPTS: String(attempts),
+    });
+    expect(result.trace.filter((event) => event === "plan:22")).toHaveLength(
+      attempts,
+    );
+    if (attempts === 1) {
+      expect(result.error).toBeDefined();
+      expect(result.trace).not.toContain("implement:22");
+      expect(
+        result.issues.every(
+          (issue: { state: string }) => issue.state === "open",
+        ),
+      ).toBe(true);
+    } else {
+      expect(result.error).toBeUndefined();
+      expect(result.trace).toContain("implement:22");
+      expect(
+        result.issues.every(
+          (issue: { state: string }) => issue.state === "closed",
+        ),
+      ).toBe(true);
+    }
   },
   90000,
 );

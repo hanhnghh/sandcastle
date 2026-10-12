@@ -111,7 +111,11 @@ and leave their issues open.
 
 Labels accept 1–50 letters/digits, spaces, dots, underscores, colons, slashes
 or hyphens, starting with a letter/digit; surrounding whitespace is trimmed.
-Scope, state and hold labels must be distinct; duplicate holds/gates are rejected.
+Scope, state, project qualification and effective hold labels must be distinct;
+collisions with project-required holds are rejected before saving. Duplicate
+holds/gates are rejected. Repository owners accept up to 39 letters/digits with
+single interior hyphens; repository names accept up to 100 letters/digits, dots,
+underscores or hyphens, including `.github`, but not `.` or `..`.
 Reference names accept letters/digits, dots, underscores and hyphens, starting
 with a letter/digit (maximum 100 characters). Unknown fields, repositories,
 limits or references fail atomically with safe errors. Configuration files and

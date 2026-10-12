@@ -37,8 +37,12 @@ export const workflowConfigSchema = z
     repository: z
       .string()
       .regex(
-        /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/,
-        "Use explicit owner/repository",
+        /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/[A-Za-z0-9_.-]{1,100}$/,
+        "Use explicit owner/repository with a valid GitHub owner and repository name",
+      )
+      .refine(
+        (value) => ![".", ".."].includes(value.split("/")[1]!),
+        "Use a repository name other than . or ..",
       )
       .nullable(),
     /** Label defining the execution scope. */
@@ -246,11 +250,29 @@ const defaultConfig = (policy: WorkflowSnapshot["policy"]): WorkflowConfig => {
   config.revision = workflowConfigRevision(config);
   return config;
 };
-const validateReferences = (
+const validateProjectPolicy = (
   config: WorkflowConfig,
+  policy: WorkflowSnapshot["policy"],
   declarations: WorkflowSnapshot["declarations"],
 ) =>
   Effect.gen(function* () {
+    const states = [
+      config.scopeLabel,
+      config.readyLabel,
+      config.blockedLabel,
+      policy.qualificationLabel,
+    ];
+    const holds = [...policy.holdLabels, ...config.holdLabels];
+    if (
+      new Set(states).size !== states.length ||
+      states.some((state) => holds.includes(state))
+    )
+      return yield* Effect.fail(
+        new OperatorError({
+          message:
+            "workflow: scope, state, qualification and project-required hold labels must be distinct",
+        }),
+      );
     if (
       config.readiness.verifier &&
       !Object.hasOwn(declarations.verifiers, config.readiness.verifier)
@@ -290,7 +312,7 @@ export const loadWorkflowSnapshotEffect = (cwd: string) =>
             "workflow.json: revision mismatch; save through the configuration interface",
         }),
       );
-    yield* validateReferences(config, declarations);
+    yield* validateProjectPolicy(config, policy, declarations);
     return { config, policy, declarations };
   }).pipe(
     Effect.mapError((error) =>
@@ -326,8 +348,8 @@ export function saveWorkflowConfig(options: {
         options.config,
         "workflow",
       );
-      const { declarations } = yield* readPolicy(options.cwd);
-      yield* validateReferences(config, declarations);
+      const { policy, declarations } = yield* readPolicy(options.cwd);
+      yield* validateProjectPolicy(config, policy, declarations);
       config.revision = workflowConfigRevision(config);
       const fs = yield* FileSystem.FileSystem;
       yield* fs.makeDirectory(join(options.cwd, ".sandcastle"), {

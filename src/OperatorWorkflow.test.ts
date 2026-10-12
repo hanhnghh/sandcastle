@@ -100,9 +100,22 @@ test("invalid workflow settings are atomic through the project-scoped HTTP inter
     const initial = await sdk.loadWorkflowConfig({ cwd });
     for (const change of [
       { repository: "https://github.com/owner/project" },
+      { repository: "bad_owner/project" },
+      { repository: "owner-/project" },
+      { repository: "bad--owner/project" },
+      { repository: "a".repeat(40) + "/project" },
+      { repository: "owner/" + "a".repeat(101) },
+      { repository: "owner/.." },
       { scopeLabel: "bad\nlabel" },
       { readyLabel: initial.blockedLabel },
       { holdLabels: [initial.readyLabel] },
+      { readyLabel: "readiness:hold" },
+      { blockedLabel: "readiness:hold" },
+      { scopeLabel: "readiness:hold" },
+      { readyLabel: "project-qualification" },
+      { blockedLabel: "project-qualification" },
+      { scopeLabel: "project-qualification" },
+      { holdLabels: ["project-qualification"] },
       { limits: { ...initial.limits, cycles: 0 } },
       { limits: { ...initial.limits, concurrency: 1.5 } },
       { limits: { ...initial.limits, plannerAttempts: 11 } },
@@ -119,7 +132,7 @@ test("invalid workflow settings are atomic through the project-scoped HTTP inter
         headers,
         body: JSON.stringify({ ...initial, ...change }),
       });
-      expect(invalid.status).toBe(400);
+      expect(invalid.status, JSON.stringify(change)).toBe(400);
       const error = await invalid.text();
       expect(error).toContain("workflow");
       expect(error).not.toContain("secret-value");
@@ -127,7 +140,7 @@ test("invalid workflow settings are atomic through the project-scoped HTTP inter
     }
     const next = {
       ...initial,
-      repository: "owner/project",
+      repository: "owner/.github",
       limits: { ...initial.limits, cycles: 2 },
     };
     expect(

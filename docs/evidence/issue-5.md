@@ -67,7 +67,7 @@ feedback loops and evidence policy were read completely before editing.
 
 W and retained W0 cover eleven distinct passing browser tests.
 
-## Final requirement matrix
+## Implementation requirement matrix (historical)
 
 Receipt/applicability **S** means the source/harness manifest above and Linux
 fake provider/tracker/Docker process boundaries, with real runtime/orchestration,
@@ -220,3 +220,153 @@ try {
   await rm(cwd, { recursive: true, force: true });
 }
 ````
+
+## Independent review (2026-10-12)
+
+Reviewer source starts at `be3a824` against immutable baseline
+`256f63bf6ddf13f2301224e3571fd1d14ecd8bf8`. Task body/labels/comments read
+successfully with the required gh command. Parent product decisions and delivery
+acceptance inform ownership, freezing, security and public/browser coverage.
+All three host policies were read completely before feedback selection.
+
+Before checks, all rows 01–24 were marked needing **new reviewer evidence**.
+Implementer receipts remain historical records; none supplies reviewer proof. Reviewer
+commands cover the workflow/HTTP SDK, operator CLI, generated Codex consumers,
+readiness/policy guards, init callers and retained operator contracts. Browser
+checks cover workflow plus existing operator/environment forms. Typecheck/build
+are reviewer-owned; the exact integrated full gate remains integration-owned.
+
+Findings repaired:
+
+- R1: Settings accept collisions with trusted project hold/qualification labels,
+  although apply later rejects them. Require atomic HTTP save rejection.
+- R2: Repository identity accepts impossible owner syntax and rejects the valid
+  `.github` repository. Require independent valid/invalid HTTP examples.
+
+Completed review coverage and command receipts are recorded below.
+
+- R2 red at 16:44:15 UTC: HTTP accepted `bad_owner/project` (200, expected 400).
+  Tightened owner/name validation and accepted dot-prefixed repository names.
+- R1 red at 16:44:43 UTC after R2 repair: HTTP accepted `readiness:hold` as a
+  state label (200, expected 400). Save/load now validate the frozen project
+  qualification label and the union of required/editable holds.
+- R1/R2 green at 16:45:04 UTC: all eight workflow SDK/HTTP tests pass (3.00s).
+- R3 coverage gap: saved planner retry bounds lacked real generated workflow
+  evidence. Added fake-model invalid-plan/retry cases for limits 1 and 2, and
+  asserted iteration-limit diagnostics in both generated templates. This is an
+  evidence repair; no production change or artificial red state is needed.
+
+### Reviewer commands and applicability
+
+- **RF**: `npm test -- src/OperatorWorkflow.test.ts src/Operator.test.ts src/OperatorEnvironment.test.ts src/OperatorPrompts.test.ts src/OperatorCli.test.ts src/OperatorGenerated.test.ts src/Readiness.test.ts src/ReadinessPolicy.test.ts src/ReadinessWorkflow.test.ts src/InitService.test.ts src/InitService.agents.test.ts src/InitService.packageManager.test.ts src/InitService.sandboxProviders.test.ts src/run.test.ts -t '^(?!configured Codex workflow enforces)' --run`
+- **RP**: `npm test -- src/ReadinessWorkflow.test.ts -t 'enforces .* planner attempts' --run`
+- **RW**: `node --test scripts/operator-workflow.browser.test.mjs scripts/operator.browser.test.mjs scripts/operator-environment.browser.test.mjs`
+- **RT**: `npm run typecheck`
+- **RB**: `npm run build`
+- **RA**: `node --input-type=module < .sandcastle/logs/issue-5-review-docs.mjs` (the documentation example validator above).
+- **RD**: `git diff --check` and focused Prettier check over all task/review files.
+
+Receipts: `.sandcastle/logs/issue-5-review-{focused,planner,browser,typecheck,build}.log`;
+exit status is independently observed through the tool sessions. Source/harness
+manifest `.sandcastle/logs/issue-5-review-source.sha256` SHA-256
+`70611c10da89b486fd4a4f16868b0868247bfc0e649b369752c3df45e6aee9a5`.
+Environment: Linux aarch64, Node v24.21.0, npm 11.19.0; installed toolchain and
+Playwright/Chromium match the package lock (SHA-256
+`0147be5b31dd2ba8c5a65fb7988e3813fd399010fed5b8cf0de58180e938ff66`).
+Fake tracker/model/Docker processes, real Git fixtures, HTTP, SDK, generated
+consumers and headless browser; no production tracker mutations or task closure.
+The build's production inputs were unchanged after RB; only test/doc files
+changed before RP/RF/RT/RW. RP's two cases are excluded from RF; their exact
+harness/source is unchanged, so their own fresh passing receipt applies.
+No implementer receipt supplies reviewer evidence. This manifest is focused
+provenance and cannot replace the integration owner's trusted cumulative gate.
+
+Reviewer results: RP passed 2 cases at 16:46:43 UTC, 23.82s; RF passed
+487 cases (two RP cases excluded) at 16:47:12 UTC, 189.63s, exit 0.
+All 489 focused cases passed. RW passed 11 browser tests, 9.13s; RT and RB
+exited 0 (RB also validates Effect-free public types); RA exited 0. No in-scope,
+pre-existing or environmental test failure remains. RD passed: all 16 task/review
+files pass focused Prettier checking, `git diff --check` is clean, and the final
+scoped diff contains only repairs, regression evidence, docs and a patch changeset.
+
+### Independent review ledger
+
+Evidence names E1–E8, C1, G1–G5, R1–R6 and W1–W3 above identify exact tests.
+**G6** is the two new configured Codex planner-attempt cases. E2 additionally
+covers invalid owner syntax/name lengths, `.github` acceptance and all trusted
+hold/qualification collisions. G2 additionally asserts iteration-limit outcomes.
+Implementation symbols below refer to the reviewed source files in the file
+coverage table. Each receipt is new reviewer execution under the manifest above;
+only the integration owner's future check is pending-integration.
+
+| ID  | Requirement                                      | Implementation evidence                            | Test evidence                         | Receipt/applicability                                                                                         | Owner             | Status              |
+| --- | ------------------------------------------------ | -------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------- |
+| 01  | AC1/6: same web/CLI settings, save/reload        | Workflow load/save; HTTP routes; CLI runtime       | E1/E2/C1/W1                           | RF/RW, real persistence/child                                                                                 | reviewer          | pass                |
+| 02  | AC1: atomic invalid labels                       | Schema + validateProjectPolicy                     | E2 incl. trusted collisions           | RF, HTTP rejection + unchanged load                                                                           | reviewer          | pass                |
+| 03  | AC1: atomic repository validation                | Repository schema                                  | E2 incl. valid .github                | RF, HTTP rejection + reload                                                                                   | reviewer          | pass                |
+| 04  | AC1: atomic invalid limits                       | Limits schema                                      | E2                                    | RF, HTTP                                                                                                      | reviewer          | pass                |
+| 05  | AC1: atomic unknown gate/verifier refs           | validateProjectPolicy                              | E2                                    | RF, HTTP                                                                                                      | reviewer          | pass                |
+| 06  | AC1: standards/qualification preserved           | Save writes workflow only; frozen policy           | E1/E4                                 | RF, project artifacts/policy                                                                                  | reviewer          | pass                |
+| 07  | AC2: actual bounded concurrency + failures       | settleIssues; generated caller                     | E3/W1                                 | RF/RW, actual callbacks                                                                                       | reviewer          | pass                |
+| 08  | AC2: cycle stopping + recorded limit             | InitService generated MAX_ITERATIONS               | G2 both templates                     | RF, generated/provider/tracker                                                                                | reviewer          | pass                |
+| 09  | AC2/5: immutable active settings, next-run saves | Runtime freeze/digests/reopen                      | E3/E5/E7/C1                           | RF, SDK/HTTP/CLI                                                                                              | reviewer          | pass                |
+| 10  | AC3/6: explicit repo, project isolation          | Workflow repo + generated GH_REPO                  | E1/E2/C1/G1/G3/W3                     | RF/RW, upstream remote differs                                                                                | reviewer          | pass                |
+| 11  | AC3: completed/integrated dependencies           | Retained ReadinessPolicy + generated readiness     | R1/R2/G3                              | RF, real ancestry + fake tracker                                                                              | reviewer          | pass                |
+| 12  | AC3: authoritative holds                         | Effective hold union + admission                   | E4/E7/R5/G5 HOLD                      | RF, settings/proposals                                                                                        | reviewer          | pass                |
+| 13  | AC3: meta tasks excluded                         | Retained classification/admission                  | R5/G5 META                            | RF, generated workflow                                                                                        | reviewer          | pass                |
+| 14  | AC3: stale source/contracts rejected             | Retained admission + policy + checkout guards      | R2/R4/R5/G3                           | RF, edited source/tracker                                                                                     | reviewer          | pass                |
+| 15  | AC3: incomplete reviews cannot merge             | Generated completion/retained-review guards        | G3/R6                                 | RF, model/tracker boundaries                                                                                  | reviewer          | pass                |
+| 16  | AC4: report-only default; apply verifier         | Defaults/schema; retained readiness verify         | E1/E2/E4/R3/R4/W1                     | RF/RW, publication seam                                                                                       | reviewer          | pass                |
+| 17  | AC4: full contract/publication integrity         | Existing readiness/policy checks still called      | R2/R4/G3                              | RF, full-scope/readback faults                                                                                | reviewer          | pass                |
+| 18  | AC4/6: missing verifier, gate, qualification UI  | inspectWorkflow; diagnostics; text rendering       | E5/W1                                 | RF/RW, HTTP + browser                                                                                         | reviewer          | pass                |
+| 19  | AC5: project-owned commands, required gates      | Frozen declarations; execFile; required gate union | E2/E4/E7                              | RF, trusted subprocesses                                                                                      | reviewer          | pass                |
+| 20  | AC5: credential-free config/diagnostics          | Strict config; safe failures; public projection    | E2/E4/E5/W1                           | RF/RW, credential sentinel                                                                                    | reviewer          | pass                |
+| 21  | AC6: no-progress/qualification-only outcomes     | Generated reportOutcome + stopping                 | G4/R6/E5/W1                           | RF/RW, unfinished tasks open                                                                                  | reviewer          | pass                |
+| 22  | Parent: security/legacy compatibility            | Protected routes; project paths; legacy reopen     | E2/E6/E8 + Operator tests/W2          | RF/RW, origin/symlink/legacy                                                                                  | reviewer          | pass                |
+| 23  | AC6: docs/changesets                             | README/operator guide; minor + repair patch        | RA; full diff + changeset inventory   | RA/RD, English guide/public examples                                                                          | reviewer          | pass                |
+| 24  | Standards: affected package checks               | Effect/tagged errors/JSDoc; callers/exports        | RF/RT/RB                              | Linux build + Effect-free types                                                                               | reviewer          | pass                |
+| 25  | Integrated cumulative gate                       | verify-affected.sh                                 | Full package + Agent Map browser gate | bash .sandcastle/scripts/verify-affected.sh 256f63bf6ddf13f2301224e3571fd1d14ecd8bf8; exact integrated commit | integration owner | pending-integration |
+| 26  | Public planner retry limits                      | Generated MAX_PLANNER_ATTEMPTS                     | G6 limits 1/2                         | RP, invalid then valid model plan                                                                             | reviewer          | pass                |
+
+### Changed-file review coverage
+
+Every baseline-to-task diff was read completely per file or bounded group.
+The evidence-file diff was paginated, with overlapping rereads to recover output
+truncation. There are no opaque generated payloads in this change. The inline
+HTML/CSS/JS assets were reviewed as source and exercised through their built
+consumer. Repair diffs were inspected separately against the task HEAD.
+
+| File                                              | Review method and result                                                                                                                                 |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| .changeset/operator-workflow-settings.md          | Full diff; correct package/minor; all existing changesets checked for duplication. Pass.                                                                 |
+| README.md                                         | Full diff and operator entry point; documentation matches settings/diagnostics. Pass.                                                                    |
+| docs/evidence/issue-5.md                          | Full paginated diff; receipts treated as historical; independent criterion/file ledger added. Pass; final reviewer receipts recorded above.              |
+| docs/operator.md                                  | Full diff; ownership/schema/limits/API/security reviewed; examples executed with public SDK; validation repair documented. Pass.                         |
+| scripts/operator-workflow.browser.test.mjs        | Full diff; real browser/forms/HTTP, fake provider boundaries; two-project isolation/keyboard/error expectations. RW pass.                                |
+| src/InitService.ts                                | Full diff; CodeGraph node/callers; generation anchors and both reviewed templates inspected; actual generated consumers in RF. Pass; RF green.           |
+| src/OperatorCli.test.ts                           | Full diff; fixed CLI adapter/child/reopen reviewed; frozen and later settings observed through child. Pass; RF green.                                    |
+| src/OperatorGenerated.test.ts                     | Full diff + full consumer fixture; unchanged generated consumers execute built package at fake Docker boundary, Node/Android/auth/cache. Pass; RF green. |
+| src/OperatorRuntime.ts                            | Full diff; schema, digests/freezing/reopen, scheduler, subprocesses, diagnostics, public consumers reviewed. Pass; RF green.                             |
+| src/OperatorServer.ts                             | Full diff; surrounding host/origin/session/size guards, save/start lock, projection and error handling. Pass; RF green.                                  |
+| src/OperatorWorkflow.test.ts                      | Full diff; public SDK/HTTP behavior; strengthened independent valid/invalid identities + trusted policy collisions. Pass; focused and RF green.          |
+| src/OperatorWorkflow.ts                           | Full diff; validation/persistence/project paths/references and callers; R1/R2 repaired with tagged Effect errors. Pass; focused and RF green.            |
+| src/ReadinessWorkflow.test.ts                     | Full diff + fake boundaries/generation/policy fixtures; G2 diagnostics and G6 retry evidence strengthened. Pass; RP and RF green.                        |
+| src/index.ts                                      | Full diff; public functions/types consumed by SDK/browser/CLI; RB public declaration check. Pass.                                                        |
+| src/operatorAssets.ts                             | Full source diff; form IDs/validation/projection/text rendering/keyboard/navigation; actual browser consumption. RW pass.                                |
+| .changeset/operator-workflow-validation-review.md | Full new file; distinct patch for R1/R2, correct package, no duplicate patch. Pass.                                                                      |
+
+### Final reviewer receipt hashes
+
+| Receipt                                       | SHA-256                                                            |
+| --------------------------------------------- | ------------------------------------------------------------------ |
+| .sandcastle/logs/issue-5-review-focused.log   | `b82ab323a519828581fb47d04ffef8ab7f4c8a82793c3867dff61ed9d2b048bf` |
+| .sandcastle/logs/issue-5-review-planner.log   | `3273727cb58fd48a61a9f75e75186803fab83e3256ac1fd4e452d2047e35f4b2` |
+| .sandcastle/logs/issue-5-review-browser.log   | `38695e34a03a8fbfc4c3c806a2ec76b9a396072d36a672fb7becb96c5c4bcf1d` |
+| .sandcastle/logs/issue-5-review-typecheck.log | `e7c9d0c8beef624bc76156a9fdd7ca0359bdb3b4a6c3c32c0e308ea3239c65a7` |
+| .sandcastle/logs/issue-5-review-build.log     | `e65a9cdac92d90db38400f2f3e9dc3c1706982daccf70a283f2ca6bc229cc203` |
+
+All branch-required review rows pass, and all findings are repaired. Only the
+integration owner's exact integrated-source cumulative gate is pending. The
+committed candidate preserves the verified source/harness manifest; final
+ledger edits do not change executable inputs. Task 5 remains open. This review
+establishes branch readiness for integration and does not establish issue closure.
