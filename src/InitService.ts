@@ -1787,10 +1787,11 @@ const configureRoleRuntime = (
     const engine = sandboxProvider.cliNamespace;
     const imageBased = engine === "docker" || engine === "podman";
     if (imageBased) {
-      content = content.replace(
-        `import { ${engine} }`,
-        `import { ${engine}, defaultImageName }`,
-      );
+      if (engine === "podman")
+        content = content.replace(
+          `import { ${engine} }`,
+          `import { ${engine}, defaultImageName }`,
+        );
       content = content.replaceAll(
         `${engine}({`,
         `${engine}({ imageName: runtime.record.sandboxIdentity,`,
@@ -1805,7 +1806,7 @@ const configureRoleRuntime = (
   },
   sandboxIdentity: ${
     imageBased
-      ? `(await runHost("${engine}", ["image", "inspect", defaultImageName(process.cwd()), "--format", "{{.Id}}"])).trim()`
+      ? `(await runHost("${engine}", ["image", "inspect", ${engine === "docker" ? "(await sandcastle.loadEnvironmentConfig({ cwd: process.cwd() })).image" : "defaultImageName(process.cwd())"}, "--format", "{{.Id}}"])).trim()`
       : JSON.stringify(engine)
   },
 }`;

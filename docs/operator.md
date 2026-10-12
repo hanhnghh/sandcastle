@@ -16,8 +16,9 @@ credential values.
 
 **Start run** launches the project's existing reviewed workflow. New
 `parallel-planner-with-review` scaffolds selected with Codex and all `codex-afk`
-scaffolds consume shared runtime settings. Build the project's Docker/Podman
-image and install the workflow's dependencies (including tsx) first. The CLI
+scaffolds consume shared runtime settings. Use **Environment** to select/build
+a Docker image and run preflight. Podman images still use the existing CLI
+build command. Install the workflow's dependencies (including tsx) first. The CLI
 adapter resolves the image to its immutable ID and passes that frozen runtime
 to the one `.sandcastle/main.ts` or `main.mts`. It rejects legacy workflows
 that do not consume frozen configuration; it does not rewrite existing copied
@@ -73,6 +74,80 @@ failure preserves the last durable configuration. Revision is a digest, not a
 counter or concurrency token; competing saves use last successful write wins.
 Reads verify the stored revision. Pass the current loaded document to save
 rather than hand-writing a revision.
+
+## Docker environment and jobs
+
+**Environment** shows the configured name, installed host images, availability
+and resolved SHA-256 identity. Select an installed image or **Custom image name**,
+then press **Save environment**. Custom names may be unavailable until explicitly
+built or installed outside the operator. Saves persist to private, atomic
+`.sandcastle/environment.json`, isolated to the selected host project:
+
+```json
+{
+  "schemaVersion": 1,
+  "image": "sandcastle:my-project",
+  "dockerfile": ".sandcastle/Dockerfile",
+  "buildArgs": { "AGENT_UID": "1000" }
+}
+```
+
+`loadEnvironmentConfig({ cwd })` and `saveEnvironmentConfig({ cwd, config })`
+provide the same host automation interface. Missing settings use the project's
+existing default image name and `.sandcastle/Dockerfile`. Corrupt settings and
+configuration symlinks fail closed. Image names support repository/tag and
+SHA-256 digest references. Dockerfiles must be existing files inside the
+project: absolute paths, traversal, escaped symlinks, backslashes and shell
+syntax are rejected. Build argument keys are identifiers; values are literal
+letters/digits or `._/:@,+-`, up to 1,000 characters. The form accepts one
+`KEY=value` per line. Arguments are passed directly, without a host shell.
+Keep credentials in project-owned auth references rather than build arguments.
+Build context is the selected project root, with the configured Dockerfile.
+As with CLI builds, `AGENT_UID`/`AGENT_GID` default to the host UID/GID where
+available; explicitly saved arguments override those defaults.
+
+**Build image** and **Run preflight** start explicit asynchronous jobs using a
+snapshot of saved settings. Output streams into a keyboard-focusable log viewer;
+completed, failed and cancelled results remain visible across page reloads.
+The operator retains the last 20 jobs and up to 65,536 UTF-16 code units of
+output per job in this server session. Restarting the server starts a new job
+history; saved settings remain durable. Build output redacts declared secret
+environment values, including output split across chunks. Preflight discards
+raw diagnostic output and reports only safe prerequisite summaries.
+
+A build uses an owned temporary image tag and promotes the resolved image only
+after success. Failure/cancellation preserves the previously usable image and
+saved configuration. Cancel terminates the owned Docker process, escalating
+if necessary, and removes only owned temporary tags/preflight sandboxes. Once
+promotion starts, cancellation returns 409; wait for its terminal result.
+Closing the operator cancels its environment jobs and waits for cleanup.
+Ordinary Docker operations have a 30-second limit; builds have 30 minutes.
+Save never builds, removes images, publishes images, or changes project gates,
+bootstrap, branch-isolated caches or authentication mounts. Only an explicit
+build changes image contents. Role/prompt/image edits apply to the next run;
+active sandboxes use the frozen immutable image identity.
+
+Preflight checks Docker daemon access, selected image identity, actual image
+UID against the host UID, and required executable versions in ephemeral,
+network-disabled sandboxes without project/cache/auth mounts. Default tools
+are `git`, `gh`, `codex`; generated Node/npm profiles add `node`, `npm`, and
+Android profiles add `java`, `sdkmanager`. Project profiles declare isolated
+Codex auth at `.sandcastle/codex-home/auth.json`; an existing codex-home also
+declares it. Secret environment keys declared in `.sandcastle/.env` are checked
+using the existing environment resolver. Auth results explicitly mean file/value
+presence, not verified remote login. Missing declarations are reported as such;
+no credential contents are returned. Follow the project's existing login/setup
+instructions (for isolated Codex, `CODEX_HOME=.sandcastle/codex-home codex login`).
+
+Custom SDK adapters can declare `environment: { uid, tools, authFiles }`, using
+executable names and a mapping of safe status labels to trusted host credential
+file paths. HTTP cannot edit this policy. Custom adapters continue to own
+`sandboxIdentity()` and sandbox construction: resolve
+`(await loadEnvironmentConfig({ cwd })).image` through their Docker boundary
+and use `runtime.record.sandboxIdentity` while retaining project-owned options.
+The CLI adapter and new reviewed Docker scaffolds already do this. Existing
+copied workflows require explicit adoption; the operator does not rewrite them.
+Docker environment jobs do not alter existing Podman/provider contracts.
 
 ## Prompt customization and upgrades
 
@@ -196,15 +271,22 @@ Any supplied Origin must exactly match that host/port. All mutations additionall
 require that Origin and the HttpOnly, SameSite=Strict local session cookie
 established by opening `GET /`. There are no credential-valued APIs.
 
-| Route              | Behavior                                                                                             |
-| ------------------ | ---------------------------------------------------------------------------------------------------- |
-| `GET /api/prompts` | Effective role templates, ownership, default/base contents and versions, changed-default status      |
-| `PUT /api/prompts` | Exactly `{ "role": "implementer", "content": "..." }`; null content resets; returns resolved prompts |
-| `GET /api/config`  | Validated config, declared model/effort capability and selected project                              |
-| `PUT /api/config`  | Complete config document; returns the saved config/revision                                          |
-| `POST /api/run`    | Empty JSON object only; freezes settings, invokes the fixed adapter; 202 with ID/revision            |
-| `GET /api/run`     | Current operator-session run status and frozen settings/identity, excluding prompt contents          |
-| `GET /dashboard`   | Opens the project's read-only Agent Map                                                              |
+| Route                                      | Behavior                                                                                                   |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `GET /api/environment`                     | Saved environment config, installed images, availability and resolved identity                             |
+| `PUT /api/environment`                     | Complete validated environment document; atomic save only                                                  |
+| `POST /api/environment/jobs`               | Exactly `{ "kind": "build" }` or `{ "kind": "preflight" }`; 202 with job snapshot                          |
+| `GET /api/environment/jobs`                | Last 20 operator-session jobs, including latest logs/results                                               |
+| `GET /api/environment/jobs/<UUID>`         | Project-session job snapshot and terminal result                                                           |
+| `GET /api/environment/jobs/<UUID>/events`  | SSE `data` messages containing snapshots; bounded log replay, then live updates; closes at terminal status |
+| `POST /api/environment/jobs/<UUID>/cancel` | Empty object; 202 after requesting cancellation, 409 during promotion                                      |
+| `GET /api/prompts`                         | Effective role templates, ownership, default/base contents and versions, changed-default status            |
+| `PUT /api/prompts`                         | Exactly `{ "role": "implementer", "content": "..." }`; null content resets; returns resolved prompts       |
+| `GET /api/config`                          | Validated config, declared model/effort capability and selected project                                    |
+| `PUT /api/config`                          | Complete config document; returns the saved config/revision                                                |
+| `POST /api/run`                            | Empty JSON object only; freezes settings, invokes the fixed adapter; 202 with ID/revision                  |
+| `GET /api/run`                             | Current operator-session run status and frozen settings/identity, excluding prompt contents                |
+| `GET /dashboard`                           | Opens the project's read-only Agent Map                                                                    |
 
 Mutations require `Content-Type: application/json` and at most 16 KiB.
 Invalid config/body returns 400 with actionable diagnostics; invalid session,

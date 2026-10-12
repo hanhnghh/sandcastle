@@ -20,7 +20,7 @@ test("operator CLI serves only its explicit project and hands its frozen runtime
   const bin = join(cwd, "bin");
   await mkdir(configDir);
   await mkdir(bin);
-  await writeFile(join(configDir, "Dockerfile"), "FROM fixture");
+  await writeFile(join(configDir, "Dockerfile.custom"), "FROM fixture");
   await writeFile(
     join(cwd, "package.json"),
     JSON.stringify({ type: "module" }),
@@ -34,20 +34,31 @@ test("operator CLI serves only its explicit project and hands its frozen runtime
     await writeFile(join(configDir, role + "-prompt.md"), role + " prompt");
   await writeFile(
     join(bin, "docker"),
-    "#!/usr/bin/env sh\nprintf 'sha256:" + "a".repeat(64) + "\\n'\n",
+    `#!/usr/bin/env node
+import fs from 'node:fs'; const args = process.argv.slice(2);
+fs.appendFileSync('docker-calls.jsonl', JSON.stringify(args)+'\\n');
+if(args[0]==='image' && args[1]==='inspect') console.log(args.includes('{{.Config.User}}') ? '' : 'sha256:'+(args.includes('fixture:selected') ? 'b' : args.includes('fixture:next') ? 'c' : 'a').repeat(64));
+`,
   );
   await chmod(join(bin, "docker"), 0o755);
   await writeFile(
     join(configDir, "main.mts"),
     `
 import * as sandcastle from ${JSON.stringify(pathToFileURL(join(process.cwd(), "dist/index.js")).href)};
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, access } from "node:fs/promises";
+import { docker } from ${JSON.stringify(pathToFileURL(join(process.cwd(), "dist/sandboxes/docker.js")).href)};
 const runtime = await sandcastle.openProjectRuntime({ cwd: process.cwd(), id: process.env.SANDCASTLE_RUNTIME_ID });
+const provider = docker({imageName:runtime.record.sandboxIdentity, mounts:[{hostPath:'.sandcastle',sandboxPath:'/home/agent/.codex'}]});
+const handle = await provider.create({hostRepoPath:process.cwd(),worktreePath:process.cwd(),mounts:[{hostPath:process.cwd(),sandboxPath:'/home/agent/workspace'}],env:{}});
+await handle.close();
 await writeFile(".sandcastle/observed.json", JSON.stringify({
   id: runtime.record.id, model: runtime.record.config.roles.planner.model,
   effort: runtime.record.config.roles.planner.effort, image: runtime.record.sandboxIdentity,
   prompt: await readFile(runtime.promptFile("implementer"), "utf8"),
 }));
+if (runtime.record.sandboxIdentity === 'sha256:'+'b'.repeat(64)) {
+  while(true) {try {await access('.sandcastle/release'); break;} catch {await new Promise(resolve=>setTimeout(resolve,20));}}
+}
 `,
   );
   const child = spawn(
@@ -107,10 +118,50 @@ await writeFile(".sandcastle/observed.json", JSON.stringify({
         })
       ).status,
     ).toBe(200);
+    const environment = {
+      schemaVersion: 1,
+      image: "fixture:selected",
+      dockerfile: ".sandcastle/Dockerfile.custom",
+      buildArgs: {},
+    };
+    expect(
+      (
+        await fetch(url + "/api/environment", {
+          method: "PUT",
+          headers,
+          body: JSON.stringify(environment),
+        })
+      ).status,
+    ).toBe(200);
     expect(
       (await fetch(url + "/api/run", { method: "POST", headers, body: "{}" }))
         .status,
     ).toBe(202);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try {
+        await readFile(join(configDir, "observed.json"));
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    expect(
+      (
+        await fetch(url + "/api/environment", {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({ ...environment, image: "fixture:next" }),
+        })
+      ).status,
+    ).toBe(200);
+    const active = (await (await fetch(url + "/api/run")).json()) as {
+      run: { sandboxIdentity: string; status: string };
+    };
+    expect(active.run).toMatchObject({
+      sandboxIdentity: "sha256:" + "b".repeat(64),
+      status: "running",
+    });
+    await writeFile(join(configDir, "release"), "done");
     let status = "running";
     for (let attempt = 0; status === "running" && attempt < 100; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -126,7 +177,7 @@ await writeFile(".sandcastle/observed.json", JSON.stringify({
     expect(observed).toMatchObject({
       model: "cli-selected",
       effort: "medium",
-      image: "sha256:" + "a".repeat(64),
+      image: "sha256:" + "b".repeat(64),
       prompt: "CLI selected prompt",
     });
     const current = (await (await fetch(url + "/api/run")).json()) as {
@@ -169,7 +220,27 @@ await writeFile(".sandcastle/observed.json", JSON.stringify({
     expect(nextObserved).toMatchObject({
       id: nextRun.id,
       prompt: "CLI next prompt",
+      image: "sha256:" + "c".repeat(64),
     });
+    const calls = (await readFile(join(cwd, "docker-calls.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    const starts = calls.filter((args) => args[0] === "run");
+    expect(starts.map((args) => args.at(-1))).toEqual([
+      "sha256:" + "b".repeat(64),
+      "sha256:" + "c".repeat(64),
+    ]);
+    expect(
+      starts.every((args) =>
+        args.some((arg) => arg.includes("/home/agent/.codex")),
+      ),
+    ).toBe(true);
+    expect(
+      calls.some((args) =>
+        ["build", "push", "prune", "rmi"].includes(args[0]!),
+      ),
+    ).toBe(false);
   } finally {
     child.kill("SIGTERM");
     await closed;

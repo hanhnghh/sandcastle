@@ -1,7 +1,21 @@
+import { resolveEnv } from "./EnvResolver.js";
+import {
+  inspectEnvironment,
+  saveEnvironmentConfig,
+  loadEnvironmentConfig,
+  buildEnvironmentEffect,
+  preflightEnvironmentEffect,
+  type EnvironmentPolicy,
+} from "./OperatorEnvironment.js";
 import { loadProjectPrompts, saveProjectPrompt } from "./OperatorPrompts.js";
+import { NodeFileSystem } from "@effect/platform-node";
 import { Cause, Effect, Option, Runtime } from "effect";
-import { randomBytes } from "node:crypto";
-import { createServer, type IncomingMessage } from "node:http";
+import { randomBytes, randomUUID } from "node:crypto";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { resolve } from "node:path";
 import { startDashboard, type DashboardServer } from "./AgentMap.js";
 import {
@@ -23,6 +37,8 @@ import {
 
 /** Project-owned execution policy; HTTP can only request this fixed workflow. */
 export interface OperatorProjectAdapter {
+  /** Trusted Docker preflight declarations for custom project sandbox policy. */
+  environment?: EnvironmentPolicy;
   /** Project prompt paths; never supplied by HTTP. */
   promptFiles: ProjectRuntimeOptions["promptFiles"];
   /** Resolve the sandbox identity before admitting the run. */
@@ -91,6 +107,41 @@ export const startOperator = (options: {
       yield* attempt(() => loadRoleConfig({ cwd }));
       const dashboard = yield* attempt(() => startDashboard({ cwd, port: 0 }));
       const token = randomBytes(32).toString("hex");
+      type Job = {
+        id: string;
+        kind: "build" | "preflight";
+        status:
+          | "running"
+          | "cancelling"
+          | "promoting"
+          | "completed"
+          | "failed"
+          | "cancelled";
+        config: Awaited<ReturnType<typeof loadEnvironmentConfig>>;
+        logs: string;
+        identity?: string;
+        error?: string;
+      };
+      type EnvironmentJob = {
+        state: Job;
+        controller: AbortController;
+        listeners: Set<ServerResponse>;
+        done: Promise<void>;
+      };
+      const jobs = new Map<string, EnvironmentJob>();
+      const notify = (job: EnvironmentJob) => {
+        for (const response of job.listeners) {
+          if (response.writableLength > 131072) {
+            response.destroy();
+            continue;
+          }
+          response.write(`data: ${JSON.stringify(job.state)}\n\n`);
+          if (
+            !["running", "cancelling", "promoting"].includes(job.state.status)
+          )
+            response.end();
+        }
+      };
       let running = false;
       let current:
         | {
@@ -181,6 +232,229 @@ export const startOperator = (options: {
               response.writeHead(302, { Location: dashboard.url });
               response.end();
               return;
+            }
+            if (
+              url.pathname === "/api/environment/jobs" &&
+              request.method === "GET"
+            ) {
+              response.end(
+                JSON.stringify({
+                  jobs: [...jobs.values()].map((job) => job.state),
+                }),
+              );
+              return;
+            }
+            if (
+              url.pathname === "/api/environment/jobs" &&
+              request.method === "POST"
+            ) {
+              const body = yield* requestBody(request);
+              if (
+                !body ||
+                typeof body !== "object" ||
+                Array.isArray(body) ||
+                Object.keys(body).join(",") !== "kind" ||
+                !["build", "preflight"].includes(
+                  (body as { kind: string }).kind,
+                )
+              )
+                return yield* Effect.fail(
+                  new RequestError(
+                    400,
+                    "Job accepts exactly kind: build or preflight",
+                  ),
+                );
+              const job = yield* lock.withPermits(1)(
+                Effect.gen(function* () {
+                  if (
+                    [...jobs.values()].some((job) =>
+                      ["running", "cancelling", "promoting"].includes(
+                        job.state.status,
+                      ),
+                    )
+                  )
+                    return yield* Effect.fail(
+                      new RequestError(
+                        409,
+                        "An environment job is already active",
+                      ),
+                    );
+                  const config = yield* attempt(() =>
+                    loadEnvironmentConfig({ cwd }),
+                  );
+                  const id = randomUUID();
+                  const state: Job = {
+                    id,
+                    kind: (body as { kind: "build" | "preflight" }).kind,
+                    status: "running",
+                    config,
+                    logs: "",
+                  };
+                  const job: EnvironmentJob = {
+                    state,
+                    controller: new AbortController(),
+                    listeners: new Set<ServerResponse>(),
+                    done: Promise.resolve(),
+                  };
+                  jobs.set(id, job);
+                  return job;
+                }),
+              );
+              const { state } = job;
+              const { config, id } = state;
+              // Retain a bounded session history; never evict the active job.
+              if (jobs.size > 20) jobs.delete(jobs.keys().next().value!);
+              const declaredEnv = yield* resolveEnv(cwd).pipe(
+                Effect.provide(NodeFileSystem.layer),
+              );
+              const secrets = Object.entries({ ...process.env, ...declaredEnv })
+                .filter(
+                  ([key, value]) =>
+                    /token|secret|password|api_key/i.test(key) &&
+                    value &&
+                    value.length > 0,
+                )
+                .flatMap(([, value]) =>
+                  value!.split(/[\r\n]+/).filter(Boolean),
+                );
+              const onLog = (text: string) => {
+                for (const secret of secrets)
+                  text = text.split(secret).join("[redacted]");
+                state.logs = (state.logs + text).slice(-65536);
+                notify(job);
+              };
+              job.done = Effect.runPromise(
+                (state.kind === "build"
+                  ? buildEnvironmentEffect(
+                      cwd,
+                      config,
+                      id,
+                      job.controller.signal,
+                      onLog,
+                      () => {
+                        state.status = "promoting";
+                        notify(job);
+                      },
+                      secrets,
+                    )
+                  : preflightEnvironmentEffect(
+                      cwd,
+                      config,
+                      id,
+                      job.controller.signal,
+                      onLog,
+                      options.adapter.environment,
+                    )
+                ).pipe(
+                  Effect.provide(NodeFileSystem.layer),
+                  Effect.catchAllCause((cause) => {
+                    const failure = Cause.failureOption(cause);
+                    return Effect.fail(
+                      Option.isSome(failure) &&
+                        failure.value instanceof OperatorError
+                        ? failure.value
+                        : new OperatorError({
+                            message:
+                              "Environment operation failed; check project declarations and Docker",
+                          }),
+                    );
+                  }),
+                  Effect.match({
+                    onSuccess: (identity) => {
+                      state.identity = identity;
+                      state.status = "completed";
+                    },
+                    onFailure: (error) => {
+                      state.status = job.controller.signal.aborted
+                        ? "cancelled"
+                        : "failed";
+                      state.error =
+                        state.status === "cancelled"
+                          ? "Environment job cancelled; previous image/configuration retained"
+                          : error instanceof OperatorError
+                            ? error.message
+                            : "Environment job failed; check Dockerfile and project permissions";
+                    },
+                  }),
+                  Effect.tap(() => Effect.sync(() => notify(job))),
+                ),
+              );
+              response.writeHead(202);
+              response.end(JSON.stringify(state));
+              return;
+            }
+            const jobRoute =
+              /^\/api\/environment\/jobs\/([a-f0-9-]+)(?:\/(events|cancel))?$/.exec(
+                url.pathname,
+              );
+            if (jobRoute) {
+              const job = jobs.get(jobRoute[1]!);
+              if (!job)
+                return yield* Effect.fail(
+                  new RequestError(404, "Unknown environment job"),
+                );
+              if (request.method === "GET" && !jobRoute[2]) {
+                response.end(JSON.stringify(job.state));
+                return;
+              }
+              if (request.method === "GET" && jobRoute[2] === "events") {
+                response.setHeader("Content-Type", "text/event-stream");
+                response.write(`data: ${JSON.stringify(job.state)}\n\n`);
+                if (
+                  !["running", "cancelling", "promoting"].includes(
+                    job.state.status,
+                  )
+                )
+                  response.end();
+                else {
+                  job.listeners.add(response);
+                  response.on("close", () => job.listeners.delete(response));
+                }
+                return;
+              }
+              if (request.method === "POST" && jobRoute[2] === "cancel") {
+                const body = yield* requestBody(request);
+                if (
+                  !body ||
+                  typeof body !== "object" ||
+                  Array.isArray(body) ||
+                  Object.keys(body).length
+                )
+                  return yield* Effect.fail(
+                    new RequestError(400, "Cancel accepts an empty object"),
+                  );
+                if (job.state.status === "promoting")
+                  return yield* Effect.fail(
+                    new RequestError(
+                      409,
+                      "Image promotion is already committing; wait for the terminal result",
+                    ),
+                  );
+                if (job.state.status === "running") {
+                  job.state.status = "cancelling";
+                  job.controller.abort();
+                  notify(job);
+                }
+                response.writeHead(202);
+                response.end(JSON.stringify(job.state));
+                return;
+              }
+            }
+            if (url.pathname === "/api/environment") {
+              if (request.method === "GET") {
+                response.end(
+                  JSON.stringify(yield* attempt(() => inspectEnvironment(cwd))),
+                );
+                return;
+              }
+              if (request.method === "PUT") {
+                const config = yield* requestBody(request);
+                const saved = yield* lock.withPermits(1)(
+                  attempt(() => saveEnvironmentConfig({ cwd, config })),
+                );
+                response.end(JSON.stringify({ config: saved }));
+                return;
+              }
             }
             if (url.pathname === "/api/prompts") {
               const promptOptions = {
@@ -381,6 +655,11 @@ export const startOperator = (options: {
         close: () =>
           Effect.runPromise(
             Effect.gen(function* () {
+              for (const job of jobs.values())
+                if (job.state.status === "running") job.controller.abort();
+              yield* attempt(() =>
+                Promise.all([...jobs.values()].map((job) => job.done)),
+              );
               yield* Effect.async<void>((resume) => {
                 server.closeAllConnections();
                 server.close(() => resume(Effect.void));
