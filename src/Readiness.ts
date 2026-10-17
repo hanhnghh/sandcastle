@@ -161,6 +161,15 @@ export interface GitHubReadinessOptions {
   publishBody?: boolean;
   /** Related parent/spec issue IDs outside execution scope, included in freshness checks but never published. */
   contextIssueNumbers?: number[];
+  /**
+   * After a merge, assess only issues whose readiness can have changed:
+   * dependents of the merged issues, issues whose body or comments mention a
+   * file changed by the merge, and issues carrying `reassessLabel`
+   * (default `readiness:reassess`). Ignored for startup; falls back to a full
+   * assessment when the changed files cannot be computed. Issues outside the
+   * set keep their previous readiness record.
+   */
+  incremental?: boolean | { reassessLabel?: string };
   /** Why this reconciliation is running. */
   trigger: ReadinessTrigger;
   /** Read-only assessment callback. The host distrusts and validates its output. */
@@ -757,6 +766,50 @@ export function loadGitHubReadinessInventory(
   );
 }
 
+/** Inputs of an incremental readiness selection. */
+export interface IncrementalReadinessInput {
+  /** Repository of the merged issues. */
+  repository: string;
+  /** Issues closed by the merge. */
+  closedIssues: number[];
+  /** Repository-relative files changed by the merge. */
+  changedFiles: string[];
+  /** Label that always requests reassessment. Default readiness:reassess. */
+  reassessLabel?: string;
+}
+
+/**
+ * Issue numbers whose readiness can have changed after a merge: dependents of
+ * a closed issue, issues whose body or comments mention a changed file path,
+ * and issues labelled for reassessment. Sorted ascending.
+ */
+export function selectIncrementalReadiness(
+  issues: readonly ReadinessIssue[],
+  input: IncrementalReadinessInput,
+): number[] {
+  const closed = new Set(input.closedIssues);
+  const label = input.reassessLabel ?? "readiness:reassess";
+  // Very short paths would match unrelated prose; require a path-like name.
+  const paths = input.changedFiles.filter(
+    (file) => file.length >= 4 && /[./]/.test(file),
+  );
+  return issues
+    .filter(
+      (issue) =>
+        issue.labels.includes(label) ||
+        issue.dependencies.some(
+          (dependency) =>
+            dependency.repository === input.repository &&
+            closed.has(dependency.number),
+        ) ||
+        [issue.body, ...issue.comments.map((comment) => comment.body)].some(
+          (text) => paths.some((path) => text.includes(path)),
+        ),
+    )
+    .map((issue) => issue.number)
+    .sort((a, b) => a - b);
+}
+
 const reassessEffect = (options: GitHubReadinessOptions) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -784,6 +837,16 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
     const persist = () =>
       writePrivateRecord(fs, auditPath, JSON.stringify(audit, null, 2));
     let sourceBranch = "";
+    // Incremental scope is fixed once from the first snapshot so freshness
+    // rechecks compare the same issues even if publication edits bodies.
+    let scope: Set<number> | null = null;
+    const restrict = (value: ReadinessSnapshot): ReadinessSnapshot =>
+      scope
+        ? {
+            ...value,
+            issues: value.issues.filter((issue) => scope!.has(issue.number)),
+          }
+        : value;
     yield* persist();
     const outcome = yield* Effect.gen(function* () {
       const input = yield* attempt(async () => {
@@ -819,7 +882,40 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
               fail(`Merged issue #${number} is not closed as completed`);
           }
         }
-        const input = await snapshot(options, head);
+        const full = await snapshot(options, head);
+        if (options.incremental && options.trigger.kind === "post-merge") {
+          const trigger = options.trigger;
+          const changedFiles = await git(
+            options.cwd,
+            "diff",
+            "--name-only",
+            trigger.base,
+            head,
+          )
+            .then((out) => out.split("\n").filter(Boolean))
+            .catch(() => null);
+          if (changedFiles) {
+            const selected = selectIncrementalReadiness(full.issues, {
+              repository: options.repository,
+              closedIssues: trigger.issues,
+              changedFiles,
+              ...(typeof options.incremental === "object" &&
+              options.incremental.reassessLabel
+                ? { reassessLabel: options.incremental.reassessLabel }
+                : {}),
+            });
+            scope = new Set(selected);
+            audit.scope = {
+              mode: "incremental",
+              selected,
+              excluded: full.issues
+                .map((issue) => issue.number)
+                .filter((number) => !scope!.has(number)),
+            };
+          } else
+            audit.scope = { mode: "full", reason: "changed files unavailable" };
+        } else audit.scope = { mode: "full" };
+        const input = restrict(full);
         if (
           input.issues.some(
             (issue) =>
@@ -973,7 +1069,7 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
             )
           ).flat();
           await assertSource();
-          if (!same(input, await snapshot(options, head)))
+          if (!same(input, restrict(await snapshot(options, head))))
             fail("Tracker changed during readiness assessment");
           return changes;
         });
@@ -1062,7 +1158,7 @@ const reassessEffect = (options: GitHubReadinessOptions) =>
         }
         yield* attempt(assertSource);
         yield* attempt(async () => {
-          if (!same(published, await snapshot(options, head)))
+          if (!same(published, restrict(await snapshot(options, head))))
             fail(
               "Tracker changed during publication; reconcile the journal against a fresh snapshot",
             );

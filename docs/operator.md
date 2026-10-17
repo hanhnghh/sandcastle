@@ -155,6 +155,142 @@ Claude Code role does not see `OPENAI_API_KEY`. Multi-vendor agents (`pi`,
 example `GH_TOKEN` or project variables) are untouched, and providers created
 directly with `codex(...)`, `claudeCode(...)` etc. are not scoped.
 
+### Cross-provider review
+
+A reviewer on a different provider from the implementer gives an independent
+second opinion. Defaults are unchanged (all roles Codex).
+
+- **Preset.** In the operator web, **Use cross-provider review preset** sets the
+  reviewer to Claude Code (`claude-opus-5-5`, effort high), or to Codex when the
+  implementer already uses Claude Code; press **Save settings** to apply. From
+  host automation use `applyCrossProviderReviewPreset(config)`, which changes
+  only the reviewer and returns a version-two document.
+- **Policy.** Set `"review": { "requireDifferentProvider": true }` in
+  `.sandcastle/workflow.json` (or tick **Require a different reviewer provider**
+  in the workflow form). Run admission then fails with an actionable message when
+  any provider the reviewer can run on — primary or fallback — is also one the
+  implementer can run on. `reviewProviderConflict(config)` returns that message
+  or `null`. The option is absent (off) by default.
+- **Instructions.** Codex, OpenCode, pi, Copilot and Cursor read `AGENTS.md`;
+  Claude Code reads `CLAUDE.md`. When a saved configuration lets any role run on
+  Claude Code and the project has `AGENTS.md` but no `CLAUDE.md`, the operator
+  (and init) create a `CLAUDE.md` containing `@AGENTS.md`, so instructions are
+  not duplicated. An existing `CLAUDE.md` is never modified; if it does not
+  import `AGENTS.md`, the save message says so. Host automation can call
+  `ensureProviderInstructions({ cwd, config })`.
+- **Protocol.** Bundled prompts are provider-neutral and completion remains the
+  `<promise>COMPLETE</promise>` text, which every supported provider's stream
+  parser surfaces.
+- **Observation.** Agent Map shows each node's provider, model and effort, so
+  implementer and reviewer providers are distinguishable, plus any fallback
+  attempts.
+
+### Review → repair loop
+
+The `parallel-planner-with-review` workflow replaces single-pass review with a
+bounded loop:
+
+1. The reviewer ends with a structured verdict before the completion signal:
+
+   ```text
+   <review-verdict>{"verdict":"changes-requested","summary":"…","findings":[{"id":"F1","severity":"major","file":"src/a.ts","line":12,"change":"…"}]}</review-verdict>
+   <promise>COMPLETE</promise>
+   ```
+
+   `verdict` is `approve`, `changes-requested` or `blocked` (`blocked` emits
+   `<promise>BLOCKED</promise>` instead). `changes-requested` needs at least one
+   finding; `approve` may list only `minor` findings; ids are unique.
+
+2. On `changes-requested` the implementer runs again in the same sandbox with
+   the findings as `{{REVIEW_FINDINGS}}`, then the reviewer re-reviews
+   (`{{REVIEW_ROUND}}`).
+3. Only an `approve` verdict with the completion signal admits the branch to
+   merge. A `blocked` verdict, a blocked repair, an exhausted budget, or missing
+   or malformed reviewer output (fails closed) keep the branch unmerged; other
+   issues continue.
+
+Set the budget with `"review": { "maxRepairRounds": 2 }` in
+`.sandcastle/workflow.json` or **Review repair rounds** in the workflow form
+(0–5, default 2). `0` restores single-pass review: the reviewer may repair in
+place and a plain `<promise>COMPLETE</promise>` is accepted.
+
+Agent Map records each review's verdict, summary and findings; a
+`changes-requested` or invalid review shows as `stopped`, and repair runs appear
+as implementer nodes titled "(repair N)". Host automation can use
+`runReviewLoop`, `withReviewVerdict`, `parseReviewVerdict` and
+`formatReviewFindings`.
+
+Projects with customized prompts: the implementer prompt gains
+`{{REVIEW_FINDINGS}}` and the reviewer prompt `{{REVIEW_ROUND}}` and
+`{{REVIEW_REPAIR_ROUNDS}}`, plus the verdict instructions. A customized reviewer
+prompt without the verdict instructions fails closed (`invalid-review`) unless
+`maxRepairRounds` is `0`.
+
+### Task retries and the provider circuit breaker
+
+Each issue pipeline in `parallel-planner-with-review` runs through
+`runTaskWithRetries`. A failed attempt is classified:
+
+| Class            | Meaning                                                                         | Retried                |
+| ---------------- | ------------------------------------------------------------------------------- | ---------------------- |
+| `provider`       | the agent failed with a classified provider failure after its fallback chain    | yes, within the budget |
+| `infrastructure` | sandbox, worktree, copy, sync or lifecycle timeout errors                       | yes, within the budget |
+| `task`           | anything else: blocked or unapproved work, prompt errors, failed implementation | never                  |
+
+Retries reuse the retained branch in a fresh sandbox, and the implementer node
+is titled "(retry N)". A shared circuit breaker counts consecutive provider
+failures across issues (task failures do not reset it; a success does). Once it
+opens, no new pipeline starts, running pipelines finish, and the run stops with
+the `provider-unavailable` diagnostic instead of planning further batches.
+
+Configure in `.sandcastle/workflow.json` `limits`:
+`"taskRetries": 1` (0–3, default 1) and `"consecutiveProviderFailures": 3`
+(1–20, default 3). Host automation can use `runTaskWithRetries`,
+`classifyPipelineFailure` and `createCircuitBreaker`.
+
+### Merge mode
+
+`parallel-planner-with-review` integrates approved branches in one of two modes,
+set by `"merge": { "mode": "batch" }` in `.sandcastle/workflow.json` or **Merge
+mode** in the workflow form:
+
+- **`batch`** (default, unchanged): after every pipeline settles, one merger
+  integrates all approved branches.
+- **`per-branch`**: each approved branch enters a FIFO queue as soon as its
+  review approves; a single consumer runs the merger for one branch at a time on
+  the integration checkout while other pipelines keep running in their
+  worktrees.
+
+Both modes keep the same guards for every merge: the checkout is clean and at
+the expected head before the merger starts; afterwards the head must have
+advanced, be clean, on the planned branch, and contain the base and every merged
+branch; then post-merge readiness/verification runs for exactly those branches.
+In `per-branch` mode a merge that fails while leaving the checkout untouched
+(for example a blocked merger) only retains that branch; any failure that
+changed the checkout, or a failed post-merge verification, stops the queue.
+Planning the next batch still waits for every pipeline and the queue to settle.
+
+### Incremental readiness
+
+After a merge, `parallel-planner-with-review` reassesses only issues whose
+readiness can have changed (`incremental` option of `reassessGitHubReadiness`):
+
+- issues that depend on an issue closed by the merge (same repository);
+- issues whose body or comments mention a file changed by the merge
+  (`git diff --name-only base HEAD`; names shorter than 4 characters or without
+  `.`/`/` are ignored to avoid matching prose);
+- issues labelled `readiness:reassess`.
+
+Issues outside that set are not sent to the assessor and keep their previous
+readiness record; if the set is empty no assessment runs. The selection is fixed
+from the first snapshot, so freshness rechecks compare the same issues. The
+startup assessment is always full, every `readiness.fullEvery` post-merge
+assessments (default 5) is full, and a full assessment is used whenever the
+changed files cannot be computed. The audit record states the scope
+(`incremental` with selected/excluded numbers, or `full`). Configure with
+`"readiness": { "fullEvery": 5 }` in `.sandcastle/workflow.json`;
+`selectIncrementalReadiness` exposes the selection rules.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation

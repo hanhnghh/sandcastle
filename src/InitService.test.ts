@@ -1935,11 +1935,11 @@ android {
         join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      // Reviewer result must be captured, not discarded
-      expect(mainTs).toContain("const review = await agentMap.track");
-      // Commits from both implementer and reviewer must be merged
+      // The review loop result must be captured, not discarded
+      expect(mainTs).toContain("const loop = await sandcastle.runReviewLoop");
+      // Commits from the implementer and every review/repair run must be merged
       expect(mainTs).toContain("implement.commits");
-      expect(mainTs).toContain("review.commits");
+      expect(mainTs).toContain("...implementationCommits, ...loop.commits");
     });
 
     it("main.mts uses Promise.allSettled for parallel execution", async () => {
@@ -2054,7 +2054,17 @@ android {
       expect(main).toContain("const batchBaseSha = planned.head;");
       expect(main).toContain("baseBranch: batchBaseSha");
       expect(main).not.toContain("execFileSync");
-      expect(main).toContain("BATCH_BASE_SHA: batchBaseSha");
+      // The merge base is the integration head before this merge; in batch
+      // mode that is the immutable batch base (planned.head).
+      expect(main).toContain("let integrationHead = planned.head;");
+      expect(main).toContain("const base = integrationHead;");
+      expect(main).toContain("BATCH_BASE_SHA: base");
+      // Post-merge readiness is incremental with a periodic full assessment.
+      expect(main).toContain("const READINESS_FULL_EVERY = 5;");
+      expect(main).toContain(
+        "++postMergeAssessments % READINESS_FULL_EVERY !== 0",
+      );
+      expect(main).toMatch(/trigger,\s*incremental,/);
       expect(prompt).toContain("{{BATCH_BASE_SHA}}");
       expect(prompt).toContain(
         "git diff --name-only {{BATCH_BASE_SHA}}...HEAD",

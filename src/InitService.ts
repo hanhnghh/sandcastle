@@ -1,5 +1,6 @@
 import { wireReviewedRuntime } from "./ReviewedRuntime.js";
 import { defaultRoleConfig, saveRoleConfigEffect } from "./Operator.js";
+import { ensureProviderInstructionsEffect } from "./ReviewProviders.js";
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname, join } from "node:path";
@@ -1755,11 +1756,22 @@ const configureRoleRuntime = (
           }),
       ),
     );
-    yield* saveRoleConfigEffect({
+    const roleConfig = yield* saveRoleConfigEffect({
       cwd: dirname(configDir),
       config: defaultRoleConfig(model),
     }).pipe(
       Effect.mapError((error) => new InitError({ message: error.message })),
+    );
+    yield* ensureProviderInstructionsEffect(
+      dirname(configDir),
+      roleConfig,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new InitError({
+            message: "Cannot write CLAUDE.md for Claude Code roles",
+          }),
+      ),
     );
     const ignorePath = join(configDir, ".gitignore");
     const ignore = yield* fs

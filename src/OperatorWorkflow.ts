@@ -62,6 +62,10 @@ export const workflowConfigSchema = z
         concurrency: z.number().int().min(1).max(100),
         /** Maximum retries of invalid planner output per round. */
         plannerAttempts: z.number().int().min(1).max(10),
+        /** Extra attempts per issue for provider/infrastructure failures. Default 1. */
+        taskRetries: z.number().int().min(0).max(3).optional(),
+        /** Consecutive provider failures that stop new pipelines. Default 3. */
+        consecutiveProviderFailures: z.number().int().min(1).max(20).optional(),
       })
       .strict(),
     /** Publication mode and trusted host command references. */
@@ -71,6 +75,8 @@ export const workflowConfigSchema = z
         mode: z.enum(["report-only", "apply"]),
         /** Selected trusted verifier reference, never a command. */
         verifier: reference.nullable(),
+        /** Run a full readiness assessment at least every N merges (incremental otherwise). Default 5. */
+        fullEvery: z.number().int().min(1).max(100).optional(),
         /** Additional project gate references; required gates cannot be removed. */
         gates: z
           .array(reference)
@@ -81,6 +87,31 @@ export const workflowConfigSchema = z
           ),
       })
       .strict(),
+    /** Merge policy. Absent means batch integration. */
+    merge: z
+      .object({
+        /** "batch" (default) or "per-branch" integration as branches are approved. */
+        mode: z.enum(["batch", "per-branch"]),
+      })
+      .strict()
+      .optional(),
+    /** Review policy. Absent means every option uses its default. */
+    review: z
+      .object({
+        /**
+         * Refuse run admission when the reviewer could run on a provider the
+         * implementer could also run on, including configured fallbacks.
+         * Default false.
+         */
+        requireDifferentProvider: z.boolean().optional(),
+        /**
+         * Implementer repair rounds after a changes-requested verdict.
+         * Default 2; 0 restores single-pass review.
+         */
+        maxRepairRounds: z.number().int().min(0).max(5).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((config, ctx) => {

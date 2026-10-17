@@ -75,6 +75,24 @@ const nodeSchema = z.object({
     )
     .optional(),
   error: z.string().optional(),
+  review: z
+    .object({
+      verdict: z.enum(["approve", "changes-requested", "blocked", "invalid"]),
+      summary: z.string().optional(),
+      findings: z
+        .array(
+          z.object({
+            id: z.string(),
+            severity: z.string(),
+            file: z.string().optional(),
+            line: z.number().optional(),
+            change: z.string(),
+          }),
+        )
+        .default([]),
+      error: z.string().optional(),
+    })
+    .optional(),
   sessionId: z.string().optional(),
   commits: z.array(z.string()).default([]),
   usage: z
@@ -93,6 +111,7 @@ const nodeSchema = z.object({
 });
 
 const resultSchema = z.object({
+  review: nodeSchema.shape.review,
   branch: z.string().optional(),
   completionSignal: z.string().optional(),
   commits: z.array(z.object({ sha: z.string() })).optional(),
@@ -395,13 +414,23 @@ export const createAgentMap = (options: {
                 const signal = parsed.success
                   ? parsed.data.completionSignal
                   : undefined;
-                active.status = signal?.includes("BLOCKED")
-                  ? "blocked"
-                  : signal?.includes("COMPLETE") || task.role === "planner"
-                    ? "completed"
-                    : "stopped";
+                const verdict = parsed.success
+                  ? parsed.data.review?.verdict
+                  : undefined;
+                active.status =
+                  verdict === "changes-requested" || verdict === "invalid"
+                    ? "stopped"
+                    : verdict === "blocked"
+                      ? "blocked"
+                      : signal?.includes("BLOCKED")
+                        ? "blocked"
+                        : signal?.includes("COMPLETE") ||
+                            task.role === "planner"
+                          ? "completed"
+                          : "stopped";
                 if (parsed.success) {
                   active.branch = parsed.data.branch || active.branch;
+                  if (parsed.data.review) active.review = parsed.data.review;
                   active.commits = parsed.data.commits?.map((c) => c.sha) ?? [];
                   const last = parsed.data.iterations?.at(-1);
                   active.usage = parsed.data.iterations

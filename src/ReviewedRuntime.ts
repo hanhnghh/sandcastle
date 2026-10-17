@@ -261,6 +261,30 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       "const MAX_PLANNER_ATTEMPTS = runtime.workflow.config.limits.plannerAttempts;",
     );
     content = content.replace(
+      "const READINESS_FULL_EVERY = 5;",
+      "const READINESS_FULL_EVERY = runtime.workflow.config.readiness.fullEvery ?? 5;",
+    );
+    content = content.replace(
+      'const MERGE_MODE: "batch" | "per-branch" = "batch";',
+      'const MERGE_MODE: "batch" | "per-branch" = runtime.workflow.config.merge?.mode ?? "batch";',
+    );
+    content = content.replace(
+      "const TASK_RETRIES = 1;",
+      "const TASK_RETRIES = runtime.workflow.config.limits.taskRetries ?? 1;",
+    );
+    content = content.replace(
+      "const PROVIDER_FAILURE_THRESHOLD = 3;",
+      "const PROVIDER_FAILURE_THRESHOLD = runtime.workflow.config.limits.consecutiveProviderFailures ?? 3;",
+    );
+    content = content.replace(
+      "    if (breaker.open) {\n      await agentMap.finishBatch(iteration);\n",
+      '    if (breaker.open) {\n      await agentMap.finishBatch(iteration);\n      await runtime.reportOutcome({code:"provider-unavailable",issues:issues.map(issue => Number(issue.id))});\n',
+    );
+    content = content.replace(
+      "const MAX_REPAIR_ROUNDS = 2;",
+      "const MAX_REPAIR_ROUNDS = runtime.workflow.config.review?.maxRepairRounds ?? 2;",
+    );
+    content = content.replace(
       /const readiness = z[\s\S]*?\.parse\(JSON\.parse\(readFileSync\("\.sandcastle\/readiness\.json", "utf8"\)\)\);/,
       "const readiness = runtime.readiness;",
     );

@@ -15,8 +15,10 @@ export {
   loadGitHubReadinessInventory,
   inspectGitHubReadinessBacklog,
   admitGitHubReadinessBatch,
+  selectIncrementalReadiness,
 } from "./Readiness.js";
 export type {
+  IncrementalReadinessInput,
   GitHubReadinessOptions,
   GitHubReadinessInventoryOptions,
   GitHubReadinessBacklog,
@@ -158,6 +160,44 @@ export type {
   RoleTarget,
 } from "./Operator.js";
 export { buildRoleAgent, buildRoleAgentWithFallback } from "./RoleAgents.js";
+export {
+  applyCrossProviderReviewPreset,
+  crossProviderReviewer,
+  ensureProviderInstructions,
+  reviewProviderConflict,
+} from "./ReviewProviders.js";
+export type { InstructionsResult } from "./ReviewProviders.js";
+export {
+  classifyPipelineFailure,
+  createCircuitBreaker,
+  describeFailure,
+  ProviderUnavailableError,
+  runTaskWithRetries,
+  TaskAttemptsError,
+} from "./TaskRetry.js";
+export type {
+  CircuitBreaker,
+  PipelineFailureKind,
+  TaskAttempt,
+  TaskRetryOptions,
+} from "./TaskRetry.js";
+export {
+  REVIEW_VERDICT_TAG,
+  formatReviewFindings,
+  parseReviewVerdict,
+  reviewVerdictSchema,
+  runReviewLoop,
+  withReviewVerdict,
+} from "./ReviewLoop.js";
+export type {
+  ReviewFinding,
+  ReviewLoopOptions,
+  ReviewLoopResult,
+  ReviewLoopRun,
+  ReviewRound,
+  ReviewRunEvidence,
+  ReviewVerdict,
+} from "./ReviewLoop.js";
 export {
   withAgentFallback,
   agentChainOf,
