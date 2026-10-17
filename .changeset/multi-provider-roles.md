@@ -10,3 +10,10 @@ The runtime builds each role's configured provider (`agent`), exposes the frozen
 setting (`roleSetting`) and fallback chain (`agentChain`), and accepts
 per-provider project options under `options.providers`. The operator web edits
 provider, model, effort and fallback per role.
+
+The engine falls back to the next configured provider only for classified
+provider failures (rate limit, unavailable, authentication, missing CLI, model
+unavailable, startup timeout) before any tool call, never after the agent has
+acted. Iteration results and Agent Map record every provider attempt and the
+provider that actually ran. Role-configured providers run with other
+providers' agent credential variables unset.

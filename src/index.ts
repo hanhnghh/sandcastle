@@ -157,7 +157,18 @@ export type {
   RoleSetting,
   RoleTarget,
 } from "./Operator.js";
-export { buildRoleAgent } from "./RoleAgents.js";
+export { buildRoleAgent, buildRoleAgentWithFallback } from "./RoleAgents.js";
+export {
+  withAgentFallback,
+  agentChainOf,
+  classifyProviderFailure,
+} from "./AgentFallback.js";
+export type {
+  AgentChainEntry,
+  AgentTargetDescriptor,
+  ProviderAttempt,
+  ProviderFailureKind,
+} from "./AgentFallback.js";
 export type { RoleAgentOptions } from "./RoleAgents.js";
 export { createProjectRuntime, openProjectRuntime } from "./OperatorRuntime.js";
 export type {

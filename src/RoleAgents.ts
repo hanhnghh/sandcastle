@@ -13,7 +13,9 @@ import {
   type OpenCodeOptions,
   type PiOptions,
 } from "./AgentProvider.js";
-import type { RoleProvider, RoleTarget } from "./Operator.js";
+import { withAgentFallback, type AgentChainEntry } from "./AgentFallback.js";
+import { withCredentialScope } from "./CredentialScope.js";
+import type { RoleProvider, RoleSetting, RoleTarget } from "./Operator.js";
 
 /**
  * Project-owned provider options (sessions, env, permission modes). Top-level
@@ -71,4 +73,33 @@ const builders: {
 export const buildRoleAgent = (
   target: RoleTarget,
   options?: RoleAgentOptions,
-): AgentProvider => builders[target.provider](target, options);
+): AgentProvider =>
+  withCredentialScope(
+    builders[target.provider](target, options),
+    target.provider,
+  );
+
+const entry = (
+  target: RoleTarget,
+  options: RoleAgentOptions | undefined,
+): AgentChainEntry => ({
+  agent: buildRoleAgent(target, options),
+  target: {
+    provider: target.provider,
+    model: target.model,
+    ...(target.effort === undefined ? {} : { effort: target.effort }),
+  },
+});
+
+/**
+ * Build the role's primary provider with its configured fallback chain
+ * attached. Without fallbacks this is exactly `buildRoleAgent(setting)`.
+ */
+export const buildRoleAgentWithFallback = (
+  setting: RoleSetting,
+  options?: RoleAgentOptions,
+): AgentProvider =>
+  withAgentFallback(
+    entry(setting, options),
+    setting.fallback.map((target) => entry(target, options)),
+  );

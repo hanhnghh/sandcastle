@@ -13,7 +13,11 @@ import { Data, Effect } from "effect";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { AgentProvider } from "./AgentProvider.js";
-import { buildRoleAgent, type RoleAgentOptions } from "./RoleAgents.js";
+import {
+  buildRoleAgent,
+  buildRoleAgentWithFallback,
+  type RoleAgentOptions,
+} from "./RoleAgents.js";
 import { createAgentMap, type AgentMap } from "./AgentMap.js";
 import {
   loadRoleConfigEffect,
@@ -94,7 +98,7 @@ export interface ProjectRuntime {
   };
   /** Run frozen project gates then the selected trusted verifier. Never executes issue/model commands. */
   verifyReadiness(input: ReadinessVerificationInput): Promise<unknown>;
-  /** Build the configured role provider, preserving project-owned session/auth options. */
+  /** Build the configured role provider with its fallback chain, preserving project-owned session/auth options. */
   agent(role: OperatorRole, options?: RoleAgentOptions): AgentProvider;
   /** The role's effective primary target and ordered fallback chain. */
   roleSetting(role: OperatorRole): RoleSetting;
@@ -351,7 +355,7 @@ const hydrate = (cwd: string, record: RuntimeRecord): ProjectRuntime => {
         }),
       ),
     agent: (role, options) =>
-      buildRoleAgent(roleSetting(record.config, role), options),
+      buildRoleAgentWithFallback(roleSetting(record.config, role), options),
     roleSetting: (role) => roleSetting(record.config, role),
     agentChain: (role, options) => {
       const setting = roleSetting(record.config, role);

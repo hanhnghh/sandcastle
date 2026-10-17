@@ -417,3 +417,55 @@ it("continues executing without file logging when recording storage is unavailab
   expect(result).toBe(expected);
   expect(warning).toHaveBeenCalledTimes(1);
 });
+
+it("records provider fallback attempts and the provider that actually ran", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "agent-map-fallback-"));
+  cleanup.push(() => rm(cwd, { recursive: true, force: true }));
+  const map = await createAgentMap({ cwd, name: "Fallback" });
+  cleanup.push(() => map.finish("completed"));
+  const server = await startDashboard({ cwd, port: 0 });
+  cleanup.push(server.close);
+  const providerAttempts = [
+    {
+      provider: "codex",
+      model: "gpt-6.1-sol",
+      effort: "low",
+      outcome: "fell-back",
+      reason: "rate-limit",
+    },
+    {
+      provider: "claudeCode",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      outcome: "succeeded",
+    },
+  ];
+  await map.track(
+    {
+      batch: 1,
+      role: "implementer",
+      title: "Implement",
+      branch: "main",
+      provider: "codex",
+      model: "gpt-6.1-sol",
+      effort: "low",
+    },
+    async () => ({
+      completionSignal: "<promise>COMPLETE</promise>",
+      iterations: [{ provider: "claude-code", providerAttempts }],
+    }),
+  );
+  const snapshot = await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
+    r.json(),
+  );
+  expect(snapshot).toMatchObject({
+    nodes: [
+      {
+        provider: "claudeCode",
+        model: "claude-sonnet-5-5",
+        effort: "high",
+        providerAttempts,
+      },
+    ],
+  });
+});

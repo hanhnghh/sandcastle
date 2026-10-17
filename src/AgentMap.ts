@@ -63,6 +63,17 @@ const nodeSchema = z.object({
   model: z.string().optional(),
   effort: z.string().optional(),
   provider: z.string().optional(),
+  providerAttempts: z
+    .array(
+      z.object({
+        provider: z.string(),
+        model: z.string().optional(),
+        effort: z.string().optional(),
+        outcome: z.enum(["succeeded", "fell-back", "failed"]),
+        reason: z.string().optional(),
+      }),
+    )
+    .optional(),
   error: z.string().optional(),
   sessionId: z.string().optional(),
   commits: z.array(z.string()).default([]),
@@ -90,6 +101,8 @@ const resultSchema = z.object({
       z.object({
         sessionId: z.string().optional(),
         usage: nodeSchema.shape.usage,
+        provider: z.string().optional(),
+        providerAttempts: nodeSchema.shape.providerAttempts,
       }),
     )
     .optional(),
@@ -395,6 +408,20 @@ export const createAgentMap = (options: {
                     ?.filter((iteration) => iteration.usage !== undefined)
                     .at(-1)?.usage;
                   active.sessionId = last?.sessionId;
+                  const attempts = parsed.data.iterations?.flatMap(
+                    (iteration) => iteration.providerAttempts ?? [],
+                  );
+                  if (attempts?.some((a) => a.outcome !== "succeeded")) {
+                    active.providerAttempts = attempts;
+                    const used = [...attempts]
+                      .reverse()
+                      .find((attempt) => attempt.outcome === "succeeded");
+                    if (used) {
+                      active.provider = used.provider;
+                      if (used.model) active.model = used.model;
+                      active.effort = used.effort;
+                    }
+                  }
                 }
               }
               yield* publish;

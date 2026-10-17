@@ -219,3 +219,41 @@ test("runtime builds configured providers and exposes the frozen fallback chain"
   ).toEqual(["claude-code", "codex"]);
   expect(runtime.roleSetting("reviewer").fallback).toHaveLength(1);
 });
+
+test("runtime.agent attaches the configured fallback chain; roles without fallback stay plain providers", async () => {
+  const { agentChainOf } = await import("./AgentFallback.js");
+  const cwd = await project();
+  const promptPath = join(cwd, "prompt.md");
+  await writeFile(promptPath, "prompt");
+  await saveRoleConfig({
+    cwd,
+    config: v2({
+      implementer: {
+        provider: "codex",
+        model: "gpt-6.1-sol",
+        effort: "low",
+        fallback: [
+          {
+            provider: "claudeCode",
+            model: "claude-sonnet-5-5",
+            effort: "high",
+          },
+        ],
+      },
+    }),
+  });
+  const runtime = await createProjectRuntime({
+    cwd,
+    sandboxIdentity: "sha256:test",
+    promptFiles: Object.fromEntries(
+      operatorRoles.map((role) => [role, promptPath]),
+    ) as Record<(typeof operatorRoles)[number], string>,
+  });
+  expect(
+    agentChainOf(runtime.agent("implementer")).map((e) => e.target),
+  ).toEqual([
+    { provider: "codex", model: "gpt-6.1-sol", effort: "low" },
+    { provider: "claudeCode", model: "claude-sonnet-5-5", effort: "high" },
+  ]);
+  expect(agentChainOf(runtime.agent("reviewer"))).toHaveLength(1);
+});
