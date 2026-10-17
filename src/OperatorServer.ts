@@ -268,13 +268,39 @@ export const startOperator = (options: {
                     /token|secret|password|api_key/i.test(key) && value,
                 )
                 .map(([, value]) => value!);
-              const redact = (value: string) => {
+              const redactText = (value: string) => {
                 for (const secret of secrets)
                   value = value.split(secret).join("[redacted]");
                 return value.replace(
-                  /([A-Za-z0-9_]*(?:token|secret|password|api_?key)[A-Za-z0-9_]*["']?\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi,
+                  /([A-Za-z0-9_]*(?:token|secret|password|api_?key)[A-Za-z0-9_]*["']?\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/gi,
                   '$1"[redacted]"',
                 );
+              };
+              const redactJson = (value: unknown): unknown => {
+                if (typeof value === "string") return redactText(value);
+                if (Array.isArray(value)) return value.map(redactJson);
+                if (value && typeof value === "object")
+                  return Object.fromEntries(
+                    Object.entries(value).map(([key, item]) => [
+                      key,
+                      /token|secret|password|api_?key/i.test(key)
+                        ? "[redacted]"
+                        : redactJson(item),
+                    ]),
+                  );
+                return value;
+              };
+              const redact = (value: string) => {
+                // Decode managed JSON before redacting embedded prompt/source
+                // strings, whose escaped quotes hide literals in the wire text.
+                try {
+                  const parsed: unknown = JSON.parse(value);
+                  if (parsed && typeof parsed === "object")
+                    return JSON.stringify(redactJson(parsed), null, 2);
+                } catch {
+                  // Workflow and Markdown files are plain text.
+                }
+                return redactText(value);
               };
               response.end(
                 JSON.stringify({

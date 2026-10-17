@@ -1,5 +1,13 @@
 import { loadEnvironmentConfig } from "./OperatorEnvironment.js";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  writeFile,
+  rm,
+  chmod,
+  symlink,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test, expect } from "vitest";
@@ -79,7 +87,10 @@ const fixture = async (profile = "reviewed") => {
       version: "0.12.0",
       type: "module",
       files: ["dist", "runtime-source.json", "LICENSE"],
-      exports: { ".": "./dist/index.js" },
+      exports: {
+        ".": "./dist/index.js",
+        "./sandboxes/docker": "./dist/docker.js",
+      },
       sandcastleRuntime: source,
     }),
   );
@@ -94,6 +105,10 @@ const fixture = async (profile = "reviewed") => {
   await writeFile(
     join(pkg, "dist/index.js"),
     `export * from ${JSON.stringify("file://" + join(process.cwd(), "dist/index.js"))};`,
+  );
+  await writeFile(
+    join(pkg, "dist/docker.js"),
+    `export * from ${JSON.stringify("file://" + join(process.cwd(), "dist/sandboxes/docker.js"))};`,
   );
   const packed = JSON.parse(
     (await exec("npm", ["pack", "--json", "--ignore-scripts"], { cwd: pkg }))
@@ -341,8 +356,8 @@ test("migration preserves a literal legacy image in versioned environment settin
     await writeFile(
       main,
       (await readFile(main, "utf8")).replaceAll(
-        "docker({ env: trackerEnvironment })",
-        'docker({ env: trackerEnvironment, imageName: "custom:legacy" })',
+        /docker\(\{/g,
+        'docker({ imageName: "custom:legacy",',
       ),
     );
     const plan = await planProjectMigration({ cwd });
@@ -676,29 +691,53 @@ test("interrupted promotion requires recovery before repeat application", async 
 }, 30000);
 
 import { saveEnvironmentConfig } from "./OperatorEnvironment.js";
-test.each(["dynamic", "per-role", "config-conflict"])(
+test.each([
+  "dynamic",
+  "per-role",
+  "config-conflict",
+  "implicit-default",
+  "spread",
+  "computed",
+  "accessor",
+  "escaped-key",
+])(
   "unsupported %s image customization remains unchanged",
   async (kind) => {
     const cwd = await fixture();
     try {
       const main = join(cwd, ".sandcastle/main.ts");
       let source = await readFile(main, "utf8");
-      if (kind === "dynamic")
+      if (["spread", "computed", "accessor", "escaped-key"].includes(kind))
+        source = source.replaceAll(
+          "docker({ env: trackerEnvironment })",
+          kind === "spread"
+            ? "docker({ env: trackerEnvironment, ...projectOptions })"
+            : kind === "computed"
+              ? 'docker({ env: trackerEnvironment, ["imageName"]: "custom:legacy" })'
+              : kind === "accessor"
+                ? 'docker({ env: trackerEnvironment, get imageName() { return "custom:legacy"; } })'
+                : 'docker({ env: trackerEnvironment, "image\\u004eame": "custom:legacy" })',
+        );
+      else if (kind === "dynamic")
         source = source.replaceAll(
           "docker({ env: trackerEnvironment })",
           "docker({ env: trackerEnvironment, imageName: selectProjectImage() })",
         );
       else {
         source = source.replaceAll(
-          "docker({ env: trackerEnvironment })",
-          'docker({ env: trackerEnvironment, imageName: "custom:legacy" })',
+          kind === "implicit-default"
+            ? /docker\(\{ env: trackerEnvironment/g
+            : /docker\(\{/g,
+          kind === "implicit-default"
+            ? 'docker({ env: trackerEnvironment, imageName: "custom:legacy"'
+            : 'docker({ imageName: "custom:legacy",',
         );
         if (kind === "per-role")
           source = source.replace(
             'imageName: "custom:legacy"',
             'imageName: "custom:different"',
           );
-        else
+        else if (kind === "config-conflict")
           await saveEnvironmentConfig({
             cwd,
             config: {
@@ -800,3 +839,119 @@ test("quoted effort keys and provider environment values are preserved independe
     await rm(cwd, { recursive: true, force: true });
   }
 }, 30000);
+
+test.each([
+  { profile: "reviewed", kind: "spacing" },
+  { profile: "reviewed", kind: "nested-setting" },
+  { profile: "reviewed", kind: "quoted-key" },
+  { profile: "node", kind: "spacing" },
+  { profile: "android", kind: "spacing" },
+])(
+  "migrated $profile workflow preserves $kind image settings at the Docker boundary",
+  async ({ profile, kind }) => {
+    const cwd = await fixture(profile);
+    try {
+      const main = join(cwd, ".sandcastle/main.ts");
+      const source = (await readFile(main, "utf8"))
+        .replaceAll(
+          /docker\(\{/g,
+          kind === "spacing"
+            ? 'docker ({ imageName: "custom:legacy",'
+            : kind === "quoted-key"
+              ? `docker({ "imageName": 'custom:legacy',`
+              : 'docker({ imageName: "custom:legacy",',
+        )
+        .replaceAll(
+          /env: (readinessEnvironment|trackerEnvironment)/g,
+          (_, env) =>
+            kind === "nested-setting"
+              ? `env: { ...${env}, imageName: "project-value" }`
+              : `env: ${env}`,
+        );
+      await writeFile(main, source);
+      const plan = await planProjectMigration({ cwd });
+      expect(plan.status).toBe("ready");
+      await applyProjectMigration({
+        cwd,
+        expectedRevision: plan.revision,
+        preserveOverrides: true,
+        onProgress: () => {},
+      });
+      expect((await loadEnvironmentConfig({ cwd })).image).toBe(
+        "custom:legacy",
+      );
+      const workflow = await loadWorkflowConfig({ cwd });
+      await saveWorkflowConfig({
+        cwd,
+        config: { ...workflow, repository: "owner/project" },
+      });
+      await mkdir(join(cwd, "node_modules"), { recursive: true });
+      for (const name of ["tsx", "zod"])
+        await symlink(
+          join(process.cwd(), "node_modules", name),
+          join(cwd, "node_modules", name),
+          "dir",
+        );
+      await mkdir(join(cwd, "bin"));
+      await writeFile(
+        join(cwd, "bin/gh"),
+        "#!/usr/bin/env node\nconsole.log('[]');\n",
+      );
+      await writeFile(
+        join(cwd, "bin/docker"),
+        `#!/usr/bin/env node
+import fs from 'node:fs'; const args=process.argv.slice(2);
+fs.appendFileSync('docker-calls.jsonl', JSON.stringify(args)+'\\n');
+if(args[0]==='image' && args[1]==='inspect') console.log(args.includes('{{.Config.User}}') ? '' : 'sha256:'+'d'.repeat(64));
+if(args[0]==='run') { console.error('fixture stops at container launch'); process.exit(1); }
+`,
+      );
+      for (const name of ["gh", "docker"])
+        await chmod(join(cwd, "bin", name), 0o755);
+      await writeFile(
+        join(cwd, ".gitignore"),
+        "node_modules/\nbin/\narchive/\ndocker-calls.jsonl\n.sandcastle/node_modules/\n.sandcastle/updates/\n.sandcastle/runtime/\n.sandcastle/migrations/\n",
+      );
+      for (const args of [
+        ["init", "-qb", "main"],
+        ["config", "user.name", "Fixture"],
+        ["config", "user.email", "fixture@example.test"],
+        ["add", "."],
+        ["commit", "-qm", "consumer"],
+      ])
+        await exec("git", args, { cwd });
+      await expect(
+        exec(process.execPath, ["--import", "tsx", ".sandcastle/main.ts"], {
+          cwd,
+          timeout: 20000,
+          env: {
+            ...process.env,
+            PATH: join(cwd, "bin") + ":" + process.env.PATH,
+          },
+        }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("fixture stops at container launch"),
+      });
+      const calls: string[][] = (
+        await readFile(join(cwd, "docker-calls.jsonl"), "utf8")
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(calls[0]).toEqual([
+        "image",
+        "inspect",
+        "custom:legacy",
+        "--format",
+        "{{.Id}}",
+      ]);
+      const launch = calls.find((args) => args[0] === "run")!;
+      expect(launch.at(-1)).toBe("sha256:" + "d".repeat(64));
+      if (kind === "nested-setting")
+        expect(launch).toContain("imageName=project-value");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  },
+  30000,
+);

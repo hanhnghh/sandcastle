@@ -1,6 +1,88 @@
 import { Effect } from "effect";
 import { InitError } from "./errors.js";
 
+/** Internal static rewrite of top-level image options; nested project settings remain byte-for-byte intact. */
+export const rewriteSandboxImages = (
+  content: string,
+  engine: string,
+  image: string | null,
+) => {
+  // Keep offsets while hiding punctuation in strings and comments. Never evaluate
+  // consumer expressions, including template literals.
+  const commentsHidden = content.replace(
+    /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+    (token) =>
+      token.startsWith("//") || token.startsWith("/*")
+        ? " ".repeat(token.length)
+        : token,
+  );
+  const masked = commentsHidden.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+    (token) => " ".repeat(token.length),
+  );
+  const calls = [...masked.matchAll(new RegExp(`\\b${engine}\\s*\\(`, "g"))];
+  const edits: { start: number; end: number; value: string }[] = [];
+  const images: (string | null)[] = [];
+  for (const call of calls) {
+    const start = call.index + call[0].length;
+    if (edits.some((edit) => start >= edit.start && start < edit.end))
+      return { supported: false, content, images };
+    const brace = masked.indexOf("{", start);
+    if (brace < 0 || masked.slice(start, brace).trim())
+      return { supported: false, content, images };
+    let depth = 0,
+      part = brace + 1,
+      end = part;
+    const properties: { start: number; end: number; separator: boolean }[] = [];
+    for (; end < masked.length; end++) {
+      const char = masked[end]!;
+      if (char === "}" && depth === 0) break;
+      if (char === "," && depth === 0) {
+        properties.push({ start: part, end, separator: true });
+        part = end + 1;
+      }
+      if ("{[(".includes(char)) depth++;
+      if ("}])".includes(char)) depth--;
+    }
+    if (end === masked.length || !/^\s*\)/.test(masked.slice(end + 1)))
+      return { supported: false, content, images };
+    properties.push({ start: part, end, separator: false });
+    let selected: string | null = null;
+    let inner = content.slice(brace + 1, end);
+    for (const property of properties.reverse()) {
+      const text = commentsHidden.slice(property.start, property.end).trim();
+      if (!text) continue;
+      // Only plain data keys are statically known. Spreads, accessors and
+      // computed/escaped keys can override the frozen image when executed.
+      const key =
+        /^(?:([A-Za-z_$][A-Za-z0-9_$]*)|"([^"\\\r\n]*)"|'([^'\\\r\n]*)')\s*:/.exec(
+          text,
+        );
+      if (!key) return { supported: false, content, images };
+      if ((key[1] ?? key[2] ?? key[3]) !== "imageName") continue;
+      const literal = /^(?:"([^"\\\r\n]*)"|'([^'\\\r\n]*)')$/.exec(
+        text.slice(key[0].length).trim(),
+      );
+      if (!literal || selected !== null)
+        return { supported: false, content, images };
+      selected = literal[1] ?? literal[2]!;
+      const from = property.start - brace - 1;
+      const to = property.end - brace - 1 + Number(property.separator);
+      inner = inner.slice(0, from) + inner.slice(to);
+    }
+    images.push(selected);
+    edits.push({
+      start: brace + 1,
+      end,
+      value: (image === null ? "" : ` imageName: ${image},`) + inner,
+    });
+  }
+  for (const edit of edits.reverse())
+    content =
+      content.slice(0, edit.start) + edit.value + content.slice(edit.end);
+  return { supported: true, content, images };
+};
+
 /** Internal static reader: only literal models and top-level effort settings are discoverable without executing project code. */
 export const readLegacyRoleCall = (args: string) => {
   const match = /^"([^"\\]+)"(?:,\s*(\{.*\}))?$/.exec(args.trim());
@@ -123,10 +205,18 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
           `import { ${engine} }`,
           `import { ${engine}, defaultImageName }`,
         );
-      content = content.replaceAll(
-        `${engine}({`,
-        `${engine}({ imageName: runtime.record.sandboxIdentity,`,
+      const rewritten = rewriteSandboxImages(
+        content,
+        engine,
+        "runtime.record.sandboxIdentity",
       );
+      if (!rewritten.supported)
+        return yield* Effect.fail(
+          new InitError({
+            message: "Sandbox image settings require manual adaptation",
+          }),
+        );
+      content = rewritten.content;
     }
     const inputs = `{
   cwd: process.cwd(),

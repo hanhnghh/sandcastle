@@ -31,7 +31,11 @@ import {
   claimRuntimeRun,
   assertInactive,
 } from "./OperatorUpdates.js";
-import { wireReviewedRuntime, readLegacyRoleCall } from "./ReviewedRuntime.js";
+import {
+  wireReviewedRuntime,
+  readLegacyRoleCall,
+  rewriteSandboxImages,
+} from "./ReviewedRuntime.js";
 
 /** Reviewable migration result; unsupported workflows are never executed. */
 export interface ProjectMigrationPlan {
@@ -420,13 +424,9 @@ const planEffect = (cwd: string) =>
       }
       yield* add(".sandcastle/workflow.json", serialized(workflow.config));
       const environment = yield* loadEnvironmentConfigEffect(root);
-      const images = [...text.matchAll(/imageName:\s*"([^"\n]+)"/g)].map(
-        (match) => match[1]!,
-      );
-      if (
-        (text.match(/imageName:/g)?.length ?? 0) !== images.length ||
-        new Set(images).size > 1
-      )
+      const sandbox = rewriteSandboxImages(text, "docker", null);
+      const images = sandbox.images.filter((image) => image !== null);
+      if (!sandbox.supported || new Set(sandbox.images).size > 1)
         return {
           ...base,
           status: "unsupported" as const,
@@ -450,8 +450,7 @@ const planEffect = (cwd: string) =>
         yield* validateEnvironmentConfigEffect(environment);
         yield* add(".sandcastle/environment.json", serialized(environment));
       }
-      const prepared = text
-        .replace(/imageName:\s*"[^"\n]+"\s*,?\s*/g, "")
+      const prepared = sandbox.content
         .replace(/const MAX_ITERATIONS = \d+;/, "const MAX_ITERATIONS = 10;")
         .replace(
           /const MAX_PLANNER_ATTEMPTS = \d+;/,

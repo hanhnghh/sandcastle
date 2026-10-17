@@ -604,9 +604,13 @@ the consumer workflow to discover settings. Modified orchestration, dynamic role
 settings, custom prompt paths, other providers/trackers and unmatched historical
 templates remain unchanged with instructions to adopt `createProjectRuntime` /
 `openProjectRuntime`, `runtime.agent` and `runtime.promptFile` manually. Different
-per-role or dynamic images also require a project adapter; a single literal image
-moves into versioned environment settings. Conflicting existing image settings
-must be resolved on the host first.
+per-role or dynamic images, including a mixture of default and explicit images,
+also require a project adapter; a single literal image
+moves into versioned environment settings. Nested environment values remain
+project-owned; quoted image keys and spacing variations keep the frozen runtime
+image at execution. Accessors, computed/escaped keys and top-level sandbox option
+spreads require manual adaptation because they can override that image. Conflicting existing
+image settings must be resolved on the host first.
 
 A supported consumer retains its project-owned sandbox/hook code and uses the
 shared runtime for frozen role, prompt, workflow and feedback settings. Explicit

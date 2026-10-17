@@ -283,12 +283,13 @@ for (const profile of ["node", "android"])
           .replace(".sandcastle/codex-home", ".sandcastle/custom-codex-home")
           .replace(
             "CODEX_HOME: CODEX_HOME_SANDBOX",
-            'CODEX_HOME: CODEX_HOME_SANDBOX, API_TOKEN: "inline-private-value"',
+            'CODEX_HOME: CODEX_HOME_SANDBOX, API_TOKEN: `inline-private-value`, API_SECRET: "quoted-private-value"',
           ),
       );
       await writeFile(
         join(cwd, ".sandcastle/implement-prompt.md"),
-        bases.implementer + "\nBrowser project override\n",
+        bases.implementer +
+          '\nBrowser project override\nAPI_TOKEN: "prompt-private-value"\n',
       );
       await publishFixture("b");
       assert.equal(
@@ -381,6 +382,20 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
           .getElementById("migration-status")
           .textContent.startsWith("ready"),
       );
+      const wirePlan = await (
+        await page.request.get(server.url + "/api/migrations/plan")
+      ).text();
+      for (const secret of [
+        "inline-private-value",
+        "quoted-private-value",
+        "prompt-private-value",
+        "private-auth-value",
+        "private-session-value",
+      ])
+        assert.ok(
+          !wirePlan.includes(secret),
+          "migration HTTP plan leaked a private fixture value",
+        );
       const review = await page
         .getByLabel("Project migration plan")
         .textContent();
@@ -391,6 +406,8 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
       assert.ok(!review.includes("private-auth-value"));
       assert.ok(!review.includes("private-session-value"));
       assert.ok(!review.includes("inline-private-value"));
+      assert.ok(!review.includes("quoted-private-value"));
+      assert.ok(!review.includes("prompt-private-value"));
       const apply = page.getByRole("button", {
         name: "Apply project migration",
         exact: true,
@@ -422,7 +439,7 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
           .replace(".sandcastle/codex-home", ".sandcastle/custom-codex-home")
           .replace(
             "CODEX_HOME: CODEX_HOME_SANDBOX",
-            'CODEX_HOME: CODEX_HOME_SANDBOX, API_TOKEN: "inline-private-value"',
+            'CODEX_HOME: CODEX_HOME_SANDBOX, API_TOKEN: `inline-private-value`, API_SECRET: "quoted-private-value"',
           ),
       );
       await page
@@ -489,7 +506,7 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
           .replace(".sandcastle/codex-home", ".sandcastle/custom-codex-home")
           .replace(
             "CODEX_HOME: CODEX_HOME_SANDBOX",
-            'CODEX_HOME: CODEX_HOME_SANDBOX, API_TOKEN: "inline-private-value"',
+            'CODEX_HOME: CODEX_HOME_SANDBOX, API_TOKEN: `inline-private-value`, API_SECRET: "quoted-private-value"',
           ),
       );
       assert.equal(
