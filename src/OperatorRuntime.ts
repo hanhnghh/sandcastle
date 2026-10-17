@@ -60,6 +60,7 @@ const diagnosticSchema = z
       "qualification-pending",
       "no-progress",
       "iteration-limit",
+      "provider-unavailable",
       "feedback-failed",
     ]),
     issues: z.array(z.number().int().positive()),

@@ -62,6 +62,10 @@ export const workflowConfigSchema = z
         concurrency: z.number().int().min(1).max(100),
         /** Maximum retries of invalid planner output per round. */
         plannerAttempts: z.number().int().min(1).max(10),
+        /** Extra attempts per issue for provider/infrastructure failures. Default 1. */
+        taskRetries: z.number().int().min(0).max(3).optional(),
+        /** Consecutive provider failures that stop new pipelines. Default 3. */
+        consecutiveProviderFailures: z.number().int().min(1).max(20).optional(),
       })
       .strict(),
     /** Publication mode and trusted host command references. */

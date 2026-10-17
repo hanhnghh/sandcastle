@@ -83,6 +83,8 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
 }
 else if(prompt.includes('Implement task ')) {
   const number=prompt.match(/Implement task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);
+  const providerFailed=fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').includes('provider-fail:'+number);
+  if(process.env.READINESS_FIXTURE_PROVIDER_FAIL==='always' || (process.env.READINESS_FIXTURE_PROVIDER_FAIL==='once' && !providerFailed)) {record('provider-fail:'+number);console.error('HTTP 429 Too Many Requests: rate limit');process.exit(1);}
   if(prompt.includes('- [F1] (major)')) {record('repair:'+number);fs.appendFileSync('repair-'+number+'.txt','repaired\\n');git('add','.');git('commit','-m','Repair '+number);console.log('<promise>COMPLETE</promise>');process.exit(0);}
   record('implement:'+number);
   if(process.env.READINESS_FIXTURE_NO_PROGRESS!=='1' && !(number==='22' && process.env.READINESS_FIXTURE_RETAINED==='1')) {fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);}
@@ -244,6 +246,10 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
   let main = await readFile(mainPath, "utf8");
   main = main
     .replace("const MAX_ITERATIONS = 10;", "const MAX_ITERATIONS = 3;")
+    .replace(
+      "const PROVIDER_FAILURE_THRESHOLD = 3;",
+      `const PROVIDER_FAILURE_THRESHOLD = ${extraEnv.READINESS_FIXTURE_BREAKER ?? 3};`,
+    )
     .replace(
       '"@ai-hero/sandcastle"',
       JSON.stringify(new URL("./index.ts", import.meta.url).href),
@@ -490,6 +496,36 @@ it("the configured Codex runtime applies the saved review repair budget", async 
   ]);
 }, 90_000);
 
+it("retries a provider-failed pipeline on the retained branch and then merges", async () => {
+  const result = await execute({ READINESS_FIXTURE_PROVIDER_FAIL: "once" });
+  expect(result.error).toBeUndefined();
+  const forTask = result.trace.filter(
+    (value: string) => value.endsWith(":22") && !value.startsWith("plan:"),
+  );
+  expect(forTask).toEqual([
+    "provider-fail:22",
+    "implement:22",
+    "review:22",
+    "merge:22",
+  ]);
+}, 90_000);
+
+it("opens the circuit breaker after consecutive provider failures and stops without merging", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_PROVIDER_FAIL: "always",
+    READINESS_FIXTURE_BREAKER: "2",
+  });
+  expect(String(result.error)).toMatch(
+    /Provider unavailable after 2 consecutive provider failures/,
+  );
+  expect(
+    result.trace.filter((value: string) => value === "provider-fail:22"),
+  ).toHaveLength(2);
+  expect(result.trace).not.toContain("review:22");
+  expect(result.trace).not.toContain("merge:22");
+  expect(result.trace).not.toContain("plan:20");
+}, 90_000);
+
 it("stops before the next planner when post-merge project verification fails", async () => {
   const result = await execute({ READINESS_FIXTURE_FAIL_VERIFY: "1" });
   expect(result.error).toBeDefined();
@@ -531,6 +567,10 @@ it("refreshes tracker eligibility before creating any selected worktree", async 
 it("does not review or merge a blocked implementation that produced commits", async () => {
   const result = await execute({ READINESS_FIXTURE_BLOCKED: "1" });
   expect(result.error).toBeDefined();
+  // A blocked implementation is a task failure and is never retried.
+  expect(
+    result.trace.filter((value: string) => value === "implement:22"),
+  ).toHaveLength(1);
   expect(result.trace).not.toContain("review:22");
   expect(result.trace).not.toContain("merge:22");
   expect(

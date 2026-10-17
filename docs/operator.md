@@ -226,6 +226,28 @@ Projects with customized prompts: the implementer prompt gains
 prompt without the verdict instructions fails closed (`invalid-review`) unless
 `maxRepairRounds` is `0`.
 
+### Task retries and the provider circuit breaker
+
+Each issue pipeline in `parallel-planner-with-review` runs through
+`runTaskWithRetries`. A failed attempt is classified:
+
+| Class            | Meaning                                                                         | Retried                |
+| ---------------- | ------------------------------------------------------------------------------- | ---------------------- |
+| `provider`       | the agent failed with a classified provider failure after its fallback chain    | yes, within the budget |
+| `infrastructure` | sandbox, worktree, copy, sync or lifecycle timeout errors                       | yes, within the budget |
+| `task`           | anything else: blocked or unapproved work, prompt errors, failed implementation | never                  |
+
+Retries reuse the retained branch in a fresh sandbox, and the implementer node
+is titled "(retry N)". A shared circuit breaker counts consecutive provider
+failures across issues (task failures do not reset it; a success does). Once it
+opens, no new pipeline starts, running pipelines finish, and the run stops with
+the `provider-unavailable` diagnostic instead of planning further batches.
+
+Configure in `.sandcastle/workflow.json` `limits`:
+`"taskRetries": 1` (0–3, default 1) and `"consecutiveProviderFailures": 3`
+(1–20, default 3). Host automation can use `runTaskWithRetries`,
+`classifyPipelineFailure` and `createCircuitBreaker`.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation
