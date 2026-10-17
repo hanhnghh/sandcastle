@@ -433,7 +433,8 @@ export const planRuntimeUpdate = (options: {
     | null;
 }): Promise<RuntimeUpdatePlan> => run(planEffect(options.cwd, options.version));
 
-const assertInactive = (fs: FileSystem.FileSystem, root: string) =>
+/** Internal guard shared by runtime installation and project migration. */
+export const assertInactive = (fs: FileSystem.FileSystem, root: string) =>
   Effect.gen(function* () {
     // Unknown/stale running recordings require reconciliation, never an override from the browser.
     for (const folder of ["runs"]) {

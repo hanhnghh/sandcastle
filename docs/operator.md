@@ -575,3 +575,92 @@ version metadata and use a tarball from the configured registry origin. Real
 registry publication, registry accounts and channel promotion remain
 maintainer-owned. This preparation command only packs a candidate; it does not
 publish, run npm lifecycle scripts, change accounts or edit consumer projects.
+
+## Existing-project migration
+
+Package installation and consumer migration are separate reviewed actions. Install
+and verify the explicitly configured fork with **Updates** first, then restart the
+operator using that installed runtime. Open **Existing project migration**, preview
+the file diffs and prompt base/default/override comparisons, confirm the review,
+and explicitly choose to preserve prompt conflicts before applying. The status
+reports completion or a readable conflict/error; configuration forms refresh after
+apply or rollback. Migration does not establish readiness or acceptance.
+
+The same operations are available without interactive prompts:
+
+```sh
+sandcastle migration --cwd /path/to/project --dry-run
+# Copy revision from the reviewed JSON plan:
+sandcastle migration --cwd /path/to/project --apply --revision <revision> --preserve-overrides
+sandcastle migration --cwd /path/to/project --rollback
+```
+
+The recognizer supports GitHub/Docker reviewed Codex and Codex AFK Node/Android
+consumers matching the generated orchestration at
+`a22f71e6713d7fdba64f38b030c529aabcd58690`. It compares program structure statically,
+allowing literal role settings, cycle/planner limits, sandbox options, mounts,
+bootstrap hooks and AFK path/cache settings to vary. It never imports or evaluates
+the consumer workflow to discover settings. Modified orchestration, dynamic role
+settings, custom prompt paths, other providers/trackers and unmatched historical
+templates remain unchanged with instructions to adopt `createProjectRuntime` /
+`openProjectRuntime`, `runtime.agent` and `runtime.promptFile` manually. Different
+per-role or dynamic images, including a mixture of default and explicit images,
+also require a project adapter; a single literal image
+moves into versioned environment settings. Nested environment values remain
+project-owned; quoted image keys and spacing variations keep the frozen runtime
+image at execution. Accessors, computed/escaped keys and top-level sandbox option
+spreads require manual adaptation because they can override that image. Conflicting existing
+image settings must be resolved on the host first.
+
+A supported consumer retains its project-owned sandbox/hook code and uses the
+shared runtime for frozen role, prompt, workflow and feedback settings. Explicit
+legacy model/effort settings are retained, including AFK reviewer effort; roles
+that had no explicit effort adopt the documented operator defaults. Existing
+versioned role/workflow settings take precedence. Readiness policy, verifier/gate
+commands, standards, Dockerfile, auth references, working branches and journals
+remain project-owned. Migration preserves each legacy prompt as an explicit
+override against a content-addressed known template base, while already-managed
+prompts keep their original bases and reset/override choices. The current packaged
+default is shown separately; no conflict automatically replaces project text.
+Review prompt defaults before explicitly resetting an override later.
+
+Plans include installed and target package/source/archive integrity, the managed
+file snapshot, proposed file contents and recognizer provenance. Matching `0.12.0`
+versions alone is insufficient: changed source commits or archive bytes require
+a controlled runtime installation before migration. The installed SDK must expose
+compatible versioned configuration and runtime APIs. The recognizer identity is
+comparison evidence, not proof of the original legacy template's release source.
+
+Apply requires the reviewed revision and validates the source snapshot again.
+Managed files use durable temporary-file promotion individually; the whole set is
+not a filesystem-wide atomic transaction. A private, ignored
+`.sandcastle/migrations/latest.json` records the plan, source/runtime provenance,
+managed originals and promotion progress before each write. Failures restore
+promoted files where their contents still belong to the migration. Repeat apply
+of an unchanged completed plan is a no-op. Active or unreconciled runs and runtime
+operations block apply/rollback across operator instances.
+
+After process interruption, prove the recorded owner has stopped before removing
+its `.sandcastle/updates/operation.lock`, then run migration `--rollback` to recover
+before applying again. Roll back migration **before** rolling back its runtime
+installation. Rollback refuses to overwrite subsequent host edits; preserve those
+edits and reconcile the named file manually. Private auth files, sessions, branches
+and existing journals are never migration destinations or backup inputs. Recovery
+records and backups have no HTTP download route; keep them private on the host.
+
+Host SDK exports:
+
+- `planProjectMigration({ cwd })`
+- `applyProjectMigration({ cwd, expectedRevision, preserveOverrides, onProgress })`
+- `rollbackProjectMigration({ cwd })`
+
+| Migration route                 | Contract                                                                                                 |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `GET /api/migrations/plan`      | File-by-file plan, prompt comparisons, status/instructions and content revision                          |
+| `POST /api/migrations/apply`    | Exactly `{ "revision": "<reviewed revision>", "preserveOverrides": true }`; synchronous completion/error |
+| `POST /api/migrations/rollback` | Empty object; synchronous restoration/error                                                              |
+
+All existing session/origin/host/content-type protections apply. Requests cannot
+select project paths, upload workflow code, alter package identity or access
+private recovery backups. Migration web diffs redact declared secret values and
+credential literals; the revision still binds the complete host snapshot.

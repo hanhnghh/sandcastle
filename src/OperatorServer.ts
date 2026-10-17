@@ -1,4 +1,9 @@
 import {
+  planProjectMigration,
+  applyProjectMigration,
+  rollbackProjectMigration,
+} from "./OperatorMigration.js";
+import {
   planRuntimeUpdate,
   installRuntimeUpdate,
   rollbackRuntimeUpdate,
@@ -247,6 +252,127 @@ export const startOperator = (options: {
             if (request.method === "GET" && url.pathname === "/dashboard") {
               response.writeHead(302, { Location: dashboard.url });
               response.end();
+              return;
+            }
+            if (
+              url.pathname === "/api/migrations/plan" &&
+              request.method === "GET"
+            ) {
+              const plan = yield* attempt(() => planProjectMigration({ cwd }));
+              const declaredEnv = yield* resolveEnv(cwd).pipe(
+                Effect.provide(NodeFileSystem.layer),
+              );
+              const secrets = Object.entries({ ...process.env, ...declaredEnv })
+                .filter(
+                  ([key, value]) =>
+                    /token|secret|password|api_key/i.test(key) && value,
+                )
+                .map(([, value]) => value!);
+              const redactText = (value: string) => {
+                for (const secret of secrets)
+                  value = value.split(secret).join("[redacted]");
+                return value.replace(
+                  /([A-Za-z0-9_]*(?:token|secret|password|api_?key)[A-Za-z0-9_]*["']?\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/gi,
+                  '$1"[redacted]"',
+                );
+              };
+              const redactJson = (value: unknown): unknown => {
+                if (typeof value === "string") return redactText(value);
+                if (Array.isArray(value)) return value.map(redactJson);
+                if (value && typeof value === "object")
+                  return Object.fromEntries(
+                    Object.entries(value).map(([key, item]) => [
+                      key,
+                      /token|secret|password|api_?key/i.test(key)
+                        ? "[redacted]"
+                        : redactJson(item),
+                    ]),
+                  );
+                return value;
+              };
+              const redact = (value: string) => {
+                // Decode managed JSON before redacting embedded prompt/source
+                // strings, whose escaped quotes hide literals in the wire text.
+                try {
+                  const parsed: unknown = JSON.parse(value);
+                  if (parsed && typeof parsed === "object")
+                    return JSON.stringify(redactJson(parsed), null, 2);
+                } catch {
+                  // Workflow and Markdown files are plain text.
+                }
+                return redactText(value);
+              };
+              response.end(
+                JSON.stringify({
+                  ...plan,
+                  files: plan.files.map((file) => ({
+                    ...file,
+                    before: file.before === null ? null : redact(file.before),
+                    after: file.after === null ? null : redact(file.after),
+                  })),
+                  prompts: plan.prompts.map((prompt) => ({
+                    ...prompt,
+                    base: redact(prompt.base),
+                    default: redact(prompt.default),
+                    override: redact(prompt.override),
+                  })),
+                }),
+              );
+              return;
+            }
+            if (
+              ["/api/migrations/apply", "/api/migrations/rollback"].includes(
+                url.pathname,
+              ) &&
+              request.method === "POST"
+            ) {
+              const rollback = url.pathname.endsWith("/rollback");
+              const body = yield* requestBody(request);
+              const value = body as {
+                revision: string;
+                preserveOverrides: boolean;
+              };
+              const keys =
+                body && typeof body === "object" && !Array.isArray(body)
+                  ? Object.keys(body).sort().join(",")
+                  : "invalid";
+              if (
+                keys !== (rollback ? "" : "preserveOverrides,revision") ||
+                (!rollback &&
+                  (typeof value.revision !== "string" ||
+                    !/^[a-f0-9]{64}$/.test(value.revision) ||
+                    typeof value.preserveOverrides !== "boolean"))
+              )
+                return yield* Effect.fail(
+                  new RequestError(
+                    400,
+                    "Migration accepts only a reviewed revision and explicit prompt preservation; project paths and commands cannot be overridden",
+                  ),
+                );
+              const result = yield* lock.withPermits(1)(
+                Effect.gen(function* () {
+                  if (running || updateJob?.status === "running")
+                    return yield* Effect.fail(
+                      new RequestError(
+                        409,
+                        "Active project run or runtime update; finish it before migration",
+                      ),
+                    );
+                  if (rollback) {
+                    yield* attempt(() => rollbackProjectMigration({ cwd }));
+                    return { status: "rolled-back" };
+                  }
+                  return yield* attempt(() =>
+                    applyProjectMigration({
+                      cwd,
+                      expectedRevision: value.revision,
+                      preserveOverrides: value.preserveOverrides,
+                      onProgress: () => {},
+                    }),
+                  );
+                }),
+              );
+              response.end(JSON.stringify(result));
               return;
             }
             if (

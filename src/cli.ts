@@ -1,4 +1,9 @@
 import {
+  planProjectMigration,
+  applyProjectMigration,
+  rollbackProjectMigration,
+} from "./OperatorMigration.js";
+import {
   planRuntimeUpdate,
   installRuntimeUpdate,
   rollbackRuntimeUpdate,
@@ -923,6 +928,54 @@ const updatesCommand = Command.make(
     ),
 );
 
+const migrationCommand = Command.make(
+  "migration",
+  {
+    cwd: Options.text("cwd"),
+    dryRun: Options.boolean("dry-run"),
+    apply: Options.boolean("apply"),
+    rollback: Options.boolean("rollback"),
+    revision: Options.text("revision").pipe(Options.optional),
+    preserveOverrides: Options.boolean("preserve-overrides"),
+  },
+  ({ cwd, dryRun, apply, rollback, revision, preserveOverrides }) =>
+    Effect.gen(function* () {
+      if ([dryRun, apply, rollback].filter(Boolean).length > 1)
+        return yield* Effect.fail(
+          new DashboardError({
+            message: "Choose one of --dry-run, --apply or --rollback",
+          }),
+        );
+      if (apply && Option.isNone(revision))
+        return yield* Effect.fail(
+          new DashboardError({
+            message: "Apply requires --revision from the reviewed dry-run plan",
+          }),
+        );
+      const result = yield* Effect.tryPromise({
+        try: async () => {
+          if (rollback) {
+            await rollbackProjectMigration({ cwd });
+            return { status: "rolled-back" };
+          }
+          return apply
+            ? applyProjectMigration({
+                cwd,
+                expectedRevision: Option.getOrThrow(revision),
+                preserveOverrides,
+                onProgress: (phase) => console.error(phase),
+              })
+            : planProjectMigration({ cwd });
+        },
+        catch: (cause) =>
+          new DashboardError({
+            message: `Project migration failed: ${String(cause)}`,
+          }),
+      });
+      yield* Effect.sync(() => console.log(JSON.stringify(result)));
+    }),
+);
+
 const rootCommand = Command.make("sandcastle", {}, () =>
   Effect.gen(function* () {
     const d = yield* Display;
@@ -938,6 +991,7 @@ export const sandcastle = rootCommand.pipe(
     podmanCommand,
     dashboardCommand,
     operatorCommand,
+    migrationCommand,
     updatesCommand,
   ]),
 );
