@@ -155,6 +155,36 @@ Claude Code role does not see `OPENAI_API_KEY`. Multi-vendor agents (`pi`,
 example `GH_TOKEN` or project variables) are untouched, and providers created
 directly with `codex(...)`, `claudeCode(...)` etc. are not scoped.
 
+### Cross-provider review
+
+A reviewer on a different provider from the implementer gives an independent
+second opinion. Defaults are unchanged (all roles Codex).
+
+- **Preset.** In the operator web, **Use cross-provider review preset** sets the
+  reviewer to Claude Code (`claude-opus-5-5`, effort high), or to Codex when the
+  implementer already uses Claude Code; press **Save settings** to apply. From
+  host automation use `applyCrossProviderReviewPreset(config)`, which changes
+  only the reviewer and returns a version-two document.
+- **Policy.** Set `"review": { "requireDifferentProvider": true }` in
+  `.sandcastle/workflow.json` (or tick **Require a different reviewer provider**
+  in the workflow form). Run admission then fails with an actionable message when
+  any provider the reviewer can run on — primary or fallback — is also one the
+  implementer can run on. `reviewProviderConflict(config)` returns that message
+  or `null`. The option is absent (off) by default.
+- **Instructions.** Codex, OpenCode, pi, Copilot and Cursor read `AGENTS.md`;
+  Claude Code reads `CLAUDE.md`. When a saved configuration lets any role run on
+  Claude Code and the project has `AGENTS.md` but no `CLAUDE.md`, the operator
+  (and init) create a `CLAUDE.md` containing `@AGENTS.md`, so instructions are
+  not duplicated. An existing `CLAUDE.md` is never modified; if it does not
+  import `AGENTS.md`, the save message says so. Host automation can call
+  `ensureProviderInstructions({ cwd, config })`.
+- **Protocol.** Bundled prompts are provider-neutral and completion remains the
+  `<promise>COMPLETE</promise>` text, which every supported provider's stream
+  parser surfaces.
+- **Observation.** Agent Map shows each node's provider, model and effort, so
+  implementer and reviewer providers are distinguishable, plus any fallback
+  attempts.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation

@@ -31,6 +31,7 @@ import {
 import { z } from "zod";
 import { roleConfigSchema, roleConfigRevision } from "./Operator.js";
 import { VERSION } from "./version.js";
+import { reviewProviderConflict } from "./ReviewProviders.js";
 import { writePrivateRecord } from "./writePrivateRecord.js";
 
 /** Immutable evidence for one project workflow invocation. Stored privately, not served as raw JSON. */
@@ -424,6 +425,11 @@ export const createProjectRuntime = (
       const fs = yield* FileSystem.FileSystem;
       const config = yield* loadRoleConfigEffect(options.cwd);
       const workflow = yield* loadWorkflowSnapshotEffect(options.cwd);
+      if (workflow.config.review?.requireDifferentProvider) {
+        const conflict = reviewProviderConflict(config);
+        if (conflict)
+          return yield* Effect.fail(new OperatorError({ message: conflict }));
+      }
       if (!options.sandboxIdentity.trim())
         return yield* Effect.fail(
           new OperatorError({

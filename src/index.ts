@@ -159,6 +159,13 @@ export type {
 } from "./Operator.js";
 export { buildRoleAgent, buildRoleAgentWithFallback } from "./RoleAgents.js";
 export {
+  applyCrossProviderReviewPreset,
+  crossProviderReviewer,
+  ensureProviderInstructions,
+  reviewProviderConflict,
+} from "./ReviewProviders.js";
+export type { InstructionsResult } from "./ReviewProviders.js";
+export {
   withAgentFallback,
   agentChainOf,
   classifyProviderFailure,

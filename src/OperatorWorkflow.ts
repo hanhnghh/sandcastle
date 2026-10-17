@@ -81,6 +81,18 @@ export const workflowConfigSchema = z
           ),
       })
       .strict(),
+    /** Review policy. Absent means every option uses its default. */
+    review: z
+      .object({
+        /**
+         * Refuse run admission when the reviewer could run on a provider the
+         * implementer could also run on, including configured fallbacks.
+         * Default false.
+         */
+        requireDifferentProvider: z.boolean(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((config, ctx) => {

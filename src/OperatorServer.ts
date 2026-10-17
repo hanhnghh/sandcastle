@@ -11,6 +11,7 @@ import {
 } from "./OperatorUpdates.js";
 import { inspectWorkflow, saveWorkflowConfig } from "./OperatorWorkflow.js";
 import { resolveEnv } from "./EnvResolver.js";
+import { ensureProviderInstructions } from "./ReviewProviders.js";
 import {
   inspectEnvironment,
   saveEnvironmentConfig,
@@ -807,7 +808,10 @@ export const startOperator = (options: {
                 const config = yield* lock.withPermits(1)(
                   attempt(() => saveRoleConfig({ cwd, config: body })),
                 );
-                response.end(JSON.stringify({ config }));
+                const instructions = yield* attempt(() =>
+                  ensureProviderInstructions({ cwd, config }),
+                );
+                response.end(JSON.stringify({ config, instructions }));
                 return;
               }
             }
