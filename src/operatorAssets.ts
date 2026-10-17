@@ -197,6 +197,19 @@ async function load() {
     list.addEventListener('change', canAdd);
     canAdd();
     group.append(labelled(title + ' provider', provider), labelled(title + ' model', model), customLabel, effortSlot, list, add);
+    if (role === 'reviewer') {
+      const preset = document.createElement('button');
+      preset.type = 'button'; preset.textContent = 'Use cross-provider review preset';
+      preset.addEventListener('click', () => {
+        const implementer = document.getElementById('implementer-provider').value;
+        const choice = implementer === 'claudeCode' ? { provider: 'codex', model: 'gpt-6.1-sol' } : { provider: 'claudeCode', model: 'claude-opus-5-5' };
+        provider.value = choice.provider;
+        custom.value = choice.model;
+        renderProvider('high');
+        message('Reviewer set to ' + choice.provider + ' / ' + choice.model + '. Save settings to apply.');
+      });
+      group.append(preset);
+    }
     fields.append(group);
   }
 }
@@ -225,8 +238,10 @@ document.getElementById('roles').addEventListener('submit', async event => {
       if (provider !== 'codex' || fallback.length || effort === undefined) upgrade = true;
     }
     const next = { schemaVersion: upgrade ? 2 : 1, revision: config.revision, roles };
-    config = (await request('/api/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(next) })).config;
-    message('Settings saved. Revision ' + config.revision.slice(0, 12) + '. Applies to the next run.');
+    const saved = await request('/api/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(next) });
+    config = saved.config;
+    const notes = { created: ' Created CLAUDE.md importing AGENTS.md for Claude Code.', 'claude-md-unlinked': ' CLAUDE.md exists but does not import AGENTS.md; add @AGENTS.md so Claude Code sees the project instructions.' };
+    message('Settings saved. Revision ' + config.revision.slice(0, 12) + '. Applies to the next run.' + (notes[saved.instructions] || ''));
     await load();
   } catch (error) { message(error.message, true); }
   finally { if (button) button.disabled = false; }
@@ -338,7 +353,9 @@ async function loadWorkflow() {
     const label=document.createElement('label');label.textContent=id;
     const field=document.createElement('input');field.type='checkbox';field.dataset.gate=id;field.setAttribute('aria-label','Feedback gate '+id);field.checked=workflowConfig.readiness.gates.includes(id);label.append(field);gates.append(label);
   }
-  workflowFields.append(gates);workflowDiagnostic(data);
+  const reviewLabel=document.createElement('label');reviewLabel.textContent='Require a different reviewer provider';
+  const reviewField=document.createElement('input');reviewField.type='checkbox';reviewField.id='workflow-requireDifferentProvider';reviewField.setAttribute('aria-label','Require a different reviewer provider');reviewField.checked=Boolean(workflowConfig.review && workflowConfig.review.requireDifferentProvider);reviewLabel.append(reviewField);
+  workflowFields.append(gates,reviewLabel);workflowDiagnostic(data);
 }
 document.getElementById('workflow-form').addEventListener('submit',async event=>{
   event.preventDefault();event.submitter.disabled=true;
@@ -350,6 +367,8 @@ document.getElementById('workflow-form').addEventListener('submit',async event=>
     next.holdLabels=value('holdLabels').split('\\n').map(label=>label.trim()).filter(Boolean);
     for(const key of ['cycles','concurrency','plannerAttempts']) next.limits[key]=Number(value(key));
     next.readiness={mode:value('mode'),verifier:value('verifier') || null,gates:[...workflowFields.querySelectorAll('input[data-gate]:checked')].map(field=>field.dataset.gate)};
+    const requireDifferent=document.getElementById('workflow-requireDifferentProvider').checked;
+    if(requireDifferent || next.review) next.review={requireDifferentProvider:requireDifferent};
     workflowConfig=(await request('/api/workflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)})).config;
     workflowDiagnostic(await request('/api/workflow'));message('Workflow saved. Revision '+workflowConfig.revision.slice(0,12)+'. Applies to the next run.');
   } catch(error) {message(error.message,true);} finally {event.submitter.disabled=false;}

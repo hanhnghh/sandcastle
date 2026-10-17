@@ -8,6 +8,7 @@ import { chromium } from "playwright";
 import {
   startOperator,
   loadRoleConfig,
+  loadWorkflowConfig,
   run as runAgent,
 } from "../dist/index.js";
 
@@ -579,4 +580,37 @@ test("provider, effort and fallback controls save a version-two configuration an
     (await loadRoleConfig({ cwd })).roles.implementer.fallback,
     undefined,
   );
+});
+
+test("cross-provider review preset and review policy save through the operator", async (t) => {
+  const { page, cwd } = await fixture(t);
+  await writeFile(join(cwd, "AGENTS.md"), "# Project rules\n");
+  await page
+    .getByRole("button", { name: "Use cross-provider review preset" })
+    .click();
+  assert.equal(
+    await page.getByLabel("Reviewer provider", { exact: true }).inputValue(),
+    "claudeCode",
+  );
+  await page.getByRole("button", { name: "Save settings" }).click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "Created CLAUDE.md importing AGENTS.md" })
+    .waitFor();
+  const saved = await loadRoleConfig({ cwd });
+  assert.deepEqual(saved.roles.reviewer, {
+    provider: "claudeCode",
+    model: "claude-opus-5-5",
+    effort: "high",
+  });
+  assert.equal(saved.roles.implementer.provider, "codex");
+  await page.getByLabel("Require a different reviewer provider").check();
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "Workflow saved" })
+    .waitFor();
+  assert.deepEqual((await loadWorkflowConfig({ cwd })).review, {
+    requireDifferentProvider: true,
+  });
 });
