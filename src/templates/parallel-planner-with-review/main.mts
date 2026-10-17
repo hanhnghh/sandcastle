@@ -65,6 +65,11 @@ const MAX_ITERATIONS = 10;
 const MAX_PLANNER_ATTEMPTS = 3;
 // Implementer repair rounds after a changes-requested review; 0 = single-pass review.
 const MAX_REPAIR_ROUNDS = 2;
+// Extra attempts for provider/infrastructure failures of one issue pipeline.
+const TASK_RETRIES = 1;
+// Stop starting pipelines after this many consecutive provider failures.
+const PROVIDER_FAILURE_THRESHOLD = 3;
+const breaker = sandcastle.createCircuitBreaker(PROVIDER_FAILURE_THRESHOLD);
 
 // Host commands must not block recording heartbeats or other pipeline callbacks.
 function runHost(
@@ -454,6 +459,18 @@ async function executeWorkflow() {
     const batchBaseSha = planned.head;
     const settled = await Promise.allSettled(
       issues.map(async (issue) => {
+        // Provider/infrastructure failures retry on the retained branch;
+        // task failures (blocked, unapproved) are never retried.
+        return sandcastle.runTaskWithRetries({
+          retries: TASK_RETRIES,
+          breaker,
+          onAttempt: (attempt) => {
+            if (attempt.outcome !== "succeeded")
+              console.warn(
+                `  ! ${issue.id} attempt ${attempt.attempt} failed (${attempt.outcome}): ${attempt.error}`,
+              );
+          },
+          run: async (attempt) => {
         let sandbox: sandcastle.Sandbox | undefined;
         try {
           // Include sandbox setup in the observed implementer phase.
@@ -485,7 +502,8 @@ async function executeWorkflow() {
               batch: iteration,
               role: "implementer",
               issueId: issue.id,
-              title: issue.title,
+              title:
+                attempt === 1 ? issue.title : `${issue.title} (retry ${attempt})`,
               branch: issue.branch,
             },
             async (logging) => {
@@ -599,6 +617,8 @@ async function executeWorkflow() {
         } finally {
           await sandbox?.close();
         }
+          },
+        });
       }),
     );
 
@@ -609,6 +629,13 @@ async function executeWorkflow() {
           `  ✗ ${issues[i]!.id} (${issues[i]!.branch}) failed: ${outcome.reason}`,
         );
       }
+    }
+
+    if (breaker.open) {
+      await agentMap.finishBatch(iteration);
+      throw new Error(
+        `Provider unavailable after ${breaker.consecutiveProviderFailures} consecutive provider failures; branches are retained. Check provider status, authentication and fallbacks, then resume.`,
+      );
     }
 
     // Only pass branches that actually produced commits to the merge phase.

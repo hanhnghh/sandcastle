@@ -166,6 +166,20 @@ export {
 } from "./ReviewProviders.js";
 export type { InstructionsResult } from "./ReviewProviders.js";
 export {
+  classifyPipelineFailure,
+  createCircuitBreaker,
+  describeFailure,
+  ProviderUnavailableError,
+  runTaskWithRetries,
+  TaskAttemptsError,
+} from "./TaskRetry.js";
+export type {
+  CircuitBreaker,
+  PipelineFailureKind,
+  TaskAttempt,
+  TaskRetryOptions,
+} from "./TaskRetry.js";
+export {
   REVIEW_VERDICT_TAG,
   formatReviewFindings,
   parseReviewVerdict,
