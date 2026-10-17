@@ -32,6 +32,7 @@ import { resolve } from "node:path";
 import { startDashboard, type DashboardServer } from "./AgentMap.js";
 import {
   codexCapability,
+  providerCapabilities,
   loadRoleConfig,
   OperatorError,
   saveRoleConfig,
@@ -795,6 +796,7 @@ export const startOperator = (options: {
                   JSON.stringify({
                     config,
                     capability: codexCapability,
+                    providers: providerCapabilities,
                     project: cwd,
                   }),
                 );

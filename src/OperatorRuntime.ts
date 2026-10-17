@@ -12,16 +12,15 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Data, Effect } from "effect";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import {
-  codex,
-  type AgentProvider,
-  type CodexOptions,
-} from "./AgentProvider.js";
+import type { AgentProvider } from "./AgentProvider.js";
+import { buildRoleAgent, type RoleAgentOptions } from "./RoleAgents.js";
 import { createAgentMap, type AgentMap } from "./AgentMap.js";
 import {
   loadRoleConfigEffect,
   operatorRoles,
   OperatorError,
+  roleSetting,
+  type RoleSetting,
   type RoleConfig,
   type OperatorRole,
 } from "./Operator.js";
@@ -96,10 +95,17 @@ export interface ProjectRuntime {
   /** Run frozen project gates then the selected trusted verifier. Never executes issue/model commands. */
   verifyReadiness(input: ReadinessVerificationInput): Promise<unknown>;
   /** Build the configured role provider, preserving project-owned session/auth options. */
-  agent(
+  agent(role: OperatorRole, options?: RoleAgentOptions): AgentProvider;
+  /** The role's effective primary target and ordered fallback chain. */
+  roleSetting(role: OperatorRole): RoleSetting;
+  /** Build the primary provider followed by each configured fallback, in order. */
+  agentChain(
     role: OperatorRole,
-    options?: Omit<CodexOptions, "effort">,
-  ): AgentProvider;
+    options?: RoleAgentOptions,
+  ): readonly {
+    readonly target: RoleSetting | RoleSetting["fallback"][number];
+    readonly agent: AgentProvider;
+  }[];
   /** Absolute host path to the frozen prompt template; expansion semantics are preserved. */
   promptFile(role: OperatorRole): string;
   /** Create an observable workflow map which records the effective role settings on every tracked invocation. */
@@ -345,10 +351,15 @@ const hydrate = (cwd: string, record: RuntimeRecord): ProjectRuntime => {
         }),
       ),
     agent: (role, options) =>
-      codex(record.config.roles[role].model, {
-        ...options,
-        effort: record.config.roles[role].effort,
-      }),
+      buildRoleAgent(roleSetting(record.config, role), options),
+    roleSetting: (role) => roleSetting(record.config, role),
+    agentChain: (role, options) => {
+      const setting = roleSetting(record.config, role);
+      return [setting, ...setting.fallback].map((target) => ({
+        target,
+        agent: buildRoleAgent(target, options),
+      }));
+    },
     promptFile: (role) => {
       if (!record.prompts[role])
         throw new OperatorError({
@@ -386,10 +397,13 @@ const hydrate = (cwd: string, record: RuntimeRecord): ProjectRuntime => {
             ...map,
             track: (task, execute) =>
               map.track(
-                {
-                  ...task,
-                  ...record.config.roles[task.role],
-                },
+                (() => {
+                  const { fallback: _chain, ...primary } = roleSetting(
+                    record.config,
+                    task.role,
+                  );
+                  return { ...task, ...primary };
+                })(),
                 execute,
               ),
           } satisfies AgentMap;

@@ -84,71 +84,150 @@ function message(text, error = false) {
   feedback.textContent = text;
   feedback.dataset.error = String(error);
 }
+let providers;
+function option(select, value, text) {
+  const item = document.createElement('option');
+  item.value = value; item.textContent = text ?? value;
+  select.append(item);
+}
+function labelled(text, control) {
+  const label = document.createElement('label');
+  label.textContent = text;
+  label.append(control);
+  return label;
+}
+function effortControl(id, provider, value, name) {
+  const efforts = providers[provider].efforts;
+  if (efforts === null) {
+    const input = document.createElement('input');
+    input.id = id; input.maxLength = 40; input.value = value ?? '';
+    input.placeholder = 'provider default';
+    input.setAttribute('aria-label', name + ' variant');
+    return labelled(name + ' variant', input);
+  }
+  const select = document.createElement('select');
+  select.id = id;
+  select.setAttribute('aria-label', name + ' effort');
+  if (efforts.length === 0) option(select, '', 'not applicable');
+  for (const value of efforts) option(select, value);
+  select.value = value ?? efforts[0] ?? '';
+  select.disabled = efforts.length === 0;
+  return labelled(name + ' effort', select);
+}
+function providerSelect(id, value, name) {
+  const select = document.createElement('select');
+  select.id = id;
+  select.setAttribute('aria-label', name + ' provider');
+  for (const provider of Object.keys(providers)) option(select, provider);
+  select.value = value;
+  return select;
+}
+function fallbackRow(role, list, target) {
+  const index = list.children.length;
+  const name = role[0].toUpperCase() + role.slice(1) + ' fallback ' + (index + 1);
+  const row = document.createElement('div');
+  row.className = 'fallback';
+  const provider = providerSelect('', target.provider, name);
+  provider.dataset.part = 'provider';
+  const model = document.createElement('input');
+  model.dataset.part = 'model'; model.maxLength = 200; model.required = true; model.value = target.model;
+  model.setAttribute('aria-label', name + ' model');
+  const effortSlot = document.createElement('span');
+  function renderEffort() {
+    effortSlot.replaceChildren(effortControl('', provider.value, target.effort, name));
+    effortSlot.querySelector('select,input').dataset.part = 'effort';
+  }
+  provider.addEventListener('change', () => { target.effort = undefined; renderEffort(); });
+  renderEffort();
+  const remove = document.createElement('button');
+  remove.type = 'button'; remove.textContent = 'Remove ' + name;
+  remove.addEventListener('click', () => { row.remove(); list.dispatchEvent(new Event('change')); });
+  row.append(labelled(name + ' provider', provider), labelled(name + ' model', model), effortSlot, remove);
+  list.append(row);
+}
 async function load() {
   const data = await request('/api/config');
   fields.replaceChildren();
   config = data.config;
+  providers = data.providers;
   document.getElementById('project').textContent = 'Project: ' + data.project;
   for (const [role, settings] of Object.entries(config.roles)) {
     const group = document.createElement('fieldset');
     const legend = document.createElement('legend');
-    legend.textContent = role[0].toUpperCase() + role.slice(1);
+    const title = role[0].toUpperCase() + role.slice(1);
+    legend.textContent = title;
     group.append(legend);
-    const modelLabel = document.createElement('label');
-    modelLabel.textContent = legend.textContent + ' model';
+    const provider = providerSelect(role + '-provider', settings.provider, title);
     const model = document.createElement('select');
     model.id = role + '-model';
-    model.setAttribute('aria-label', legend.textContent + ' model');
-    for (const value of [...data.capability.models, 'custom']) {
-      const option = document.createElement('option');
-      option.value = value; option.textContent = value === 'custom' ? 'Custom model ID' : value;
-      model.append(option);
-    }
-    const customLabel = document.createElement('label');
-    customLabel.textContent = legend.textContent + ' custom model';
+    model.setAttribute('aria-label', title + ' model');
     const custom = document.createElement('input');
     custom.id = role + '-custom';
-    custom.setAttribute('aria-label', legend.textContent + ' custom model');
+    custom.setAttribute('aria-label', title + ' custom model');
     custom.maxLength = 200;
     custom.value = settings.model;
-    const isSuggested = data.capability.models.includes(settings.model);
-    model.value = isSuggested ? settings.model : 'custom';
+    const customLabel = labelled(title + ' custom model', custom);
+    const effortSlot = document.createElement('span');
+    function renderProvider(effort) {
+      const models = providers[provider.value].models;
+      model.replaceChildren();
+      for (const value of models) option(model, value);
+      option(model, 'custom', 'Custom model ID');
+      model.value = models.includes(custom.value) ? custom.value : 'custom';
+      showCustom();
+      effortSlot.replaceChildren(effortControl(role + '-effort', provider.value, effort, title));
+    }
     function showCustom() {
       customLabel.hidden = model.value !== 'custom';
       custom.required = model.value === 'custom';
     }
     model.addEventListener('change', showCustom);
-    showCustom();
-    customLabel.append(custom);
-    modelLabel.append(model);
-    const effortLabel = document.createElement('label');
-    effortLabel.textContent = legend.textContent + ' effort';
-    const effort = document.createElement('select');
-    effort.id = role + '-effort';
-    for (const value of data.capability.efforts) {
-      const option = document.createElement('option');
-      option.value = value; option.textContent = value;
-      effort.append(option);
-    }
-    effort.value = settings.effort;
-    effortLabel.append(effort);
-    group.append(modelLabel, customLabel, effortLabel);
+    provider.addEventListener('change', () => {
+      custom.value = providers[provider.value].models[0] ?? '';
+      renderProvider(undefined);
+    });
+    renderProvider(settings.effort);
+    const list = document.createElement('div');
+    list.id = role + '-fallback';
+    for (const target of settings.fallback ?? []) fallbackRow(role, list, { ...target });
+    const add = document.createElement('button');
+    add.type = 'button'; add.textContent = 'Add ' + title + ' fallback';
+    function canAdd() { add.disabled = list.children.length >= 3; }
+    add.addEventListener('click', () => { fallbackRow(role, list, { provider: 'claudeCode', model: providers.claudeCode.models[0] ?? '' }); canAdd(); });
+    list.addEventListener('change', canAdd);
+    canAdd();
+    group.append(labelled(title + ' provider', provider), labelled(title + ' model', model), customLabel, effortSlot, list, add);
     fields.append(group);
   }
+}
+function readEffort(control) {
+  return control && !control.disabled && control.value ? control.value : undefined;
 }
 document.getElementById('roles').addEventListener('submit', async event => {
   event.preventDefault();
   const button = event.submitter;
   if (button) button.disabled = true;
   try {
-    const next = structuredClone(config);
-    for (const [role, settings] of Object.entries(next.roles)) {
+    const roles = {};
+    let upgrade = config.schemaVersion === 2;
+    for (const role of Object.keys(config.roles)) {
       const selected = document.getElementById(role + '-model').value;
-      settings.model = selected === 'custom' ? document.getElementById(role + '-custom').value : selected;
-      settings.effort = document.getElementById(role + '-effort').value;
+      const provider = document.getElementById(role + '-provider').value;
+      const fallback = [...document.getElementById(role + '-fallback').children].map(row => {
+        const target = { provider: row.querySelector('[data-part=provider]').value, model: row.querySelector('[data-part=model]').value };
+        const effort = readEffort(row.querySelector('[data-part=effort]'));
+        return effort === undefined ? target : { ...target, effort };
+      });
+      const effort = readEffort(document.getElementById(role + '-effort'));
+      roles[role] = { provider, model: selected === 'custom' ? document.getElementById(role + '-custom').value : selected };
+      if (effort !== undefined) roles[role].effort = effort;
+      if (fallback.length) roles[role].fallback = fallback;
+      if (provider !== 'codex' || fallback.length || effort === undefined) upgrade = true;
     }
+    const next = { schemaVersion: upgrade ? 2 : 1, revision: config.revision, roles };
     config = (await request('/api/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(next) })).config;
     message('Settings saved. Revision ' + config.revision.slice(0, 12) + '. Applies to the next run.');
+    await load();
   } catch (error) { message(error.message, true); }
   finally { if (button) button.disabled = false; }
 });

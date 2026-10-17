@@ -145,8 +145,20 @@ export {
   saveRoleConfig,
   operatorRoles,
   codexCapability,
+  providerCapabilities,
+  roleProviders,
+  roleSetting,
+  migrateRoleConfig,
 } from "./Operator.js";
-export type { RoleConfig, OperatorRole } from "./Operator.js";
+export type {
+  RoleConfig,
+  OperatorRole,
+  RoleProvider,
+  RoleSetting,
+  RoleTarget,
+} from "./Operator.js";
+export { buildRoleAgent } from "./RoleAgents.js";
+export type { RoleAgentOptions } from "./RoleAgents.js";
 export { createProjectRuntime, openProjectRuntime } from "./OperatorRuntime.js";
 export type {
   ProjectRuntime,

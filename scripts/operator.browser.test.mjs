@@ -513,3 +513,70 @@ test("prompt overrides persist across an operator web restart and isolate projec
       ).includes(role === "Reviewer" ? "Override" : "Default"),
     );
 });
+
+test("provider, effort and fallback controls save a version-two configuration and survive reload", async (t) => {
+  const { page, cwd } = await fixture(t);
+  await page
+    .getByLabel("Reviewer provider", { exact: true })
+    .selectOption("claudeCode");
+  assert.equal(
+    await page.getByLabel("Reviewer model", { exact: true }).inputValue(),
+    "claude-opus-5-5",
+  );
+  await page.getByLabel("Reviewer effort", { exact: true }).selectOption("max");
+  await page.getByRole("button", { name: "Add Implementer fallback" }).click();
+  await page
+    .getByLabel("Implementer fallback 1 effort", { exact: true })
+    .selectOption("high");
+  await page
+    .getByLabel("Merger provider", { exact: true })
+    .selectOption("cursor");
+  assert.equal(
+    await page.getByLabel("Merger effort", { exact: true }).isDisabled(),
+    true,
+  );
+  await page.getByLabel("Merger model", { exact: true }).selectOption("custom");
+  await page.getByLabel("Merger custom model").fill("composer");
+  await page.getByRole("button", { name: "Save settings" }).click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "Settings saved." })
+    .waitFor();
+  const saved = await loadRoleConfig({ cwd });
+  assert.equal(saved.schemaVersion, 2);
+  assert.deepEqual(saved.roles.reviewer, {
+    provider: "claudeCode",
+    model: "claude-opus-5-5",
+    effort: "max",
+  });
+  assert.deepEqual(saved.roles.implementer.fallback, [
+    { provider: "claudeCode", model: "claude-opus-5-5", effort: "high" },
+  ]);
+  assert.deepEqual(saved.roles.merger, {
+    provider: "cursor",
+    model: "composer",
+  });
+  await page.reload();
+  assert.equal(
+    await page.getByLabel("Reviewer provider", { exact: true }).inputValue(),
+    "claudeCode",
+  );
+  assert.equal(
+    await page
+      .getByLabel("Implementer fallback 1 model", { exact: true })
+      .inputValue(),
+    "claude-opus-5-5",
+  );
+  await page
+    .getByRole("button", { name: "Remove Implementer fallback 1" })
+    .click();
+  await page.getByRole("button", { name: "Save settings" }).click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "Settings saved." })
+    .waitFor();
+  assert.equal(
+    (await loadRoleConfig({ cwd })).roles.implementer.fallback,
+    undefined,
+  );
+});
