@@ -75,6 +75,8 @@ export const workflowConfigSchema = z
         mode: z.enum(["report-only", "apply"]),
         /** Selected trusted verifier reference, never a command. */
         verifier: reference.nullable(),
+        /** Run a full readiness assessment at least every N merges (incremental otherwise). Default 5. */
+        fullEvery: z.number().int().min(1).max(100).optional(),
         /** Additional project gate references; required gates cannot be removed. */
         gates: z
           .array(reference)

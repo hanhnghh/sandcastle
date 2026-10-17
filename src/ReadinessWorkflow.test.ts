@@ -575,14 +575,12 @@ it("per-branch mode integrates each approved branch as soon as it is approved", 
   expect(result.trace.indexOf("merger:20")).toBeLessThan(
     result.trace.indexOf("review:22"),
   );
-  // Post-merge readiness runs for a merge that leaves open issues; after the
-  // last merge nothing is open, exactly as in batch mode.
+  // Post-merge readiness is incremental: the issues are independent and the
+  // merges touch no file either mentions, so no post-merge assessment is
+  // needed (a dependent issue is covered by the readiness tests).
   expect(
     result.trace.filter((value: string) => value === "readiness:post-merge"),
-  ).toHaveLength(1);
-  expect(result.trace.indexOf("readiness:post-merge")).toBeGreaterThan(
-    result.trace.indexOf("merger:20"),
-  );
+  ).toHaveLength(0);
   expect(
     result.issues.every((issue: { state: string }) => issue.state === "closed"),
   ).toBe(true);

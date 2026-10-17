@@ -2059,6 +2059,12 @@ android {
       expect(main).toContain("let integrationHead = planned.head;");
       expect(main).toContain("const base = integrationHead;");
       expect(main).toContain("BATCH_BASE_SHA: base");
+      // Post-merge readiness is incremental with a periodic full assessment.
+      expect(main).toContain("const READINESS_FULL_EVERY = 5;");
+      expect(main).toContain(
+        "++postMergeAssessments % READINESS_FULL_EVERY !== 0",
+      );
+      expect(main).toMatch(/trigger,\s*incremental,/);
       expect(prompt).toContain("{{BATCH_BASE_SHA}}");
       expect(prompt).toContain(
         "git diff --name-only {{BATCH_BASE_SHA}}...HEAD",

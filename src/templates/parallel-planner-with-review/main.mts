@@ -73,6 +73,9 @@ const breaker = sandcastle.createCircuitBreaker(PROVIDER_FAILURE_THRESHOLD);
 // "batch": one merger integrates the whole batch after every pipeline settles.
 // "per-branch": each approved branch is integrated as soon as it is approved.
 const MERGE_MODE: "batch" | "per-branch" = "batch";
+// Post-merge readiness is incremental; every Nth post-merge run is full.
+const READINESS_FULL_EVERY = 5;
+let postMergeAssessments = 0;
 
 // Host commands must not block recording heartbeats or other pipeline callbacks.
 function runHost(
@@ -165,6 +168,9 @@ const currentBranch = async () =>
 
 async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
   if (!readinessEnabled) return;
+  const incremental =
+    trigger.kind === "post-merge" &&
+    ++postMergeAssessments % READINESS_FULL_EVERY !== 0;
   await agentMap.track(
     {
       batch,
@@ -179,6 +185,7 @@ async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
         repository: readiness.repository!,
         cwd: process.cwd(),
         trigger,
+        incremental,
         verify: readiness.verifyCommand
           ? async (input) =>
               JSON.parse(
