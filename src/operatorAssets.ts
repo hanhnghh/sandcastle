@@ -355,7 +355,9 @@ async function loadWorkflow() {
   }
   const reviewLabel=document.createElement('label');reviewLabel.textContent='Require a different reviewer provider';
   const reviewField=document.createElement('input');reviewField.type='checkbox';reviewField.id='workflow-requireDifferentProvider';reviewField.setAttribute('aria-label','Require a different reviewer provider');reviewField.checked=Boolean(workflowConfig.review && workflowConfig.review.requireDifferentProvider);reviewLabel.append(reviewField);
-  workflowFields.append(gates,reviewLabel);workflowDiagnostic(data);
+  const roundsLabel=document.createElement('label');roundsLabel.textContent='Review repair rounds';
+  const roundsField=document.createElement('input');roundsField.type='number';roundsField.min='0';roundsField.max='5';roundsField.id='workflow-maxRepairRounds';roundsField.setAttribute('aria-label','Review repair rounds');roundsField.value=String(workflowConfig.review && workflowConfig.review.maxRepairRounds !== undefined ? workflowConfig.review.maxRepairRounds : 2);roundsLabel.append(roundsField);
+  workflowFields.append(gates,reviewLabel,roundsLabel);workflowDiagnostic(data);
 }
 document.getElementById('workflow-form').addEventListener('submit',async event=>{
   event.preventDefault();event.submitter.disabled=true;
@@ -368,7 +370,11 @@ document.getElementById('workflow-form').addEventListener('submit',async event=>
     for(const key of ['cycles','concurrency','plannerAttempts']) next.limits[key]=Number(value(key));
     next.readiness={mode:value('mode'),verifier:value('verifier') || null,gates:[...workflowFields.querySelectorAll('input[data-gate]:checked')].map(field=>field.dataset.gate)};
     const requireDifferent=document.getElementById('workflow-requireDifferentProvider').checked;
-    if(requireDifferent || next.review) next.review={requireDifferentProvider:requireDifferent};
+    const repairRounds=Number(document.getElementById('workflow-maxRepairRounds').value);
+    const review={...(next.review||{})};
+    if(requireDifferent || review.requireDifferentProvider !== undefined) review.requireDifferentProvider=requireDifferent;
+    if(repairRounds !== 2 || review.maxRepairRounds !== undefined) review.maxRepairRounds=repairRounds;
+    if(Object.keys(review).length) next.review=review;
     workflowConfig=(await request('/api/workflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)})).config;
     workflowDiagnostic(await request('/api/workflow'));message('Workflow saved. Revision '+workflowConfig.revision.slice(0,12)+'. Applies to the next run.');
   } catch(error) {message(error.message,true);} finally {event.submitter.disabled=false;}

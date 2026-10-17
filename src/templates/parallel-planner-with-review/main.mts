@@ -63,6 +63,8 @@ const planSchema = z.object({
 // Raise this if your backlog is large; lower it for a quick smoke-test run.
 const MAX_ITERATIONS = 10;
 const MAX_PLANNER_ATTEMPTS = 3;
+// Implementer repair rounds after a changes-requested review; 0 = single-pass review.
+const MAX_REPAIR_ROUNDS = 2;
 
 // Host commands must not block recording heartbeats or other pipeline callbacks.
 function runHost(
@@ -455,6 +457,29 @@ async function executeWorkflow() {
         let sandbox: sandcastle.Sandbox | undefined;
         try {
           // Include sandbox setup in the observed implementer phase.
+          // One implementer invocation serves the first attempt and every
+          // review repair round; findings are empty on the first attempt.
+          const runImplementer = (
+            logging: sandcastle.LoggingOption,
+            reviewFindings: string,
+          ) =>
+            sandbox!.run({
+              logging,
+              name: "implementer",
+              maxIterations: 100,
+              agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+              completionSignal: [
+                "<promise>COMPLETE</promise>",
+                "<promise>BLOCKED</promise>",
+              ],
+              promptFile: "./.sandcastle/implement-prompt.md",
+              promptArgs: {
+                TASK_ID: issue.id,
+                ISSUE_TITLE: issue.title,
+                BRANCH: issue.branch,
+                REVIEW_FINDINGS: reviewFindings,
+              },
+            });
           const implement = await agentMap.track(
             {
               batch: iteration,
@@ -472,22 +497,7 @@ async function executeWorkflow() {
                 copyToWorktree,
               });
 
-              return sandbox.run({
-                logging,
-                name: "implementer",
-                maxIterations: 100,
-                agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-                completionSignal: [
-                  "<promise>COMPLETE</promise>",
-                  "<promise>BLOCKED</promise>",
-                ],
-                promptFile: "./.sandcastle/implement-prompt.md",
-                promptArgs: {
-                  TASK_ID: issue.id,
-                  ISSUE_TITLE: issue.title,
-                  BRANCH: issue.branch,
-                },
-              });
+              return runImplementer(logging, "");
             },
           );
 
@@ -511,39 +521,77 @@ async function executeWorkflow() {
                   .map((sha) => ({ sha }));
           // Retained commits still require a fresh completed review before merging.
           if (sandbox && implementationCommits.length > 0) {
-            const review = await agentMap.track(
-              {
-                batch: iteration,
-                role: "reviewer",
-                issueId: issue.id,
-                title: issue.title,
-                branch: issue.branch,
-              },
-              (logging) =>
-                sandbox!.run({
-                  logging,
-                  name: "reviewer",
-                  maxIterations: 1,
-                  agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-                  completionSignal: [
-                    "<promise>COMPLETE</promise>",
-                    "<promise>BLOCKED</promise>",
-                  ],
-                  promptFile: "./.sandcastle/review-prompt.md",
-                  promptArgs: {
-                    TASK_ID: issue.id,
-                    ISSUE_TITLE: issue.title,
-                    BRANCH: issue.branch,
-                    REVIEW_BASE_SHA: batchBaseSha,
+            // Bounded review→repair loop: only an approved verdict is merged.
+            const loop = await sandcastle.runReviewLoop({
+              maxRepairRounds: MAX_REPAIR_ROUNDS,
+              review: (round) =>
+                agentMap.track(
+                  {
+                    batch: iteration,
+                    role: "reviewer",
+                    issueId: issue.id,
+                    title:
+                      round === 1
+                        ? issue.title
+                        : `${issue.title} (re-review ${round})`,
+                    branch: issue.branch,
                   },
-                }),
-            );
+                  (logging) =>
+                    sandcastle.withReviewVerdict(
+                      sandbox!.run({
+                        logging,
+                        name: "reviewer",
+                        maxIterations: 1,
+                        agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+                        completionSignal: [
+                          "<promise>COMPLETE</promise>",
+                          "<promise>BLOCKED</promise>",
+                        ],
+                        promptFile: "./.sandcastle/review-prompt.md",
+                        promptArgs: {
+                          TASK_ID: issue.id,
+                          ISSUE_TITLE: issue.title,
+                          BRANCH: issue.branch,
+                          REVIEW_BASE_SHA: batchBaseSha,
+                          REVIEW_ROUND: String(round),
+                          REVIEW_REPAIR_ROUNDS: String(MAX_REPAIR_ROUNDS),
+                        },
+                      }),
+                    ),
+                ),
+              repair: (findings, round) =>
+                agentMap.track(
+                  {
+                    batch: iteration,
+                    role: "implementer",
+                    issueId: issue.id,
+                    title: `${issue.title} (repair ${round})`,
+                    branch: issue.branch,
+                  },
+                  (logging) =>
+                    runImplementer(
+                      logging,
+                      sandcastle.formatReviewFindings(findings),
+                    ),
+                ),
+            });
+            if (loop.outcome !== "approved")
+              console.warn(
+                `  ! ${issue.id} review ${loop.outcome} after ${loop.rounds.length} round(s); branch retained.\n` +
+                  (sandcastle.formatReviewFindings(loop.findings) ||
+                    loop.rounds.at(-1)?.error ||
+                    ""),
+              );
 
-            // Merge commits from both runs so the merge phase sees all of them.
+            // Merge commits from every run so the merge phase sees all of them.
             // Each sandbox.run() only returns commits from its own run.
             return {
-              ...review,
-              commits: [...implementationCommits, ...review.commits],
+              ...loop.last,
+              completionSignal:
+                loop.outcome === "approved"
+                  ? "<promise>COMPLETE</promise>"
+                  : "<promise>BLOCKED</promise>",
+              commits: [...implementationCommits, ...loop.commits],
             };
           }
 

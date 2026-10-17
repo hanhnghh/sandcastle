@@ -613,4 +613,17 @@ test("cross-provider review preset and review policy save through the operator",
   assert.deepEqual((await loadWorkflowConfig({ cwd })).review, {
     requireDifferentProvider: true,
   });
+  await page.getByLabel("Review repair rounds").fill("0");
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/workflow") &&
+        response.request().method() === "PUT",
+    ),
+    page.getByRole("button", { name: "Save workflow" }).click(),
+  ]);
+  assert.deepEqual((await loadWorkflowConfig({ cwd })).review, {
+    requireDifferentProvider: true,
+    maxRepairRounds: 0,
+  });
 });

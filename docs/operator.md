@@ -185,6 +185,47 @@ second opinion. Defaults are unchanged (all roles Codex).
   implementer and reviewer providers are distinguishable, plus any fallback
   attempts.
 
+### Review → repair loop
+
+The `parallel-planner-with-review` workflow replaces single-pass review with a
+bounded loop:
+
+1. The reviewer ends with a structured verdict before the completion signal:
+
+   ```text
+   <review-verdict>{"verdict":"changes-requested","summary":"…","findings":[{"id":"F1","severity":"major","file":"src/a.ts","line":12,"change":"…"}]}</review-verdict>
+   <promise>COMPLETE</promise>
+   ```
+
+   `verdict` is `approve`, `changes-requested` or `blocked` (`blocked` emits
+   `<promise>BLOCKED</promise>` instead). `changes-requested` needs at least one
+   finding; `approve` may list only `minor` findings; ids are unique.
+
+2. On `changes-requested` the implementer runs again in the same sandbox with
+   the findings as `{{REVIEW_FINDINGS}}`, then the reviewer re-reviews
+   (`{{REVIEW_ROUND}}`).
+3. Only an `approve` verdict with the completion signal admits the branch to
+   merge. A `blocked` verdict, a blocked repair, an exhausted budget, or missing
+   or malformed reviewer output (fails closed) keep the branch unmerged; other
+   issues continue.
+
+Set the budget with `"review": { "maxRepairRounds": 2 }` in
+`.sandcastle/workflow.json` or **Review repair rounds** in the workflow form
+(0–5, default 2). `0` restores single-pass review: the reviewer may repair in
+place and a plain `<promise>COMPLETE</promise>` is accepted.
+
+Agent Map records each review's verdict, summary and findings; a
+`changes-requested` or invalid review shows as `stopped`, and repair runs appear
+as implementer nodes titled "(repair N)". Host automation can use
+`runReviewLoop`, `withReviewVerdict`, `parseReviewVerdict` and
+`formatReviewFindings`.
+
+Projects with customized prompts: the implementer prompt gains
+`{{REVIEW_FINDINGS}}` and the reviewer prompt `{{REVIEW_ROUND}}` and
+`{{REVIEW_REPAIR_ROUNDS}}`, plus the verdict instructions. A customized reviewer
+prompt without the verdict instructions fails closed (`invalid-review`) unless
+`maxRepairRounds` is `0`.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation

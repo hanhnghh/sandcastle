@@ -1935,11 +1935,11 @@ android {
         join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      // Reviewer result must be captured, not discarded
-      expect(mainTs).toContain("const review = await agentMap.track");
-      // Commits from both implementer and reviewer must be merged
+      // The review loop result must be captured, not discarded
+      expect(mainTs).toContain("const loop = await sandcastle.runReviewLoop");
+      // Commits from the implementer and every review/repair run must be merged
       expect(mainTs).toContain("implement.commits");
-      expect(mainTs).toContain("review.commits");
+      expect(mainTs).toContain("...implementationCommits, ...loop.commits");
     });
 
     it("main.mts uses Promise.allSettled for parallel execution", async () => {

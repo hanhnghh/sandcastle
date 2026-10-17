@@ -89,7 +89,12 @@ export const workflowConfigSchema = z
          * implementer could also run on, including configured fallbacks.
          * Default false.
          */
-        requireDifferentProvider: z.boolean(),
+        requireDifferentProvider: z.boolean().optional(),
+        /**
+         * Implementer repair rounds after a changes-requested verdict.
+         * Default 2; 0 restores single-pass review.
+         */
+        maxRepairRounds: z.number().int().min(0).max(5).optional(),
       })
       .strict()
       .optional(),
