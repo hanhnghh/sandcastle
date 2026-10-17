@@ -2054,7 +2054,11 @@ android {
       expect(main).toContain("const batchBaseSha = planned.head;");
       expect(main).toContain("baseBranch: batchBaseSha");
       expect(main).not.toContain("execFileSync");
-      expect(main).toContain("BATCH_BASE_SHA: batchBaseSha");
+      // The merge base is the integration head before this merge; in batch
+      // mode that is the immutable batch base (planned.head).
+      expect(main).toContain("let integrationHead = planned.head;");
+      expect(main).toContain("const base = integrationHead;");
+      expect(main).toContain("BATCH_BASE_SHA: base");
       expect(prompt).toContain("{{BATCH_BASE_SHA}}");
       expect(prompt).toContain(
         "git diff --name-only {{BATCH_BASE_SHA}}...HEAD",

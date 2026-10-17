@@ -626,4 +626,16 @@ test("cross-provider review preset and review policy save through the operator",
     requireDifferentProvider: true,
     maxRepairRounds: 0,
   });
+  await page.getByLabel("Merge mode").selectOption("per-branch");
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/workflow") &&
+        response.request().method() === "PUT",
+    ),
+    page.getByRole("button", { name: "Save workflow" }).click(),
+  ]);
+  const workflow = await loadWorkflowConfig({ cwd });
+  assert.deepEqual(workflow.merge, { mode: "per-branch" });
+  assert.equal(workflow.review.maxRepairRounds, 0);
 });

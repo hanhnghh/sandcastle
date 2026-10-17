@@ -248,6 +248,28 @@ Configure in `.sandcastle/workflow.json` `limits`:
 (1–20, default 3). Host automation can use `runTaskWithRetries`,
 `classifyPipelineFailure` and `createCircuitBreaker`.
 
+### Merge mode
+
+`parallel-planner-with-review` integrates approved branches in one of two modes,
+set by `"merge": { "mode": "batch" }` in `.sandcastle/workflow.json` or **Merge
+mode** in the workflow form:
+
+- **`batch`** (default, unchanged): after every pipeline settles, one merger
+  integrates all approved branches.
+- **`per-branch`**: each approved branch enters a FIFO queue as soon as its
+  review approves; a single consumer runs the merger for one branch at a time on
+  the integration checkout while other pipelines keep running in their
+  worktrees.
+
+Both modes keep the same guards for every merge: the checkout is clean and at
+the expected head before the merger starts; afterwards the head must have
+advanced, be clean, on the planned branch, and contain the base and every merged
+branch; then post-merge readiness/verification runs for exactly those branches.
+In `per-branch` mode a merge that fails while leaving the checkout untouched
+(for example a blocked merger) only retains that branch; any failure that
+changed the checkout, or a failed post-merge verification, stops the queue.
+Planning the next batch still waits for every pipeline and the queue to settle.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation

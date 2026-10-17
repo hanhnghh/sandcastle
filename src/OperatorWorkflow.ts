@@ -85,6 +85,14 @@ export const workflowConfigSchema = z
           ),
       })
       .strict(),
+    /** Merge policy. Absent means batch integration. */
+    merge: z
+      .object({
+        /** "batch" (default) or "per-branch" integration as branches are approved. */
+        mode: z.enum(["batch", "per-branch"]),
+      })
+      .strict()
+      .optional(),
     /** Review policy. Absent means every option uses its default. */
     review: z
       .object({

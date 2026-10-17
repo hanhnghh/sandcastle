@@ -357,7 +357,11 @@ async function loadWorkflow() {
   const reviewField=document.createElement('input');reviewField.type='checkbox';reviewField.id='workflow-requireDifferentProvider';reviewField.setAttribute('aria-label','Require a different reviewer provider');reviewField.checked=Boolean(workflowConfig.review && workflowConfig.review.requireDifferentProvider);reviewLabel.append(reviewField);
   const roundsLabel=document.createElement('label');roundsLabel.textContent='Review repair rounds';
   const roundsField=document.createElement('input');roundsField.type='number';roundsField.min='0';roundsField.max='5';roundsField.id='workflow-maxRepairRounds';roundsField.setAttribute('aria-label','Review repair rounds');roundsField.value=String(workflowConfig.review && workflowConfig.review.maxRepairRounds !== undefined ? workflowConfig.review.maxRepairRounds : 2);roundsLabel.append(roundsField);
-  workflowFields.append(gates,reviewLabel,roundsLabel);workflowDiagnostic(data);
+  const mergeLabel=document.createElement('label');mergeLabel.textContent='Merge mode';
+  const mergeField=document.createElement('select');mergeField.id='workflow-mergeMode';mergeField.setAttribute('aria-label','Merge mode');
+  for(const [value,text] of [['batch','Batch: one merger after every pipeline settles'],['per-branch','Per-branch: merge each approved branch at once']]){const option=document.createElement('option');option.value=value;option.textContent=text;mergeField.append(option);}
+  mergeField.value=(workflowConfig.merge && workflowConfig.merge.mode) || 'batch';mergeLabel.append(mergeField);
+  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel);workflowDiagnostic(data);
 }
 document.getElementById('workflow-form').addEventListener('submit',async event=>{
   event.preventDefault();event.submitter.disabled=true;
@@ -375,6 +379,8 @@ document.getElementById('workflow-form').addEventListener('submit',async event=>
     if(requireDifferent || review.requireDifferentProvider !== undefined) review.requireDifferentProvider=requireDifferent;
     if(repairRounds !== 2 || review.maxRepairRounds !== undefined) review.maxRepairRounds=repairRounds;
     if(Object.keys(review).length) next.review=review;
+    const mergeMode=document.getElementById('workflow-mergeMode').value;
+    if(mergeMode !== 'batch' || next.merge) next.merge={mode:mergeMode};
     workflowConfig=(await request('/api/workflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)})).config;
     workflowDiagnostic(await request('/api/workflow'));message('Workflow saved. Revision '+workflowConfig.revision.slice(0,12)+'. Applies to the next run.');
   } catch(error) {message(error.message,true);} finally {event.submitter.disabled=false;}

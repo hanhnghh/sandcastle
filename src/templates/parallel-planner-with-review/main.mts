@@ -70,6 +70,9 @@ const TASK_RETRIES = 1;
 // Stop starting pipelines after this many consecutive provider failures.
 const PROVIDER_FAILURE_THRESHOLD = 3;
 const breaker = sandcastle.createCircuitBreaker(PROVIDER_FAILURE_THRESHOLD);
+// "batch": one merger integrates the whole batch after every pipeline settles.
+// "per-branch": each approved branch is integrated as soon as it is approved.
+const MERGE_MODE: "batch" | "per-branch" = "batch";
 
 // Host commands must not block recording heartbeats or other pipeline callbacks.
 function runHost(
@@ -445,9 +448,12 @@ async function executeWorkflow() {
           );
       }
     }
+    // Head the integration checkout must be at; advances after each merge.
+    let integrationHead = planned.head;
     const assertBaseline = async () => {
       if (
-        (await runHost("git", ["rev-parse", "HEAD"])).trim() !== planned.head ||
+        (await runHost("git", ["rev-parse", "HEAD"])).trim() !==
+          integrationHead ||
         (await currentBranch()) !== planned.branch ||
         (await runHost("git", ["status", "--porcelain"])).trim()
       )
@@ -457,11 +463,43 @@ async function executeWorkflow() {
     };
     await assertBaseline();
     const batchBaseSha = planned.head;
+
+    // Per-branch mode: a FIFO queue integrates one approved branch at a time
+    // while other pipelines continue in their own worktrees.
+    const mergedIssues: typeof issues = [];
+    const retainedMerges: { issue: (typeof issues)[number]; error: unknown }[] =
+      [];
+    let mergeStop: unknown;
+    let mergeQueue = Promise.resolve();
+    const enqueueMerge = (issue: (typeof issues)[number]) => {
+      mergeQueue = mergeQueue.then(async () => {
+        if (mergeStop !== undefined) return;
+        const before = integrationHead;
+        try {
+          await integrate([issue]);
+          mergedIssues.push(issue);
+        } catch (error) {
+          // A merger that left the checkout untouched affects only this branch.
+          const untouched =
+            integrationHead === before &&
+            (await runHost("git", ["rev-parse", "HEAD"])).trim() === before &&
+            (await currentBranch()) === planned.branch &&
+            !(await runHost("git", ["status", "--porcelain"])).trim();
+          if (untouched) {
+            retainedMerges.push({ issue, error });
+            console.warn(
+              `  ! ${issue.id} merge failed; branch retained: ${error}`,
+            );
+          } else mergeStop = error;
+        }
+      });
+    };
+
     const settled = await Promise.allSettled(
       issues.map(async (issue) => {
         // Provider/infrastructure failures retry on the retained branch;
         // task failures (blocked, unapproved) are never retried.
-        return sandcastle.runTaskWithRetries({
+        const result = await sandcastle.runTaskWithRetries({
           retries: TASK_RETRIES,
           breaker,
           onAttempt: (attempt) => {
@@ -471,154 +509,163 @@ async function executeWorkflow() {
               );
           },
           run: async (attempt) => {
-        let sandbox: sandcastle.Sandbox | undefined;
-        try {
-          // Include sandbox setup in the observed implementer phase.
-          // One implementer invocation serves the first attempt and every
-          // review repair round; findings are empty on the first attempt.
-          const runImplementer = (
-            logging: sandcastle.LoggingOption,
-            reviewFindings: string,
-          ) =>
-            sandbox!.run({
-              logging,
-              name: "implementer",
-              maxIterations: 100,
-              agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-              completionSignal: [
-                "<promise>COMPLETE</promise>",
-                "<promise>BLOCKED</promise>",
-              ],
-              promptFile: "./.sandcastle/implement-prompt.md",
-              promptArgs: {
-                TASK_ID: issue.id,
-                ISSUE_TITLE: issue.title,
-                BRANCH: issue.branch,
-                REVIEW_FINDINGS: reviewFindings,
-              },
-            });
-          const implement = await agentMap.track(
-            {
-              batch: iteration,
-              role: "implementer",
-              issueId: issue.id,
-              title:
-                attempt === 1 ? issue.title : `${issue.title} (retry ${attempt})`,
-              branch: issue.branch,
-            },
-            async (logging) => {
-              sandbox = await sandcastle.createSandbox({
-                branch: issue.branch,
-                baseBranch: batchBaseSha,
-                sandbox: docker({ env: trackerEnvironment }),
-                hooks,
-                copyToWorktree,
-              });
-
-              return runImplementer(logging, "");
-            },
-          );
-
-          if (implement.completionSignal !== "<promise>COMPLETE</promise>")
-            throw new Error(
-              `Implementation did not complete for issue ${issue.id}; retain the branch and leave its issue open.`,
-            );
-          const implementationCommits =
-            implement.commits.length > 0
-              ? implement.commits
-              : (
-                  await runHost("git", [
-                    "rev-list",
-                    `${batchBaseSha}..${issue.branch}`,
-                    "--",
-                  ])
-                )
-                  .trim()
-                  .split("\n")
-                  .filter(Boolean)
-                  .map((sha) => ({ sha }));
-          // Retained commits still require a fresh completed review before merging.
-          if (sandbox && implementationCommits.length > 0) {
-            // Bounded review→repair loop: only an approved verdict is merged.
-            const loop = await sandcastle.runReviewLoop({
-              maxRepairRounds: MAX_REPAIR_ROUNDS,
-              review: (round) =>
-                agentMap.track(
-                  {
-                    batch: iteration,
-                    role: "reviewer",
-                    issueId: issue.id,
-                    title:
-                      round === 1
-                        ? issue.title
-                        : `${issue.title} (re-review ${round})`,
-                    branch: issue.branch,
+            let sandbox: sandcastle.Sandbox | undefined;
+            try {
+              // Include sandbox setup in the observed implementer phase.
+              // One implementer invocation serves the first attempt and every
+              // review repair round; findings are empty on the first attempt.
+              const runImplementer = (
+                logging: sandcastle.LoggingOption,
+                reviewFindings: string,
+              ) =>
+                sandbox!.run({
+                  logging,
+                  name: "implementer",
+                  maxIterations: 100,
+                  agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+                  completionSignal: [
+                    "<promise>COMPLETE</promise>",
+                    "<promise>BLOCKED</promise>",
+                  ],
+                  promptFile: "./.sandcastle/implement-prompt.md",
+                  promptArgs: {
+                    TASK_ID: issue.id,
+                    ISSUE_TITLE: issue.title,
+                    BRANCH: issue.branch,
+                    REVIEW_FINDINGS: reviewFindings,
                   },
-                  (logging) =>
-                    sandcastle.withReviewVerdict(
-                      sandbox!.run({
-                        logging,
-                        name: "reviewer",
-                        maxIterations: 1,
-                        agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-                        completionSignal: [
-                          "<promise>COMPLETE</promise>",
-                          "<promise>BLOCKED</promise>",
-                        ],
-                        promptFile: "./.sandcastle/review-prompt.md",
-                        promptArgs: {
-                          TASK_ID: issue.id,
-                          ISSUE_TITLE: issue.title,
-                          BRANCH: issue.branch,
-                          REVIEW_BASE_SHA: batchBaseSha,
-                          REVIEW_ROUND: String(round),
-                          REVIEW_REPAIR_ROUNDS: String(MAX_REPAIR_ROUNDS),
-                        },
-                      }),
-                    ),
-                ),
-              repair: (findings, round) =>
-                agentMap.track(
-                  {
-                    batch: iteration,
-                    role: "implementer",
-                    issueId: issue.id,
-                    title: `${issue.title} (repair ${round})`,
+                });
+              const implement = await agentMap.track(
+                {
+                  batch: iteration,
+                  role: "implementer",
+                  issueId: issue.id,
+                  title:
+                    attempt === 1
+                      ? issue.title
+                      : `${issue.title} (retry ${attempt})`,
+                  branch: issue.branch,
+                },
+                async (logging) => {
+                  sandbox = await sandcastle.createSandbox({
                     branch: issue.branch,
-                  },
-                  (logging) =>
-                    runImplementer(
-                      logging,
-                      sandcastle.formatReviewFindings(findings),
-                    ),
-                ),
-            });
-            if (loop.outcome !== "approved")
-              console.warn(
-                `  ! ${issue.id} review ${loop.outcome} after ${loop.rounds.length} round(s); branch retained.\n` +
-                  (sandcastle.formatReviewFindings(loop.findings) ||
-                    loop.rounds.at(-1)?.error ||
-                    ""),
+                    baseBranch: batchBaseSha,
+                    sandbox: docker({ env: trackerEnvironment }),
+                    hooks,
+                    copyToWorktree,
+                  });
+
+                  return runImplementer(logging, "");
+                },
               );
 
-            // Merge commits from every run so the merge phase sees all of them.
-            // Each sandbox.run() only returns commits from its own run.
-            return {
-              ...loop.last,
-              completionSignal:
-                loop.outcome === "approved"
-                  ? "<promise>COMPLETE</promise>"
-                  : "<promise>BLOCKED</promise>",
-              commits: [...implementationCommits, ...loop.commits],
-            };
-          }
+              if (implement.completionSignal !== "<promise>COMPLETE</promise>")
+                throw new Error(
+                  `Implementation did not complete for issue ${issue.id}; retain the branch and leave its issue open.`,
+                );
+              const implementationCommits =
+                implement.commits.length > 0
+                  ? implement.commits
+                  : (
+                      await runHost("git", [
+                        "rev-list",
+                        `${batchBaseSha}..${issue.branch}`,
+                        "--",
+                      ])
+                    )
+                      .trim()
+                      .split("\n")
+                      .filter(Boolean)
+                      .map((sha) => ({ sha }));
+              // Retained commits still require a fresh completed review before merging.
+              if (sandbox && implementationCommits.length > 0) {
+                // Bounded review→repair loop: only an approved verdict is merged.
+                const loop = await sandcastle.runReviewLoop({
+                  maxRepairRounds: MAX_REPAIR_ROUNDS,
+                  review: (round) =>
+                    agentMap.track(
+                      {
+                        batch: iteration,
+                        role: "reviewer",
+                        issueId: issue.id,
+                        title:
+                          round === 1
+                            ? issue.title
+                            : `${issue.title} (re-review ${round})`,
+                        branch: issue.branch,
+                      },
+                      (logging) =>
+                        sandcastle.withReviewVerdict(
+                          sandbox!.run({
+                            logging,
+                            name: "reviewer",
+                            maxIterations: 1,
+                            agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+                            completionSignal: [
+                              "<promise>COMPLETE</promise>",
+                              "<promise>BLOCKED</promise>",
+                            ],
+                            promptFile: "./.sandcastle/review-prompt.md",
+                            promptArgs: {
+                              TASK_ID: issue.id,
+                              ISSUE_TITLE: issue.title,
+                              BRANCH: issue.branch,
+                              REVIEW_BASE_SHA: batchBaseSha,
+                              REVIEW_ROUND: String(round),
+                              REVIEW_REPAIR_ROUNDS: String(MAX_REPAIR_ROUNDS),
+                            },
+                          }),
+                        ),
+                    ),
+                  repair: (findings, round) =>
+                    agentMap.track(
+                      {
+                        batch: iteration,
+                        role: "implementer",
+                        issueId: issue.id,
+                        title: `${issue.title} (repair ${round})`,
+                        branch: issue.branch,
+                      },
+                      (logging) =>
+                        runImplementer(
+                          logging,
+                          sandcastle.formatReviewFindings(findings),
+                        ),
+                    ),
+                });
+                if (loop.outcome !== "approved")
+                  console.warn(
+                    `  ! ${issue.id} review ${loop.outcome} after ${loop.rounds.length} round(s); branch retained.\n` +
+                      (sandcastle.formatReviewFindings(loop.findings) ||
+                        loop.rounds.at(-1)?.error ||
+                        ""),
+                  );
 
-          return implement;
-        } finally {
-          await sandbox?.close();
-        }
+                // Merge commits from every run so the merge phase sees all of them.
+                // Each sandbox.run() only returns commits from its own run.
+                return {
+                  ...loop.last,
+                  completionSignal:
+                    loop.outcome === "approved"
+                      ? "<promise>COMPLETE</promise>"
+                      : "<promise>BLOCKED</promise>",
+                  commits: [...implementationCommits, ...loop.commits],
+                };
+              }
+
+              return implement;
+            } finally {
+              await sandbox?.close();
+            }
           },
         });
+        if (
+          MERGE_MODE === "per-branch" &&
+          result.commits.length > 0 &&
+          result.completionSignal === "<promise>COMPLETE</promise>"
+        )
+          enqueueMerge(issue);
+        return result;
       }),
     );
 
@@ -637,6 +684,10 @@ async function executeWorkflow() {
         `Provider unavailable after ${breaker.consecutiveProviderFailures} consecutive provider failures; branches are retained. Check provider status, authentication and fallbacks, then resume.`,
       );
     }
+
+    // Planning waits for every pipeline and the merge queue to settle.
+    await mergeQueue;
+    if (mergeStop !== undefined) throw mergeStop;
 
     // Only pass branches that actually produced commits to the merge phase.
     // An agent that ran successfully but made no commits has nothing to merge.
@@ -660,86 +711,106 @@ async function executeWorkflow() {
       console.log(`  ${branch}`);
     }
 
-    if (completedBranches.length === 0) {
+    if (
+      completedBranches.length === 0 ||
+      (MERGE_MODE === "per-branch" && mergedIssues.length === 0)
+    ) {
       await agentMap.finishBatch(iteration);
       throw new Error(
         "No verified implementation progress. Retain the branches and inspect failed or blocked stages before resuming.",
       );
     }
 
-    // The integration checkout must still match the source admitted before execution.
-    await assertBaseline();
+    if (MERGE_MODE === "batch") await integrate(completedIssues);
 
-    // -------------------------------------------------------------------------
-    // Phase 3: Merge
-    //
-    // One agent merges all completed branches into the current branch,
-    // resolving any conflicts and running tests to confirm everything works.
-    //
-    // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
-    // uses to know which branches to merge and which issues to close.
-    // -------------------------------------------------------------------------
-    const merge = await agentMap.track(
-      {
-        batch: iteration,
-        role: "merger",
-        title: "Integrate batch",
-        branch: await currentBranch(),
-      },
-      (logging) =>
-        sandcastle.run({
-          logging,
-          hooks,
-          sandbox: docker({ env: trackerEnvironment }),
-          name: "merger",
-          maxIterations: 1,
-          agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-          completionSignal: [
-            "<promise>COMPLETE</promise>",
-            "<promise>BLOCKED</promise>",
-          ],
-          promptFile: "./.sandcastle/merge-prompt.md",
-          promptArgs: {
-            // A markdown list of branch names, one per line.
-            BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
-            // A markdown list of issue IDs and titles, one per line.
-            ISSUES: completedIssues
-              .map((i) => `- ${i.id}: ${i.title}`)
-              .join("\n"),
-            // The integration commit before any branch in this batch is merged.
-            BATCH_BASE_SHA: batchBaseSha,
-          },
-        }),
-    );
+    // Integrate approved branches on the integration checkout. Guards: the
+    // checkout is at the expected head and clean before the merger starts; the
+    // merger must leave a clean, advanced head containing every branch; then
+    // post-merge readiness/verification runs for exactly these branches.
+    // Declared (hoisted) so the per-branch queue can call it while pipelines
+    // run; kept after the pipelines so generated-profile anchors stay ordered.
+    async function integrate(mergeIssues: typeof issues) {
+      await assertBaseline();
+      const base = integrationHead;
+      const mergeBranches = mergeIssues.map((i) => i.branch);
 
-    if (merge.completionSignal !== "<promise>COMPLETE</promise>") {
-      throw new Error(
-        "Merge did not complete; readiness and the next planner are stopped",
+      // -------------------------------------------------------------------------
+      // Phase 3: Merge
+      //
+      // One agent merges all completed branches into the current branch,
+      // resolving any conflicts and running tests to confirm everything works.
+      //
+      // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
+      // uses to know which branches to merge and which issues to close.
+      // -------------------------------------------------------------------------
+      const merge = await agentMap.track(
+        {
+          batch: iteration,
+          role: "merger",
+          title:
+            MERGE_MODE === "batch"
+              ? "Integrate batch"
+              : `Integrate ${mergeIssues.map((i) => i.id).join(", ")}`,
+          branch: await currentBranch(),
+        },
+        (logging) =>
+          sandcastle.run({
+            logging,
+            hooks,
+            sandbox: docker({ env: trackerEnvironment }),
+            name: "merger",
+            maxIterations: 1,
+            agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+            completionSignal: [
+              "<promise>COMPLETE</promise>",
+              "<promise>BLOCKED</promise>",
+            ],
+            promptFile: "./.sandcastle/merge-prompt.md",
+            promptArgs: {
+              // A markdown list of branch names, one per line.
+              BRANCHES: mergeBranches.map((b) => `- ${b}`).join("\n"),
+              // A markdown list of issue IDs and titles, one per line.
+              ISSUES: mergeIssues
+                .map((i) => `- ${i.id}: ${i.title}`)
+                .join("\n"),
+              // The integration commit before any branch in this batch is merged.
+              BATCH_BASE_SHA: base,
+            },
+          }),
       );
+
+      if (merge.completionSignal !== "<promise>COMPLETE</promise>") {
+        throw new Error(
+          "Merge did not complete; readiness and the next planner are stopped",
+        );
+      }
+      const integratedHead = (
+        await runHost("git", ["rev-parse", "HEAD"])
+      ).trim();
+      if (
+        integratedHead === base ||
+        (await currentBranch()) !== planned.branch ||
+        (await runHost("git", ["status", "--porcelain"])).trim()
+      )
+        throw new Error(
+          "Merger did not produce a clean integrated checkout on the planned branch.",
+        );
+      for (const ref of [base, ...mergeBranches])
+        await runHost("git", [
+          "merge-base",
+          "--is-ancestor",
+          ref,
+          integratedHead,
+        ]);
+      await reassess(iteration, {
+        kind: "post-merge",
+        base,
+        branches: mergeBranches,
+        issues: mergeIssues.map((issue) => Number(issue.id)),
+        completionSignal: merge.completionSignal,
+      });
+      integrationHead = integratedHead;
     }
-    const integratedHead = (await runHost("git", ["rev-parse", "HEAD"])).trim();
-    if (
-      integratedHead === batchBaseSha ||
-      (await currentBranch()) !== planned.branch ||
-      (await runHost("git", ["status", "--porcelain"])).trim()
-    )
-      throw new Error(
-        "Merger did not produce a clean integrated checkout on the planned branch.",
-      );
-    for (const ref of [batchBaseSha, ...completedBranches])
-      await runHost("git", [
-        "merge-base",
-        "--is-ancestor",
-        ref,
-        integratedHead,
-      ]);
-    await reassess(iteration, {
-      kind: "post-merge",
-      base: batchBaseSha,
-      branches: completedBranches,
-      issues: completedIssues.map((issue) => Number(issue.id)),
-      completionSignal: merge.completionSignal,
-    });
     await agentMap.finishBatch(iteration);
 
     console.log("\nBranches merged.");

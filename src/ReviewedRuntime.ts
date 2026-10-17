@@ -261,6 +261,10 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       "const MAX_PLANNER_ATTEMPTS = runtime.workflow.config.limits.plannerAttempts;",
     );
     content = content.replace(
+      'const MERGE_MODE: "batch" | "per-branch" = "batch";',
+      'const MERGE_MODE: "batch" | "per-branch" = runtime.workflow.config.merge?.mode ?? "batch";',
+    );
+    content = content.replace(
       "const TASK_RETRIES = 1;",
       "const TASK_RETRIES = runtime.workflow.config.limits.taskRetries ?? 1;",
     );
