@@ -270,6 +270,27 @@ In `per-branch` mode a merge that fails while leaving the checkout untouched
 changed the checkout, or a failed post-merge verification, stops the queue.
 Planning the next batch still waits for every pipeline and the queue to settle.
 
+### Incremental readiness
+
+After a merge, `parallel-planner-with-review` reassesses only issues whose
+readiness can have changed (`incremental` option of `reassessGitHubReadiness`):
+
+- issues that depend on an issue closed by the merge (same repository);
+- issues whose body or comments mention a file changed by the merge
+  (`git diff --name-only base HEAD`; names shorter than 4 characters or without
+  `.`/`/` are ignored to avoid matching prose);
+- issues labelled `readiness:reassess`.
+
+Issues outside that set are not sent to the assessor and keep their previous
+readiness record; if the set is empty no assessment runs. The selection is fixed
+from the first snapshot, so freshness rechecks compare the same issues. The
+startup assessment is always full, every `readiness.fullEvery` post-merge
+assessments (default 5) is full, and a full assessment is used whenever the
+changed files cannot be computed. The audit record states the scope
+(`incremental` with selected/excluded numbers, or `full`). Configure with
+`"readiness": { "fullEvery": 5 }` in `.sandcastle/workflow.json`;
+`selectIncrementalReadiness` exposes the selection rules.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation

@@ -15,8 +15,10 @@ export {
   loadGitHubReadinessInventory,
   inspectGitHubReadinessBacklog,
   admitGitHubReadinessBatch,
+  selectIncrementalReadiness,
 } from "./Readiness.js";
 export type {
+  IncrementalReadinessInput,
   GitHubReadinessOptions,
   GitHubReadinessInventoryOptions,
   GitHubReadinessBacklog,

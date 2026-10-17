@@ -872,3 +872,123 @@ it("checks verified merge provenance before reassessing the next frontier", asyn
     trigger: { kind: "post-merge", issues: [22] },
   });
 });
+
+it("incremental post-merge readiness assesses only affected issues and leaves the rest untouched", async () => {
+  const { selectIncrementalReadiness } = await import("./Readiness.js");
+  const f = await fixture();
+  const base = f.git("rev-parse", "HEAD");
+  f.git("switch", "-qc", "feature");
+  await mkdir(join(f.cwd, "src"));
+  await writeFile(join(f.cwd, "src/changed.ts"), "export const x = 1;\n");
+  f.git("add", ".");
+  f.git("commit", "-qm", "integrated");
+  f.dependencies.set(22, { state: "closed", state_reason: "completed" });
+  f.issue.body += "\n\n## Blocked by\n- #22";
+  const extra = (number: number, body: string, labels: string[] = []) => ({
+    ...f.issue,
+    number,
+    body,
+    labels: [
+      { name: "Sandcastle" },
+      { name: "blocked" },
+      ...labels.map((name) => ({ name })),
+    ],
+  });
+  f.additionalIssues.push(
+    extra(21, "Evidence: `src/changed.ts` must export x."),
+    extra(23, "Unrelated documentation task."),
+    extra(24, "Needs another look.", ["readiness:reassess"]),
+  );
+  const seen: number[][] = [];
+  const options: GitHubReadinessOptions = {
+    ...f.options,
+    mode: "report-only",
+    incremental: true,
+    trigger: {
+      kind: "post-merge",
+      base,
+      branches: ["feature"],
+      issues: [22],
+      completionSignal: "<promise>COMPLETE</promise>",
+    },
+    assess: async (snapshot) => {
+      seen.push(snapshot.issues.map((issue) => issue.number));
+      return {
+        head: snapshot.head,
+        decisions: snapshot.issues.map((issue) => ({
+          number: issue.number,
+          status: "blocked",
+          reason: "Still blocked",
+        })),
+      };
+    },
+  };
+  const result = await reassessGitHubReadiness(options);
+  expect(seen).toEqual([[20, 21, 24]]);
+  expect(JSON.parse(await readFile(result.auditPath, "utf8"))).toMatchObject({
+    scope: { mode: "incremental", selected: [20, 21, 24], excluded: [23] },
+  });
+  await reassessGitHubReadiness({ ...options, incremental: false });
+  expect(seen[1]).toEqual([20, 21, 23, 24]);
+  const startup = await reassessGitHubReadiness({
+    ...options,
+    trigger: { kind: "startup" },
+  });
+  expect(seen[2]).toEqual([20, 21, 23, 24]);
+  expect(JSON.parse(await readFile(startup.auditPath, "utf8")).scope).toEqual({
+    mode: "full",
+  });
+  expect(f.writes).toEqual([]);
+
+  // Pure selection rules.
+  const issue = (
+    number: number,
+    body: string,
+    extraFields: Record<string, unknown> = {},
+  ) => ({
+    number,
+    title: "t",
+    body,
+    labels: [],
+    state: "open",
+    updatedAt: "now",
+    comments: [],
+    dependencies: [],
+    ...extraFields,
+  });
+  expect(
+    selectIncrementalReadiness(
+      [
+        issue(1, "x marks the spot"),
+        issue(2, "mentions src/x.ts in a comment", {
+          comments: [{ id: 1, body: "see src/lib/x.ts", updatedAt: "now" }],
+        }),
+        issue(3, "depends", {
+          dependencies: [
+            {
+              repository: "other/repo",
+              number: 9,
+              state: "closed",
+              stateReason: "completed",
+            },
+          ],
+        }),
+        issue(4, "depends", {
+          dependencies: [
+            {
+              repository: "owner/project",
+              number: 9,
+              state: "closed",
+              stateReason: "completed",
+            },
+          ],
+        }),
+      ],
+      {
+        repository: "owner/project",
+        closedIssues: [9],
+        changedFiles: ["x", "src/lib/x.ts"],
+      },
+    ),
+  ).toEqual([2, 4]);
+});
