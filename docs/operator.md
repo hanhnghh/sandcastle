@@ -67,6 +67,94 @@ Model IDs are 1–200 characters: letters, digits, dots, underscores, colons,
 slashes or hyphens, beginning with a letter or digit. Config has no auth, prompt
 paths, sandbox commands or executable fields.
 
+### Schema version 2: multiple providers and fallback
+
+Version 2 lets each role select any supported agent provider and an ordered
+fallback chain. Version 1 files keep loading and saving unchanged; nothing is
+converted implicitly. Convert explicitly with `migrateRoleConfig(config)` (which
+preserves every role's behaviour) or by saving a provider/fallback change in the
+operator web.
+
+```json
+{
+  "schemaVersion": 2,
+  "revision": "<computed SHA-256 content revision>",
+  "roles": {
+    "implementer": {
+      "provider": "codex",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "fallback": [
+        {
+          "provider": "claudeCode",
+          "model": "claude-sonnet-5-5",
+          "effort": "high"
+        }
+      ]
+    },
+    "reviewer": {
+      "provider": "claudeCode",
+      "model": "claude-opus-5-5",
+      "effort": "high"
+    },
+    "readiness": { "provider": "opencode", "model": "google/<gemini-model>" }
+  }
+}
+```
+
+(All five roles are still required; three are shown.) `effort` is optional and
+validated against `providerCapabilities`, then mapped to the provider's own flag:
+
+| Provider     | Accepted `effort`                        | Maps to                     |
+| ------------ | ---------------------------------------- | --------------------------- |
+| `codex`      | low, medium, high, xhigh                 | `-c model_reasoning_effort` |
+| `claudeCode` | low, medium, high, xhigh, max            | `--effort`                  |
+| `pi`         | off, minimal, low, medium, high, xhigh   | `--thinking`                |
+| `copilot`    | low, medium, high                        | `--effort`                  |
+| `opencode`   | free-form provider variant (plain token) | `--variant`                 |
+| `cursor`     | none (field must be absent)              | —                           |
+
+`fallback` holds at most three entries; an entry may not repeat the role's own
+target or an earlier entry. Use `roleSetting(config, role)` for a normalized view
+of either version. Credentials remain outside configuration: each provider uses
+its own existing authentication; config references none.
+
+In the SDK runtime, `runtime.agent(role, options)` builds the role's configured
+provider. Top-level `options` remain Codex options (unchanged contract); pass
+other providers' project options (session storage, env, permission mode) under
+`options.providers.<provider>`. `runtime.agentChain(role, options)` returns the
+primary provider followed by each fallback, and `runtime.roleSetting(role)` the
+frozen setting.
+
+#### Automatic fallback
+
+`runtime.agent(role)` carries the role's fallback chain, so generated workflows
+need no changes. Within each iteration the engine tries the primary first and
+moves to the next entry only when both hold:
+
+- the failure is classified as a provider failure — `rate-limit`,
+  `unavailable` (5xx, overloaded, network), `authentication`, `missing-cli`,
+  `model-unavailable`, or `startup-timeout` (idle timeout with no output); and
+- the failed attempt made **no tool call**, so it cannot have edited files or
+  created commits.
+
+Any other failure, a failure after a tool call, or exhaustion of the chain ends
+the iteration as before; when more than one provider was tried, the error lists
+every attempt. Session resume/fork applies to the primary only, because
+sessions are provider-specific. Each iteration result records `provider` (the
+one that ran) and `providerAttempts`; Agent Map shows the attempts and the
+provider/model/effort that actually ran when a fallback was used.
+
+#### Credential scope
+
+Providers built from role configuration run each command with every other
+provider's well-known agent credential variables unset (`env -u …`), e.g. a
+Codex role does not see `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`, and a
+Claude Code role does not see `OPENAI_API_KEY`. Multi-vendor agents (`pi`,
+`opencode`) keep vendor API keys. Variables outside the provider table (for
+example `GH_TOKEN` or project variables) are untouched, and providers created
+directly with `codex(...)`, `claudeCode(...)` etc. are not scoped.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation

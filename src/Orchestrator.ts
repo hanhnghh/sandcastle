@@ -1,4 +1,4 @@
-import { Deferred, Duration, Effect, Fiber, Option } from "effect";
+import { Deferred, Duration, Effect, Either, Fiber, Option } from "effect";
 import { AgentStreamEmitter } from "./AgentStreamEmitter.js";
 import { Display } from "./Display.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
@@ -15,6 +15,13 @@ import { withSandboxLifecycle, type SandboxHooks } from "./SandboxLifecycle.js";
 import type { AgentProvider, IterationUsage } from "./AgentProvider.js";
 import type { Timeouts } from "./run.js";
 import { TextDeltaBuffer } from "./TextDeltaBuffer.js";
+import { credentialsToUnset, scopeCommand } from "./CredentialScope.js";
+import {
+  agentChainOf,
+  classifyProviderFailure,
+  type ProviderAttempt,
+  type ProviderFailureKind,
+} from "./AgentFallback.js";
 
 export type { ParsedStreamEvent, IterationUsage } from "./AgentProvider.js";
 
@@ -197,49 +204,52 @@ const invokeAgent = (
         resumeSession,
         forkSession,
       });
-      const execResult = yield* sandbox.exec(printCmd.command, {
-        onLine: (line) => {
-          // Surface the raw line FIRST so verbose mode/forwarders see every
-          // stdout line the agent produced, including ones parseStreamLine
-          // drops. Errors thrown by the callback are caught by the emitter
-          // layer; isolate the parser path here so a broken forwarder cannot
-          // skip parsing.
-          try {
-            onRawLine(line);
-          } catch {
-            // Swallow — must not skip parsing/timer logic below.
-          }
-          for (const parsed of provider.parseStreamLine(line)) {
-            if (parsed.type === "text") {
-              onText(parsed.text);
-              accumulatedOutput += parsed.text;
-            } else if (parsed.type === "result") {
-              resultText = parsed.result;
-              accumulatedOutput += parsed.result;
-            } else if (parsed.type === "tool_call") {
-              onToolCall(parsed.name, parsed.args);
-            } else if (parsed.type === "session_id") {
-              sessionId = parsed.sessionId;
-            } else if (parsed.type === "usage") {
-              usage = parsed.usage;
+      const execResult = yield* sandbox.exec(
+        scopeCommand(printCmd.command, credentialsToUnset(provider)),
+        {
+          onLine: (line) => {
+            // Surface the raw line FIRST so verbose mode/forwarders see every
+            // stdout line the agent produced, including ones parseStreamLine
+            // drops. Errors thrown by the callback are caught by the emitter
+            // layer; isolate the parser path here so a broken forwarder cannot
+            // skip parsing.
+            try {
+              onRawLine(line);
+            } catch {
+              // Swallow — must not skip parsing/timer logic below.
             }
-          }
-          // Check for the completion signal AFTER parsing this line so the
-          // accumulator contains everything seen so far. Flip to the
-          // completion-grace timer the first time the signal appears.
-          if (
-            !completionDetected &&
-            completionSignals.some((sig) => accumulatedOutput.includes(sig))
-          ) {
-            completionDetected = true;
-            interruptFiber(warningFiber);
-            warningFiber = null;
-          }
-          resetTimer();
+            for (const parsed of provider.parseStreamLine(line)) {
+              if (parsed.type === "text") {
+                onText(parsed.text);
+                accumulatedOutput += parsed.text;
+              } else if (parsed.type === "result") {
+                resultText = parsed.result;
+                accumulatedOutput += parsed.result;
+              } else if (parsed.type === "tool_call") {
+                onToolCall(parsed.name, parsed.args);
+              } else if (parsed.type === "session_id") {
+                sessionId = parsed.sessionId;
+              } else if (parsed.type === "usage") {
+                usage = parsed.usage;
+              }
+            }
+            // Check for the completion signal AFTER parsing this line so the
+            // accumulator contains everything seen so far. Flip to the
+            // completion-grace timer the first time the signal appears.
+            if (
+              !completionDetected &&
+              completionSignals.some((sig) => accumulatedOutput.includes(sig))
+            ) {
+              completionDetected = true;
+              interruptFiber(warningFiber);
+              warningFiber = null;
+            }
+            resetTimer();
+          },
+          cwd: sandboxRepoDir,
+          stdin: printCmd.stdin,
         },
-        cwd: sandboxRepoDir,
-        stdin: printCmd.stdin,
-      });
+      );
 
       if (execResult.exitCode !== 0) {
         // Prefer stderr; fall back to resultText (from parsed stream events),
@@ -350,6 +360,10 @@ export interface IterationResult {
   readonly sessionFilePath?: string;
   /** Token usage snapshot from the last assistant message in the session, or undefined when capture is disabled or provider does not support usage parsing. */
   readonly usage?: IterationUsage;
+  /** Name of the provider that completed this iteration. */
+  readonly provider?: string;
+  /** Ordered provider attempts; more than one entry means a fallback was used. */
+  readonly providerAttempts?: readonly ProviderAttempt[];
 }
 
 export interface OrchestrateResult {
@@ -524,28 +538,110 @@ export const orchestrate = (
                     ),
                   );
                 };
+                // Try the provider chain in order. A fallback is used only for
+                // a classified provider failure before any tool call, so no
+                // agent effect (file edit, commit) can precede a switch.
+                const chain = agentChainOf(provider);
+                const providerAttempts: ProviderAttempt[] = [];
+                let activeProvider: AgentProvider = provider;
+                let invocation:
+                  | {
+                      result: string;
+                      sessionId?: string;
+                      usage?: IterationUsage;
+                    }
+                  | undefined;
+                for (let index = 0; index < chain.length; index++) {
+                  const entry = chain[index]!;
+                  const attemptProvider = index === 0 ? provider : entry.agent;
+                  let toolCalls = 0;
+                  let rawLines = 0;
+                  const attempt = yield* Effect.either(
+                    invokeAgent(
+                      ctx.sandbox,
+                      ctx.sandboxRepoDir,
+                      fullPrompt,
+                      attemptProvider,
+                      idleTimeoutMs,
+                      completionTimeoutMs,
+                      completionSignals,
+                      onText,
+                      (name, formattedArgs) => {
+                        toolCalls++;
+                        onToolCall(name, formattedArgs);
+                      },
+                      (line) => {
+                        rawLines++;
+                        onRawLine(line);
+                      },
+                      onIdleWarning,
+                      onCompletionTimeout,
+                      options._idleWarningIntervalMs,
+                      // Sessions are provider-specific: only the primary resumes.
+                      index === 0 ? iterationResumeSession : undefined,
+                      index === 0 ? iterationForkSession : undefined,
+                      options.signal,
+                    ),
+                  );
+                  if (Either.isRight(attempt)) {
+                    providerAttempts.push({
+                      ...entry.target,
+                      outcome: "succeeded",
+                    });
+                    activeProvider = attemptProvider;
+                    invocation = attempt.right;
+                    break;
+                  }
+                  const failure = attempt.left;
+                  const kind: ProviderFailureKind | null =
+                    failure instanceof AgentError
+                      ? classifyProviderFailure(failure.message)
+                      : failure instanceof AgentIdleTimeoutError &&
+                          rawLines === 0
+                        ? "startup-timeout"
+                        : null;
+                  const next = chain[index + 1];
+                  if (kind === null || toolCalls > 0 || !next) {
+                    providerAttempts.push({
+                      ...entry.target,
+                      outcome: "failed",
+                      ...(kind === null ? {} : { reason: kind }),
+                    });
+                    if (
+                      providerAttempts.length > 1 &&
+                      failure instanceof AgentError
+                    )
+                      return yield* Effect.fail(
+                        new AgentError({
+                          ...failure,
+                          message: `${failure.message}\nProvider attempts: ${providerAttempts
+                            .map(
+                              (a) =>
+                                `${a.provider}${a.model ? `/${a.model}` : ""} ${a.outcome}${a.reason ? ` (${a.reason})` : ""}`,
+                            )
+                            .join(" -> ")}`,
+                        }),
+                      );
+                    return yield* Effect.fail(failure);
+                  }
+                  providerAttempts.push({
+                    ...entry.target,
+                    outcome: "fell-back",
+                    reason: kind,
+                  });
+                  textBuffer.flush();
+                  yield* display.status(
+                    label(
+                      `${entry.target.provider} failed before any tool call (${kind}); falling back to ${next.target.provider}${next.target.model ? `/${next.target.model}` : ""}`,
+                    ),
+                    "warn",
+                  );
+                }
                 const {
                   result: agentOutput,
                   sessionId,
                   usage: streamUsage,
-                } = yield* invokeAgent(
-                  ctx.sandbox,
-                  ctx.sandboxRepoDir,
-                  fullPrompt,
-                  provider,
-                  idleTimeoutMs,
-                  completionTimeoutMs,
-                  completionSignals,
-                  onText,
-                  onToolCall,
-                  onRawLine,
-                  onIdleWarning,
-                  onCompletionTimeout,
-                  options._idleWarningIntervalMs,
-                  iterationResumeSession,
-                  iterationForkSession,
-                  options.signal,
-                );
+                } = invocation!;
 
                 // Flush any remaining buffered text deltas
                 textBuffer.dispose();
@@ -558,15 +654,15 @@ export const orchestrate = (
                 let sessionFilePath: string | undefined;
                 let usage: IterationUsage | undefined = streamUsage;
                 if (
-                  provider.captureSessions &&
-                  provider.sessionStorage &&
+                  activeProvider.captureSessions &&
+                  activeProvider.sessionStorage &&
                   sessionId &&
                   bindMountHandle
                 ) {
                   yield* display.status(label("Capturing session"), "info");
                   yield* Effect.tryPromise({
                     try: () =>
-                      provider.sessionStorage!.captureToHost({
+                      activeProvider.sessionStorage!.captureToHost({
                         hostCwd: hostRepoDir,
                         sandboxCwd: ctx.sandboxRepoDir,
                         sessionId,
@@ -578,20 +674,22 @@ export const orchestrate = (
                         sessionId,
                       }),
                   });
-                  sessionFilePath = provider.sessionStorage.hostSessionFilePath(
-                    hostRepoDir,
-                    sessionId,
-                  );
+                  sessionFilePath =
+                    activeProvider.sessionStorage.hostSessionFilePath(
+                      hostRepoDir,
+                      sessionId,
+                    );
 
                   // Parse token usage from the captured session JSONL
-                  if (provider.parseSessionUsage) {
+                  if (activeProvider.parseSessionUsage) {
                     const content = yield* Effect.promise(() =>
-                      provider
+                      activeProvider
                         .sessionStorage!.readHostSession(hostRepoDir, sessionId)
                         .catch(() => undefined as string | undefined),
                     );
                     if (content) {
-                      const parsedUsage = provider.parseSessionUsage(content);
+                      const parsedUsage =
+                        activeProvider.parseSessionUsage(content);
                       if (parsedUsage) usage = parsedUsage;
                     }
                   }
@@ -607,6 +705,8 @@ export const orchestrate = (
                   sessionId,
                   sessionFilePath,
                   usage,
+                  provider: activeProvider.name,
+                  providerAttempts,
                 } as const;
               }),
           ),
@@ -623,6 +723,8 @@ export const orchestrate = (
         sessionId: lifecycleResult.result.sessionId,
         sessionFilePath: lifecycleResult.result.sessionFilePath,
         usage: lifecycleResult.result.usage,
+        provider: lifecycleResult.result.provider,
+        providerAttempts: lifecycleResult.result.providerAttempts,
       });
 
       if (lifecycleResult.result.completionSignal !== undefined) {

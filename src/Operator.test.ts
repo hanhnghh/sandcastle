@@ -62,7 +62,7 @@ test("all role, schema, provider, effort and unsafe-field failures leave the sav
     config: await loadRoleConfig({ cwd }),
   });
   const invalid: unknown[] = [
-    { ...original, schemaVersion: 2 },
+    { ...original, schemaVersion: 3 },
     { ...original, auth: "secret" },
     { ...original, command: "touch /tmp/unsafe" },
   ];
@@ -294,7 +294,12 @@ test("operator HTTP requires a local session and exact origin/host and cannot pa
       "high",
       "xhigh",
     ]);
-    expect(Object.keys(observed)).toEqual(["config", "capability", "project"]);
+    expect(Object.keys(observed)).toEqual([
+      "config",
+      "capability",
+      "providers",
+      "project",
+    ]);
     expect(JSON.stringify(observed)).not.toContain("never-return-this-token");
     const invalidRole = structuredClone(config);
     invalidRole.roles.reviewer.model = "invalid model";
