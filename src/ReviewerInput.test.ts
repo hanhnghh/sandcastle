@@ -61,6 +61,8 @@ it("reviewer can begin reviewing every changed file without embedding a multi-me
       ISSUE_TITLE: "Review large artifact",
       BRANCH: "issue",
       REVIEW_BASE_SHA: base,
+      REVIEW_ROUND: "1",
+      REVIEW_REPAIR_ROUNDS: "2",
       VIEW_TASK_COMMAND: "gh issue view <ID> --json body",
     },
     logging: { type: "file", path: join(cwd, "review.log") },

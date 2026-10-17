@@ -166,6 +166,23 @@ export {
 } from "./ReviewProviders.js";
 export type { InstructionsResult } from "./ReviewProviders.js";
 export {
+  REVIEW_VERDICT_TAG,
+  formatReviewFindings,
+  parseReviewVerdict,
+  reviewVerdictSchema,
+  runReviewLoop,
+  withReviewVerdict,
+} from "./ReviewLoop.js";
+export type {
+  ReviewFinding,
+  ReviewLoopOptions,
+  ReviewLoopResult,
+  ReviewLoopRun,
+  ReviewRound,
+  ReviewRunEvidence,
+  ReviewVerdict,
+} from "./ReviewLoop.js";
+export {
   withAgentFallback,
   agentChainOf,
   classifyProviderFailure,

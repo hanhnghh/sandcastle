@@ -93,11 +93,23 @@ final scoped diff and status. Never report an unexecuted command as passing.
 An in-scope failure remains red; record proven pre-existing or environmental
 failures explicitly.
 
+# REVIEW ROUND
+
+This is review round {{REVIEW_ROUND}}. Implementer repair rounds configured:
+{{REVIEW_REPAIR_ROUNDS}}.
+
+- When the configured repair rounds are above 0, do not repair code yourself.
+  Report every in-scope defect as a finding; the implementer repairs the
+  findings and you review again. On a later round, confirm each earlier
+  finding is resolved and review the new changes.
+- When the configured repair rounds are 0, repair in-scope defects yourself as
+  described in this prompt.
+
 # COMPLETION GATE
 
 The branch is branch-ready for integration only when every branch-required
-review row passes or is contract-justified `not-applicable`, all in-scope findings
-are repaired, affected branch checks are green, and the diff contains no unrelated
+review row passes or is contract-justified `not-applicable`, no critical or
+major finding remains, affected branch checks are green, and the diff contains no unrelated
 churn, secrets, local state, generated-file mistakes, or undocumented contract
 changes.
 
@@ -109,6 +121,18 @@ Record the integration owner's command and future gate as `pending-integration`
 in the review ledger. Only that owner's future checks may be pending; missing
 behavior evidence remains a finding. This signal means branch-ready, not
 issue-complete, and does not authorize closure. Print the final review ledger,
-then emit:
+then emit exactly one verdict as JSON inside the tag:
+
+<review-verdict>{"verdict":"approve","summary":"One paragraph.","findings":[]}</review-verdict>
+
+- `approve`: the branch is branch-ready; only `minor` findings may be listed.
+- `changes-requested`: list every finding the implementer must repair, each as
+  `{"id":"F1","severity":"critical|major|minor","file":"path","line":12,"change":"Required change"}`
+  (`file` and `line` are optional; ids are unique).
+- `blocked`: the review cannot be completed (missing contract, unavailable
+  environment). Explain in `summary` and emit `<promise>BLOCKED</promise>`
+  instead of the completion signal.
+
+After an `approve` or `changes-requested` verdict, emit:
 
 <promise>COMPLETE</promise>

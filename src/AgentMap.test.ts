@@ -469,3 +469,54 @@ it("records provider fallback attempts and the provider that actually ran", asyn
     ],
   });
 });
+
+it("records the review verdict and findings and does not show a changes-requested review as completed", async () => {
+  const { withReviewVerdict } = await import("./ReviewLoop.js");
+  const cwd = await mkdtemp(join(tmpdir(), "agent-map-review-"));
+  cleanup.push(() => rm(cwd, { recursive: true, force: true }));
+  const map = await createAgentMap({ cwd, name: "Review" });
+  cleanup.push(() => map.finish("completed"));
+  const server = await startDashboard({ cwd, port: 0 });
+  cleanup.push(server.close);
+  const finding = { id: "F1", severity: "major", file: "a.ts", change: "Fix" };
+  const stdout = (verdict: unknown) =>
+    `<review-verdict>${JSON.stringify(verdict)}</review-verdict><promise>COMPLETE</promise>`;
+  for (const [title, verdict] of [
+    ["changes", { verdict: "changes-requested", findings: [finding] }],
+    ["approved", { verdict: "approve", findings: [] }],
+  ] as const)
+    await map.track({ batch: 1, role: "reviewer", title, branch: "b" }, () =>
+      withReviewVerdict({
+        stdout: stdout(verdict),
+        commits: [],
+        completionSignal: "<promise>COMPLETE</promise>",
+      }),
+    );
+  await map.track(
+    { batch: 1, role: "reviewer", title: "garbled", branch: "b" },
+    () =>
+      withReviewVerdict({
+        stdout: "no verdict",
+        commits: [],
+        completionSignal: "<promise>COMPLETE</promise>",
+      }),
+  );
+  const snapshot = (await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
+    r.json(),
+  )) as { nodes: { title: string }[] };
+  const byTitle = Object.fromEntries(
+    snapshot.nodes.map((node) => [node.title, node]),
+  );
+  expect(byTitle.changes).toMatchObject({
+    status: "stopped",
+    review: { verdict: "changes-requested", findings: [finding] },
+  });
+  expect(byTitle.approved).toMatchObject({
+    status: "completed",
+    review: { verdict: "approve" },
+  });
+  expect(byTitle.garbled).toMatchObject({
+    status: "stopped",
+    review: { verdict: "invalid" },
+  });
+});

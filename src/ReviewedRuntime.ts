@@ -261,6 +261,10 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       "const MAX_PLANNER_ATTEMPTS = runtime.workflow.config.limits.plannerAttempts;",
     );
     content = content.replace(
+      "const MAX_REPAIR_ROUNDS = 2;",
+      "const MAX_REPAIR_ROUNDS = runtime.workflow.config.review?.maxRepairRounds ?? 2;",
+    );
+    content = content.replace(
       /const readiness = z[\s\S]*?\.parse\(JSON\.parse\(readFileSync\("\.sandcastle\/readiness\.json", "utf8"\)\)\);/,
       "const readiness = runtime.readiness;",
     );

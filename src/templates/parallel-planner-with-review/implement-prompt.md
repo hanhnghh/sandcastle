@@ -108,6 +108,16 @@ diagnosis loop in `.sandcastle/FEEDBACK_LOOPS.md` when repeated attempts stop
 producing new evidence. Record environmental or proven pre-existing failures
 explicitly. Missing or failing branch-required evidence blocks branch-ready.
 
+# REVIEW FINDINGS TO REPAIR
+
+{{REVIEW_FINDINGS}}
+
+When the list above is empty, this is the first implementation. Otherwise this
+is a review repair round: resolve every listed finding, keep the change scoped
+to those findings, rerun the affected checks and commit. If a finding is out of
+scope or incorrect, say why in the commit body instead of changing unrelated
+code.
+
 # COMPLETION GATE
 
 The branch is branch-ready for review only when all of the following are true:

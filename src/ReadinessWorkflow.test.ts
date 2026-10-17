@@ -77,9 +77,14 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
 } else if(prompt.includes('Review task ')) {
   const number=prompt.match(/Review task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('review:'+number);
   if(process.env.READINESS_FIXTURE_REVIEW_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
+  const repaired=fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').includes('repair:'+number);
+  const changes=(process.env.READINESS_FIXTURE_REVIEW_CHANGES==='1' && !repaired) || process.env.READINESS_FIXTURE_REVIEW_ALWAYS_CHANGES==='1';
+  console.log('<review-verdict>'+JSON.stringify(changes?{verdict:'changes-requested',findings:[{id:'F1',severity:'major',file:'task-'+number+'.txt',change:'Add a repair note'}]}:{verdict:'approve',findings:[]})+'</review-verdict>');
 }
 else if(prompt.includes('Implement task ')) {
-  const number=prompt.match(/Implement task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('implement:'+number);
+  const number=prompt.match(/Implement task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);
+  if(prompt.includes('- [F1] (major)')) {record('repair:'+number);fs.appendFileSync('repair-'+number+'.txt','repaired\\n');git('add','.');git('commit','-m','Repair '+number);console.log('<promise>COMPLETE</promise>');process.exit(0);}
+  record('implement:'+number);
   if(process.env.READINESS_FIXTURE_NO_PROGRESS!=='1' && !(number==='22' && process.env.READINESS_FIXTURE_RETAINED==='1')) {fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);}
   if(process.env.READINESS_FIXTURE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
 }
@@ -307,6 +312,15 @@ const defaultImageName = () => "fixture-image";`,
               config.limits.plannerAttempts,
           ),
         },
+        ...(extraEnv.READINESS_FIXTURE_REPAIR_ROUNDS
+          ? {
+              review: {
+                maxRepairRounds: Number(
+                  extraEnv.READINESS_FIXTURE_REPAIR_ROUNDS,
+                ),
+              },
+            }
+          : {}),
       },
     });
   }
@@ -423,6 +437,56 @@ it("runs the generated two-batch workflow through real orchestration and unlocks
         expect.objectContaining({ role: "readiness", status: "completed" }),
       ]),
     }),
+  ]);
+}, 90_000);
+
+it("repairs changes-requested findings through the implementer and merges only after approval", async () => {
+  const result = await execute({ READINESS_FIXTURE_REVIEW_CHANGES: "1" });
+  expect(result.error).toBeUndefined();
+  const forTask = result.trace.filter(
+    (value: string) => value.endsWith(":22") && !value.startsWith("plan:"),
+  );
+  expect(forTask).toEqual([
+    "implement:22",
+    "review:22",
+    "repair:22",
+    "review:22",
+    "merge:22",
+  ]);
+}, 90_000);
+
+it("retains the branch without merging when review findings exhaust the repair budget", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_REVIEW_ALWAYS_CHANGES: "1",
+  });
+  expect(result.error).toBeDefined();
+  const forTask = result.trace.filter(
+    (value: string) => value.endsWith(":22") && !value.startsWith("plan:"),
+  );
+  expect(forTask.filter((value: string) => value === "repair:22")).toHaveLength(
+    2,
+  );
+  expect(forTask.filter((value: string) => value === "review:22")).toHaveLength(
+    3,
+  );
+  expect(result.trace).not.toContain("merge:22");
+}, 90_000);
+
+it("the configured Codex runtime applies the saved review repair budget", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_REPAIR_ROUNDS: "1",
+    READINESS_FIXTURE_REVIEW_ALWAYS_CHANGES: "1",
+  });
+  expect(result.error).toBeDefined();
+  const forTask = result.trace.filter(
+    (value: string) => value.endsWith(":22") && !value.startsWith("plan:"),
+  );
+  expect(forTask).toEqual([
+    "implement:22",
+    "review:22",
+    "repair:22",
+    "review:22",
   ]);
 }, 90_000);
 
