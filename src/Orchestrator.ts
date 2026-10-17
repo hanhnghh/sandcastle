@@ -1,4 +1,4 @@
-import { Deferred, Duration, Effect, Fiber } from "effect";
+import { Deferred, Duration, Effect, Fiber, Option } from "effect";
 import { AgentStreamEmitter } from "./AgentStreamEmitter.js";
 import { Display } from "./Display.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
@@ -120,7 +120,7 @@ const invokeAgent = (
             yield* Deferred.fail(
               timeoutSignal,
               new AgentIdleTimeoutError({
-                message: `Agent idle for ${idleTimeoutMs / 1000} seconds — no output received. Consider increasing the idle timeout with --idle-timeout.`,
+                message: `Agent idle for ${idleTimeoutMs / 1000} seconds — no stdout or tracked session activity received. Consider increasing the idle timeout with --idle-timeout.`,
                 timeoutMs: idleTimeoutMs,
               }),
             );
@@ -147,6 +147,48 @@ const invokeAgent = (
     }
 
     resetTimer();
+
+    // Some Codex versions persist activity that exec --json does not forward.
+    // Only growth in this invocation's session is evidence of activity. A live
+    // PID, static rollout, unrelated session or a failed probe is not a heartbeat.
+    let activitySessionId: string | undefined;
+    let activityBytes: number | undefined;
+    const activityPollMs = Math.min(5_000, idleTimeoutMs / 4);
+    if (provider.buildActivityCommand) {
+      yield* Effect.forkScoped(
+        Effect.gen(function* () {
+          while (true) {
+            yield* Effect.sleep(Duration.millis(activityPollMs));
+            const observedId = sessionId;
+            if (!observedId || completionDetected) continue;
+            const sample = yield* sandbox
+              .exec(provider.buildActivityCommand!(observedId), {
+                cwd: sandboxRepoDir,
+              })
+              .pipe(
+                Effect.timeoutOption(Duration.millis(activityPollMs)),
+                Effect.catchAll(() => Effect.succeed(Option.none())),
+              );
+            // Do not accumulate detached SDK execs if a probe itself hangs.
+            // Fall back to stdout-only detection for the rest of this invocation.
+            if (Option.isNone(sample)) return;
+            if (sessionId !== observedId || completionDetected) continue;
+            const result = sample.value;
+            const output = result.stdout.trim();
+            if (result.exitCode !== 0 || !/^\d+$/.test(output)) continue;
+            const bytes = Number(output);
+            if (!Number.isSafeInteger(bytes)) continue;
+            if (activitySessionId !== observedId) {
+              activitySessionId = observedId;
+              activityBytes = bytes;
+            } else if (activityBytes !== undefined && bytes > activityBytes) {
+              activityBytes = bytes;
+              resetTimer();
+            }
+          }
+        }),
+      );
+    }
 
     const execEffect = Effect.gen(function* () {
       const printCmd = provider.buildPrintCommand({
@@ -252,7 +294,7 @@ const invokeAgent = (
         }),
       ),
     );
-  });
+  }).pipe(Effect.scoped);
 
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
 const DEFAULT_IDLE_TIMEOUT_SECONDS = 10 * 60; // 600 seconds
@@ -266,7 +308,7 @@ export interface OrchestrateOptions {
   readonly branch?: string;
   readonly provider: AgentProvider;
   readonly completionSignal?: string | string[];
-  /** Idle timeout in seconds. If the agent produces no output for this long, it fails with AgentIdleTimeoutError. Default: 600 (10 minutes) */
+  /** Idle timeout in seconds without stdout or provider-reported session growth. Fails with AgentIdleTimeoutError. Default: 600 (10 minutes). */
   readonly idleTimeoutSeconds?: number;
   /**
    * Grace window in seconds after a completion signal is observed in the

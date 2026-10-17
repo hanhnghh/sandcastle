@@ -3,6 +3,7 @@ import { exec } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
+  appendFile,
   copyFile,
   mkdir,
   mkdtemp,
@@ -2499,6 +2500,174 @@ describe("Orchestrator Display integration", () => {
     // Should succeed because the raw stdout line at t=100ms resets the idle timer
     expect(exitResult._tag).toBe("Success");
   }, 10_000);
+
+  it.each([
+    "current session",
+    "other session",
+    "stale session",
+    "missing session",
+    "stops growing",
+    "completion while growing",
+    "aborted while growing",
+    "truncated session",
+    "probe failure",
+    "probe hangs",
+  ])(
+    "uses persisted Codex activity without stdout: %s",
+    async (activity) => {
+      const hostDir = await mkdtemp(join(tmpdir(), "orch-codex-activity-"));
+      const sessions = await mkdtemp(
+        join(tmpdir(), "codex sessions 'activity-"),
+      );
+      try {
+        await initRepo(hostDir);
+        await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+        const id = randomUUID();
+        const sessionDir = join(sessions, "2026", "10", "12");
+        await mkdir(sessionDir, { recursive: true });
+        const file = join(sessionDir, `rollout-fixture-${id}.jsonl`);
+        if (activity !== "missing session") await writeFile(file, "initial\n");
+        const controller = new AbortController();
+        let probes = 0;
+        let finished = false;
+        const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) => {
+          const real = makeLocalSandbox(dir);
+          return {
+            ...real,
+            exec: (command, options) => {
+              if (command.startsWith("node -e ")) probes++;
+              if (
+                command.startsWith("node -e ") &&
+                activity === "probe failure"
+              )
+                return Effect.succeed({
+                  stdout: "999999",
+                  stderr: "probe unavailable",
+                  exitCode: 1,
+                });
+              if (command.startsWith("node -e ") && activity === "probe hangs")
+                return Effect.never;
+              if (!command.startsWith("codex ") || !options?.onLine)
+                return real.exec(command, options);
+              return Effect.gen(function* () {
+                options.onLine!(
+                  JSON.stringify({ type: "thread.started", thread_id: id }),
+                );
+                // Replay #7's observation: the rollout advances, stdout does not.
+                for (
+                  let i = 0;
+                  i < (activity === "stops growing" ? 24 : 12);
+                  i++
+                ) {
+                  yield* Effect.sleep("120 millis");
+                  if (
+                    activity === "current session" ||
+                    activity === "other session" ||
+                    activity === "completion while growing" ||
+                    activity === "aborted while growing" ||
+                    (activity === "stops growing" && i < 3)
+                  )
+                    yield* Effect.promise(() =>
+                      appendFile(
+                        activity === "other session"
+                          ? join(sessionDir, "rollout-fixture-unrelated.jsonl")
+                          : file,
+                        "private session content <promise>COMPLETE</promise>\n",
+                      ),
+                    );
+                  if (activity === "truncated session")
+                    yield* Effect.promise(() => writeFile(file, ""));
+                  if (activity === "aborted while growing" && i === 3)
+                    controller.abort("fixture abort");
+                  if (activity === "completion while growing" && i === 3)
+                    options.onLine!(
+                      JSON.stringify({
+                        type: "item.completed",
+                        item: {
+                          type: "agent_message",
+                          text: "done <promise>COMPLETE</promise>",
+                        },
+                      }),
+                    );
+                  if (activity === "completion while growing" && i === 8)
+                    return yield* Effect.never;
+                }
+                finished = true;
+                options.onLine!(
+                  JSON.stringify({
+                    type: "item.completed",
+                    item: {
+                      type: "agent_message",
+                      text: "done <promise>COMPLETE</promise>",
+                    },
+                  }),
+                );
+                return { stdout: "", stderr: "", exitCode: 0 };
+              });
+            },
+          };
+        });
+        const events: AgentStreamEvent[] = [];
+        const result = await Effect.runPromise(
+          orchestrate({
+            provider: codexFactory("test-model", {
+              captureSessions: false,
+              sessionStorage: { sandboxSessionsDir: sessions },
+            }),
+            hostRepoDir: hostDir,
+            iterations: 1,
+            prompt: "test",
+            idleTimeoutSeconds: 0.8,
+            completionTimeoutSeconds: 0.25,
+            signal: controller.signal,
+          }).pipe(
+            Effect.provide(
+              Layer.merge(
+                factoryLayer,
+                Layer.merge(
+                  SilentDisplay.layer(
+                    Ref.unsafeMake<ReadonlyArray<DisplayEntry>>([]),
+                  ),
+                  agentStreamEmitterLayer((e) => events.push(e)),
+                ),
+              ),
+            ),
+            Effect.exit,
+          ),
+        );
+        if (
+          activity === "current session" ||
+          activity === "completion while growing"
+        )
+          expect(result._tag).toBe("Success");
+        else {
+          expect(result._tag).toBe("Failure");
+          if (result._tag === "Failure")
+            if (activity === "aborted while growing")
+              expect(Cause.squash(result.cause)).toBe("fixture abort");
+            else
+              expect(Cause.squash(result.cause)).toBeInstanceOf(
+                AgentIdleTimeoutError,
+              );
+        }
+        if (activity === "current session") expect(finished).toBe(true);
+        if (
+          activity === "completion while growing" ||
+          activity === "aborted while growing"
+        ) {
+          expect(finished).toBe(false);
+          const probesAtExit = probes;
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          expect(probes).toBe(probesAtExit);
+        }
+        expect(JSON.stringify(events)).not.toContain("private session content");
+      } finally {
+        await rm(hostDir, { recursive: true, force: true });
+        await rm(sessions, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
 
   it("logs periodic idle warnings every IDLE_WARNING_INTERVAL_MS of inactivity", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "orch-idle-warn-"));

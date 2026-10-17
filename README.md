@@ -937,6 +937,20 @@ await run({
 
 This is independent of `idleTimeoutSeconds`. They cover different phases: `idleTimeoutSeconds` runs **before** any signal is seen (genuinely stuck agent → fail); `completionTimeoutSeconds` runs **after** the signal is seen (hanging process → succeed with warning). See [ADR 0019](docs/adr/0019-completion-timeout-for-hanging-process.md).
 
+Codex can persist activity without forwarding it through `exec --json`. In
+addition to stdout, Sandcastle checks for growth in the exact rollout identified
+by `thread.started`, using a read-only Node.js metadata probe inside the sandbox.
+It honors `sessionStorage.sandboxSessionsDir`, otherwise `CODEX_HOME/sessions`
+(or `~/.codex/sessions`). The initial size is only a baseline: unchanged files,
+other sessions, missing or failed probes and a live PID do not extend the idle
+timeout. No transcript content is read or surfaced. This also works with
+`captureSessions: false`; capture and activity detection are separate concerns.
+If Node.js or the session file is unavailable, stdout-based detection remains
+in force. Polling is bounded and scoped to the invocation; a hung probe disables
+further probing. Activity never implies verified progress or completion, and
+does not extend the post-completion grace window. This does not prevent host
+sleep or recover an already interrupted agent.
+
 ### Structured output
 
 Use `Output.object()` to extract a typed, schema-validated JSON payload from the agent's stdout. The agent emits its answer inside an XML tag you specify, and Sandcastle parses, validates, and returns it on `result.output`. The schema can be any [Standard Schema](https://standardschema.dev) validator — the examples below use [Zod](https://zod.dev), but Valibot, ArkType, and others work identically. See [ADR 0010](docs/adr/0010-structured-output.md) for design rationale.
