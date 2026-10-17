@@ -42,7 +42,8 @@ const configSchema = z
 /** Credential-free Docker image/build settings shared by host automation and web. */
 export type EnvironmentConfig = z.infer<typeof configSchema>;
 const safeError = (message: string) => new OperatorError({ message });
-const validate = (input: unknown) =>
+/** Internal compatibility validator shared by environment settings and migration. */
+export const validateEnvironmentConfigEffect = (input: unknown) =>
   Effect.try({
     try: () => configSchema.parse(input),
     catch: () =>
@@ -97,7 +98,7 @@ export const loadEnvironmentConfigEffect = (cwd: string) =>
       try: () => JSON.parse(text) as unknown,
       catch: () => safeError("environment.json contains invalid JSON"),
     });
-    return yield* validate(input);
+    return yield* validateEnvironmentConfigEffect(input);
   }).pipe(
     Effect.mapError(() =>
       safeError("Cannot read valid project environment settings"),
@@ -119,7 +120,7 @@ export const saveEnvironmentConfig = (options: {
 }): Promise<EnvironmentConfig> =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const config = yield* validate(options.config);
+      const config = yield* validateEnvironmentConfigEffect(options.config);
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* managedDirectory(options.cwd);
       const root = yield* fs.realPath(resolve(options.cwd));

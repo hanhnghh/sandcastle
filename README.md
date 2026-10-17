@@ -185,6 +185,14 @@ explicit actions; local archives remain pinned. See the
 [release and consumer update procedures](docs/operator.md#runtime-updates) for
 project configuration, versioned candidate packing and recovery.
 
+Use **Existing project migration** or
+`sandcastle migration --cwd /path/to/project --dry-run` to review supported legacy
+Codex consumers after installing the fork. Apply requires the reviewed revision
+and explicit prompt-conflict preservation; rollback retains project customization.
+Unsupported custom workflows receive manual adaptation instructions. See
+[existing-project migration](docs/operator.md#existing-project-migration) for
+supported templates, recovery and limitations.
+
 See the [operator guide](docs/operator.md) for SDK/HTTP interfaces, custom
 project adapters and legacy workflow compatibility.
 

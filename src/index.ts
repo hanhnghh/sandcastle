@@ -196,3 +196,13 @@ export type {
   RuntimeCandidate,
   RuntimeInstallation,
 } from "./OperatorUpdates.js";
+
+export {
+  planProjectMigration,
+  applyProjectMigration,
+  rollbackProjectMigration,
+} from "./OperatorMigration.js";
+export type {
+  ProjectMigrationPlan,
+  MigrationFile,
+} from "./OperatorMigration.js";
