@@ -72,6 +72,8 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   console.log('<plan>'+JSON.stringify({issues:issues.map(i=>({id:String(i.number),title:i.title,branch:'sandcastle/issue-'+i.number})),decisions:issues.map(i=>({id:String(i.number),disposition:'selected',reason:'independent',likelyAreas:['task-'+i.number]}))})+'</plan>');
 } else if(prompt.includes('Integrate the following completed branches')) {
   const branches=[...new Set(prompt.match(/sandcastle\\/issue-\\d+/g))];
+  if(process.env.READINESS_FIXTURE_INDEPENDENT==='1') record('merger:'+branches.map(b=>b.split('-').at(-1)).join('+'));
+  if(branches.some(b=>b.endsWith('-'+process.env.READINESS_FIXTURE_MERGE_BLOCKED_ISSUE))) {console.log('<promise>BLOCKED</promise>');process.exit(0);}
   for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); execFileSync('gh',['issue','close',String(number)]); }
   if(process.env.READINESS_FIXTURE_MERGE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
 } else if(prompt.includes('Review task ')) {
@@ -136,7 +138,7 @@ async function execute(
             ? "**Kind:** meta\nParent tracking task"
             : extraEnv.READINESS_FIXTURE_QUALIFICATION_ONLY === "1"
               ? "**Kind:** live-validation\nLive protocol still required"
-              : number === 20
+              : extraEnv.READINESS_FIXTURE_INDEPENDENT !== "1" && number === 20
                 ? "## Dependencies\n- #22"
                 : "Implement slice",
         state: "open",
@@ -144,7 +146,12 @@ async function execute(
         updated_at: "now",
         labels: [
           { name: "Sandcastle" },
-          { name: number === 20 ? "blocked" : "ready-for-agent" },
+          {
+            name:
+              extraEnv.READINESS_FIXTURE_INDEPENDENT !== "1" && number === 20
+                ? "blocked"
+                : "ready-for-agent",
+          },
           ...(extraEnv.READINESS_FIXTURE_HOLD === "1"
             ? [{ name: "readiness:hold" }]
             : []),
@@ -172,6 +179,7 @@ async function execute(
               ...i,
               comments: [],
               dependencies:
+                extraEnv.READINESS_FIXTURE_INDEPENDENT !== "1" &&
                 i.number === 20
                   ? [
                       {
@@ -188,7 +196,7 @@ async function execute(
               : "implementation",
             gates: ["integration"],
             dependencies:
-              i.number === 20
+              extraEnv.READINESS_FIXTURE_INDEPENDENT !== "1" && i.number === 20
                 ? { "owner/project#22": "refs/heads/sandcastle/issue-22" }
                 : {},
           },
@@ -246,6 +254,10 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
   let main = await readFile(mainPath, "utf8");
   main = main
     .replace("const MAX_ITERATIONS = 10;", "const MAX_ITERATIONS = 3;")
+    .replace(
+      'const MERGE_MODE: "batch" | "per-branch" = "batch";',
+      `const MERGE_MODE: "batch" | "per-branch" = ${JSON.stringify(extraEnv.READINESS_FIXTURE_MERGE_MODE ?? "batch")};`,
+    )
     .replace(
       "const PROVIDER_FAILURE_THRESHOLD = 3;",
       `const PROVIDER_FAILURE_THRESHOLD = ${extraEnv.READINESS_FIXTURE_BREAKER ?? 3};`,
@@ -318,6 +330,15 @@ const defaultImageName = () => "fixture-image";`,
               config.limits.plannerAttempts,
           ),
         },
+        ...(extraEnv.READINESS_FIXTURE_MERGE_MODE
+          ? {
+              merge: {
+                mode: extraEnv.READINESS_FIXTURE_MERGE_MODE as
+                  | "batch"
+                  | "per-branch",
+              },
+            }
+          : {}),
         ...(extraEnv.READINESS_FIXTURE_REPAIR_ROUNDS
           ? {
               review: {
@@ -524,6 +545,66 @@ it("opens the circuit breaker after consecutive provider failures and stops with
   expect(result.trace).not.toContain("review:22");
   expect(result.trace).not.toContain("merge:22");
   expect(result.trace).not.toContain("plan:20");
+}, 90_000);
+
+it("batch mode integrates independent approved branches with one merger after the batch", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+  });
+  expect(result.error).toBeUndefined();
+  const mergers = result.trace.filter((value: string) =>
+    value.startsWith("merger:"),
+  );
+  expect(mergers).toHaveLength(1);
+  expect(mergers[0]!.split(":")[1]!.split("+").sort()).toEqual(["20", "22"]);
+}, 90_000);
+
+it("per-branch mode integrates each approved branch as soon as it is approved", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_MERGE_MODE: "per-branch",
+  });
+  expect(result.error).toBeUndefined();
+  const mergers = result.trace.filter((value: string) =>
+    value.startsWith("merger:"),
+  );
+  expect(mergers.sort()).toEqual(["merger:20", "merger:22"]);
+  // Streaming: the first approved branch merges while the other pipeline runs.
+  expect(result.trace.indexOf("merger:20")).toBeLessThan(
+    result.trace.indexOf("review:22"),
+  );
+  // Post-merge readiness runs for a merge that leaves open issues; after the
+  // last merge nothing is open, exactly as in batch mode.
+  expect(
+    result.trace.filter((value: string) => value === "readiness:post-merge"),
+  ).toHaveLength(1);
+  expect(result.trace.indexOf("readiness:post-merge")).toBeGreaterThan(
+    result.trace.indexOf("merger:20"),
+  );
+  expect(
+    result.issues.every((issue: { state: string }) => issue.state === "closed"),
+  ).toBe(true);
+}, 90_000);
+
+it("per-branch mode retains a branch whose merge is blocked without stopping the other merge", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_MERGE_MODE: "per-branch",
+    READINESS_FIXTURE_MERGE_BLOCKED_ISSUE: "20",
+  });
+  expect(result.trace).toContain("merge:22");
+  expect(result.trace).not.toContain("merge:20");
+  expect(
+    result.issues.find((issue: { number: number }) => issue.number === 22)
+      .state,
+  ).toBe("closed");
+  expect(
+    result.issues.find((issue: { number: number }) => issue.number === 20)
+      .state,
+  ).toBe("open");
 }, 90_000);
 
 it("stops before the next planner when post-merge project verification fails", async () => {
