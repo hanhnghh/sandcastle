@@ -436,13 +436,14 @@ export const createProjectRuntime = (
       const config = yield* loadRoleConfigEffect(options.cwd);
       const workflow = yield* loadWorkflowSnapshotEffect(options.cwd);
       if (
-        (workflow.config.advisor?.approach ?? "off") !== "off" &&
+        ((workflow.config.advisor?.approach ?? "off") !== "off" ||
+          workflow.config.advisor?.stuck === "on") &&
         !advisorSetting(config)
       )
         return yield* Effect.fail(
           new OperatorError({
             message:
-              "advisor.approach is enabled but no advisor role is configured; add roles.advisor to .sandcastle/roles.json (schema version 2) or set advisor.approach to off.",
+              "advisor.approach or advisor.stuck is enabled but no advisor role is configured; add roles.advisor to .sandcastle/roles.json (schema version 2) or turn the advisor options off.",
           }),
         );
       if (workflow.config.review?.requireDifferentProvider) {

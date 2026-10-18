@@ -169,6 +169,23 @@ export {
 } from "./ReviewProviders.js";
 export type { InstructionsResult } from "./ReviewProviders.js";
 export {
+  STUCK_ADVICE_TAG,
+  adviseWhenStuck,
+  formatStuckAdvice,
+  parseStuckAdvice,
+  stuckAdviceSchema,
+  withStuckAdvice,
+} from "./StuckAdvisor.js";
+export type {
+  StuckAdvice,
+  StuckAdviceEvidence,
+  StuckAdvisorOptions,
+  StuckAdvisorResult,
+  StuckCause,
+  StuckRun,
+  StuckTrigger,
+} from "./StuckAdvisor.js";
+export {
   APPROACH_CRITIQUE_TAG,
   APPROACH_PLAN_TAG,
   approachCritiqueSchema,
@@ -196,6 +213,7 @@ export {
   classifyPipelineFailure,
   createCircuitBreaker,
   describeFailure,
+  isIdleTimeout,
   ProviderUnavailableError,
   runTaskWithRetries,
   TaskAttemptsError,

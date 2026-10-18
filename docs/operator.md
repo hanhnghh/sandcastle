@@ -331,6 +331,38 @@ advisor nodes with verdict and concerns (`revise` → stopped, `escalate` →
 blocked). Host automation can use `runApproachCritique`,
 `parseApproachPlan`, `parseApproachCritique` and `withApproachCritique`.
 
+### Advisor: stuck advisor
+
+With the advisor role configured, `"advisor": { "stuck": "on" }` in
+`.sandcastle/workflow.json` (or **Stuck advisor** in the workflow form)
+consults the advisor when an implementation stalls instead of only retaining
+the branch:
+
+| Trigger                     | When                                                                             |
+| --------------------------- | -------------------------------------------------------------------------------- |
+| `implementation-incomplete` | the implementer ends without `<promise>COMPLETE</promise>` (for example BLOCKED) |
+| `idle-timeout`              | the implementer produced no output within the idle window                        |
+| `review-budget-exhausted`   | the review→repair budget is spent with findings still open                       |
+
+Provider and infrastructure failures still go through task retries (#15)
+first; they never reach the advisor while retries remain.
+
+The advisor reads, read-only and without tracker credentials, the task, the
+diff against the batch base including uncommitted work, the worktree status,
+the end of the implementer output and open review findings, and returns
+`<stuck-advice>` with a diagnosis, a cause (`misunderstood-task`,
+`wrong-approach`, `environment`, `missing-dependency`, `flaky`, `unknown`),
+next steps, a confidence and `escalate`.
+
+Unless `escalate` is true or the cause is `environment` or
+`missing-dependency`, the implementer runs again on the same worktree with the
+advice as `{{STUCK_ADVICE}}`, up to `stuckAttempts` (0–2, default 1). After a
+review stall the advised repair goes through a fresh review loop; only an
+approval merges. If the stall is not resolved, the branch is retained and the
+failure reported to the owner includes the advisor's diagnosis. Advisor runs
+count against `maxInvocations`. Agent Map shows the advice on advisor nodes
+(escalated or owner-only causes as blocked).
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation

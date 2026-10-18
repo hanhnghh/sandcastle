@@ -91,11 +91,15 @@ export const workflowConfigSchema = z
     advisor: z
       .object({
         /** Approach critique before implementation: off, issues with the high-risk label, or all. */
-        approach: z.enum(["off", "high-risk", "all"]),
+        approach: z.enum(["off", "high-risk", "all"]).optional(),
         /** Label marking high-risk issues. Default risk:high. */
         highRiskLabel: label.optional(),
         /** Revise rounds after a revise verdict (0–3). Default 1. */
         approachRounds: z.number().int().min(0).max(3).optional(),
+        /** Consult the advisor when an implementation stalls. Default off. */
+        stuck: z.enum(["off", "on"]).optional(),
+        /** Advised implementer attempts per stall (0–2). Default 1. */
+        stuckAttempts: z.number().int().min(0).max(2).optional(),
         /** Advisor invocations allowed per run (1–200). Default 20. */
         maxInvocations: z.number().int().min(1).max(200).optional(),
       })

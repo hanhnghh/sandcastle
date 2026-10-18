@@ -386,7 +386,11 @@ async function loadWorkflow() {
   const approachField=document.createElement('select');approachField.id='workflow-advisorApproach';approachField.setAttribute('aria-label','Advisor approach critique');
   for(const [value,text] of [['off','Off'],['high-risk','High-risk issues only'],['all','All issues']]){const option=document.createElement('option');option.value=value;option.textContent=text;approachField.append(option);}
   approachField.value=(workflowConfig.advisor && workflowConfig.advisor.approach) || 'off';approachLabel.append(approachField);
-  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel,approachLabel);workflowDiagnostic(data);
+  const stuckLabel=document.createElement('label');stuckLabel.textContent='Stuck advisor';
+  const stuckField=document.createElement('select');stuckField.id='workflow-advisorStuck';stuckField.setAttribute('aria-label','Stuck advisor');
+  for(const [value,text] of [['off','Off'],['on','Diagnose stalled implementations']]){const option=document.createElement('option');option.value=value;option.textContent=text;stuckField.append(option);}
+  stuckField.value=(workflowConfig.advisor && workflowConfig.advisor.stuck) || 'off';stuckLabel.append(stuckField);
+  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel,approachLabel,stuckLabel);workflowDiagnostic(data);
 }
 document.getElementById('workflow-form').addEventListener('submit',async event=>{
   event.preventDefault();event.submitter.disabled=true;
@@ -407,7 +411,8 @@ document.getElementById('workflow-form').addEventListener('submit',async event=>
     const mergeMode=document.getElementById('workflow-mergeMode').value;
     if(mergeMode !== 'batch' || next.merge) next.merge={mode:mergeMode};
     const approachMode=document.getElementById('workflow-advisorApproach').value;
-    if(approachMode !== 'off' || next.advisor) next.advisor={...(next.advisor||{}),approach:approachMode};
+    const stuckMode=document.getElementById('workflow-advisorStuck').value;
+    if(approachMode !== 'off' || stuckMode !== 'off' || next.advisor) next.advisor={...(next.advisor||{}),approach:approachMode,stuck:stuckMode};
     workflowConfig=(await request('/api/workflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)})).config;
     workflowDiagnostic(await request('/api/workflow'));message('Workflow saved. Revision '+workflowConfig.revision.slice(0,12)+'. Applies to the next run.');
   } catch(error) {message(error.message,true);} finally {event.submitter.disabled=false;}

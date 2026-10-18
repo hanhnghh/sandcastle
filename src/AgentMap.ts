@@ -76,6 +76,16 @@ const nodeSchema = z.object({
     )
     .optional(),
   error: z.string().optional(),
+  advice: z
+    .object({
+      cause: z.string(),
+      diagnosis: z.string().optional(),
+      confidence: z.string().optional(),
+      escalate: z.boolean().optional(),
+      nextSteps: z.array(z.string()).default([]),
+      error: z.string().optional(),
+    })
+    .optional(),
   approach: z
     .object({
       verdict: z.enum(["proceed", "revise", "escalate", "invalid"]),
@@ -131,6 +141,7 @@ const nodeSchema = z.object({
 const resultSchema = z.object({
   review: nodeSchema.shape.review,
   approach: nodeSchema.shape.approach,
+  advice: nodeSchema.shape.advice,
   branch: z.string().optional(),
   completionSignal: z.string().optional(),
   commits: z.array(z.object({ sha: z.string() })).optional(),
@@ -436,8 +447,16 @@ export const createAgentMap = (options: {
                 const approach = parsed.success
                   ? parsed.data.approach?.verdict
                   : undefined;
+                const advised = parsed.success ? parsed.data.advice : undefined;
                 const verdict = parsed.success
                   ? (parsed.data.review?.verdict ??
+                    (advised?.cause === "invalid"
+                      ? "invalid"
+                      : advised?.escalate ||
+                          advised?.cause === "environment" ||
+                          advised?.cause === "missing-dependency"
+                        ? "blocked"
+                        : undefined) ??
                     (approach === "revise"
                       ? "changes-requested"
                       : approach === "escalate"
@@ -460,6 +479,7 @@ export const createAgentMap = (options: {
                 if (parsed.success) {
                   active.branch = parsed.data.branch || active.branch;
                   if (parsed.data.review) active.review = parsed.data.review;
+                  if (parsed.data.advice) active.advice = parsed.data.advice;
                   if (parsed.data.approach)
                     active.approach = parsed.data.approach;
                   active.commits = parsed.data.commits?.map((c) => c.sha) ?? [];

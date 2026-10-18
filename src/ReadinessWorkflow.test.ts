@@ -76,6 +76,12 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   if(branches.some(b=>b.endsWith('-'+process.env.READINESS_FIXTURE_MERGE_BLOCKED_ISSUE))) {console.log('<promise>BLOCKED</promise>');process.exit(0);}
   for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); execFileSync('gh',['issue','close',String(number)]); }
   if(process.env.READINESS_FIXTURE_MERGE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
+} else if(prompt.includes('has stalled')) {
+  const number=prompt.match(/implementation of task (\\d+)/)[1];const trigger=prompt.match(/stalled\\s*\\(.(\\S+?).\\)/)[1];record('stuck-advisor:'+number+':'+trigger);
+  if(process.env.GH_TOKEN || process.env.GITHUB_TOKEN) throw Error('Tracker credential leaked to advisor');
+  const mode=process.env.READINESS_FIXTURE_STUCK||'fix';
+  if(mode==='malformed') console.log('Cannot tell.');
+  else console.log('<stuck-advice>'+JSON.stringify({diagnosis:'The task file is missing a required line.',cause:mode==='environment'?'environment':'wrong-approach',nextSteps:['Write the required line','Commit it'],confidence:'high',escalate:mode==='escalate'})+'</stuck-advice>');
 } else if(prompt.includes('Critique the implementation approach for task')) {
   const number=prompt.match(/approach for task (\\d+)/)[1];record('advisor:'+number);
   if(process.env.GH_TOKEN || process.env.GITHUB_TOKEN) throw Error('Tracker credential leaked to advisor');
@@ -90,7 +96,8 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   const number=prompt.match(/Review task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('review:'+number);
   if(process.env.READINESS_FIXTURE_REVIEW_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
   const repaired=fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').includes('repair:'+number);
-  const changes=(process.env.READINESS_FIXTURE_REVIEW_CHANGES==='1' && !repaired) || process.env.READINESS_FIXTURE_REVIEW_ALWAYS_CHANGES==='1';
+  const advised=fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').includes('advised:'+number);
+  const changes=(process.env.READINESS_FIXTURE_REVIEW_CHANGES==='1' && !repaired) || process.env.READINESS_FIXTURE_REVIEW_ALWAYS_CHANGES==='1' || (process.env.READINESS_FIXTURE_REVIEW_UNTIL_ADVISED==='1' && !advised);
   console.log('<review-verdict>'+JSON.stringify(changes?{verdict:'changes-requested',findings:[{id:'F1',severity:'major',file:'task-'+number+'.txt',change:'Add a repair note'}]}:{verdict:'approve',findings:[]})+'</review-verdict>');
 }
 else if(prompt.includes('Implement task ')) {
@@ -104,10 +111,11 @@ else if(prompt.includes('Implement task ')) {
   if(prompt.includes('Verdict: proceed. Checked')) record('critique-received:'+number);
   const providerFailed=fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').includes('provider-fail:'+number);
   if(process.env.READINESS_FIXTURE_PROVIDER_FAIL==='always' || (process.env.READINESS_FIXTURE_PROVIDER_FAIL==='once' && !providerFailed)) {record('provider-fail:'+number);console.error('HTTP 429 Too Many Requests: rate limit');process.exit(1);}
+  if(prompt.includes('Diagnosis (wrong-approach')) {record('advised:'+number);fs.appendFileSync('advised-'+number+'.txt','advised\\n');git('add','.');git('commit','-m','Advised '+number);console.log('<promise>COMPLETE</promise>');process.exit(0);}
   if(prompt.includes('- [F1] (major)')) {record('repair:'+number);fs.appendFileSync('repair-'+number+'.txt','repaired\\n');git('add','.');git('commit','-m','Repair '+number);console.log('<promise>COMPLETE</promise>');process.exit(0);}
   record('implement:'+number);
   if(process.env.READINESS_FIXTURE_NO_PROGRESS!=='1' && !(number==='22' && process.env.READINESS_FIXTURE_RETAINED==='1')) {fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);}
-  if(process.env.READINESS_FIXTURE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
+  if(process.env.READINESS_FIXTURE_BLOCKED==='1' || process.env.READINESS_FIXTURE_IMPL_STALL==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
 }
 else throw Error('Unknown agent task');
 console.log('<promise>COMPLETE</promise>');
@@ -297,6 +305,10 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
       `const MERGE_MODE: "batch" | "per-branch" = ${JSON.stringify(extraEnv.READINESS_FIXTURE_MERGE_MODE ?? "batch")};`,
     )
     .replace(
+      'const ADVISOR_STUCK: "off" | "on" = "off";',
+      `const ADVISOR_STUCK: "off" | "on" = ${JSON.stringify(extraEnv.READINESS_FIXTURE_STUCK_MODE ?? "off")};`,
+    )
+    .replace(
       'const ADVISOR_APPROACH: "off" | "high-risk" | "all" = "off";',
       `const ADVISOR_APPROACH: "off" | "high-risk" | "all" = ${JSON.stringify(extraEnv.READINESS_FIXTURE_APPROACH ?? "off")};`,
     )
@@ -372,13 +384,25 @@ const defaultImageName = () => "fixture-image";`,
               config.limits.plannerAttempts,
           ),
         },
-        ...(extraEnv.READINESS_FIXTURE_APPROACH
+        ...(extraEnv.READINESS_FIXTURE_APPROACH ||
+        extraEnv.READINESS_FIXTURE_STUCK_MODE
           ? {
               advisor: {
-                approach: extraEnv.READINESS_FIXTURE_APPROACH as
-                  | "off"
-                  | "high-risk"
-                  | "all",
+                ...(extraEnv.READINESS_FIXTURE_APPROACH
+                  ? {
+                      approach: extraEnv.READINESS_FIXTURE_APPROACH as
+                        | "off"
+                        | "high-risk"
+                        | "all",
+                    }
+                  : {}),
+                ...(extraEnv.READINESS_FIXTURE_STUCK_MODE
+                  ? {
+                      stuck: extraEnv.READINESS_FIXTURE_STUCK_MODE as
+                        | "off"
+                        | "on",
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -746,6 +770,91 @@ it("approach critique in high-risk mode skips issues without the high-risk label
     result.trace.some((value: string) => value.startsWith("advisor:")),
   ).toBe(false);
   expect(result.trace).toContain("merge:22");
+}, 90_000);
+
+const stuckTrace = (trace: string[]) =>
+  trace.filter(
+    (value) =>
+      value.includes(":22") &&
+      !value.startsWith("plan:") &&
+      !value.startsWith("merger:"),
+  );
+
+it("stuck advisor: an incomplete implementation is diagnosed and an advised attempt continues to merge", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_STUCK_MODE: "on",
+    READINESS_FIXTURE_IMPL_STALL: "1",
+  });
+  expect(result.error).toBeUndefined();
+  expect(stuckTrace(result.trace)).toEqual([
+    "implement:22",
+    "stuck-advisor:22:implementation-incomplete",
+    "advised:22",
+    "review:22",
+    "merge:22",
+  ]);
+}, 90_000);
+
+for (const mode of ["escalate", "environment", "malformed"] as const)
+  it(`stuck advisor: ${mode} advice hands the stall to the owner without another attempt`, async () => {
+    const result = await execute({
+      READINESS_FIXTURE_STUCK_MODE: "on",
+      READINESS_FIXTURE_IMPL_STALL: "1",
+      READINESS_FIXTURE_STUCK: mode,
+    });
+    expect(result.error).toBeDefined();
+    expect(result.trace).toContain(
+      "stuck-advisor:22:implementation-incomplete",
+    );
+    expect(result.trace).not.toContain("advised:22");
+    expect(result.trace).not.toContain("merge:22");
+    if (mode !== "malformed")
+      expect(result.stdout + String(result.error)).toMatch(/Advisor diagnosis/);
+  }, 90_000);
+
+it("stuck advisor: an exhausted review budget gets an advised repair and a fresh review loop", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_STUCK_MODE: "on",
+    READINESS_FIXTURE_REVIEW_UNTIL_ADVISED: "1",
+  });
+  expect(result.error).toBeUndefined();
+  const forTask = stuckTrace(result.trace);
+  expect(forTask.filter((value) => value === "repair:22")).toHaveLength(2);
+  expect(
+    forTask.slice(forTask.indexOf("stuck-advisor:22:review-budget-exhausted")),
+  ).toEqual([
+    "stuck-advisor:22:review-budget-exhausted",
+    "advised:22",
+    "review:22",
+    "merge:22",
+  ]);
+}, 90_000);
+
+it("Codex runtime applies the saved stuck-advisor policy with the configured advisor model", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_STUCK_MODE: "on",
+    READINESS_FIXTURE_ADVISOR_ROLE: "1",
+    READINESS_FIXTURE_IMPL_STALL: "1",
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.trace).toContain("stuck-advisor:22:implementation-incomplete");
+  expect(result.trace).toContain("advised:22");
+  expect(result.trace).toContain("merge:22");
+  expect(
+    result.modelArgs.map((args: string[]) => args[args.indexOf("-m") + 1]),
+  ).toContain("configured-advisor");
+}, 90_000);
+
+it("stuck advisor off keeps the blocked implementation behaviour", async () => {
+  const result = await execute({ READINESS_FIXTURE_IMPL_STALL: "1" });
+  expect(result.error).toBeDefined();
+  expect(
+    result.trace.some((value: string) => value.startsWith("stuck-advisor:")),
+  ).toBe(false);
+  expect(
+    result.trace.filter((value: string) => value === "implement:22"),
+  ).toHaveLength(1);
 }, 90_000);
 
 it("stops before the next planner when post-merge project verification fails", async () => {

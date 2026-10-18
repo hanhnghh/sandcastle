@@ -28,6 +28,16 @@ const unwrap = (error: unknown): unknown => {
   return error;
 };
 
+/** True when the error is an agent idle/startup timeout (no output within the idle window). */
+export const isIdleTimeout = (error: unknown): boolean => {
+  const value = unwrap(error);
+  return (
+    !!value &&
+    typeof value === "object" &&
+    (value as { _tag?: unknown })._tag === "AgentIdleTimeoutError"
+  );
+};
+
 /** Short, credential-free description used in logs and evidence. */
 export const describeFailure = (error: unknown): string => {
   const value = unwrap(error);
