@@ -82,6 +82,9 @@ const advisorBudget = { remaining: 20 };
 // Consult the advisor when an implementation stalls: "off" | "on".
 const ADVISOR_STUCK: "off" | "on" = "off";
 const ADVISOR_STUCK_ATTEMPTS = 1;
+// Progress checkpoints: pause a long or drifting implementer for an advisor
+// check, then resume it with direction (workflow.json advisor.checkpoint).
+const ADVISOR_CHECKPOINT: sandcastle.CheckpointPolicy = { mode: "off" };
 const advisorAgent = () => sandcastle.claudeCode("claude-opus-4-8");
 // Post-merge readiness is incremental; every Nth post-merge run is full.
 const READINESS_FULL_EVERY = 5;
@@ -533,6 +536,7 @@ async function executeWorkflow() {
         // task failures (blocked, unapproved) are never retried.
         // Critique accepted on the first attempt; reused by retries.
         let approachCritique = "None.";
+        let approachPlan: sandcastle.ApproachPlan | undefined;
         const result = await sandcastle.runTaskWithRetries({
           retries: TASK_RETRIES,
           breaker,
@@ -556,6 +560,10 @@ async function executeWorkflow() {
                   critique: approachCritique,
                 },
                 stuckAdvice = "None.",
+                checkpoint: {
+                  progressCheck?: string;
+                  pauseSignal?: AbortSignal;
+                } = {},
               ) =>
                 sandbox!.run({
                   logging,
@@ -575,7 +583,9 @@ async function executeWorkflow() {
                     APPROACH_MODE: approach.mode,
                     APPROACH_CRITIQUE: approach.critique,
                     STUCK_ADVICE: stuckAdvice,
+                    PROGRESS_CHECK: checkpoint.progressCheck ?? "None.",
                   },
+                  pauseSignal: checkpoint.pauseSignal,
                 });
               const ensureSandbox = async () => {
                 sandbox ??= await sandcastle.createSandbox({
@@ -785,7 +795,211 @@ async function executeWorkflow() {
                   approachCritique = sandcastle.formatApproachCritique(
                     approach.critique,
                   );
+                approachPlan = approach.plan;
               }
+              // Progress checkpoints: run the implementer in pausable segments;
+              // the advisor checks progress at time and drift signals.
+              const runCheckpointed = async (
+                logging: sandcastle.LoggingOption,
+              ) => {
+                const budget = sandcastle.checkpointBudget({
+                  plan: approachPlan,
+                  labels: approachPlan ? [] : await issueLabels(issue.id),
+                  defaults: ADVISOR_CHECKPOINT.defaults,
+                  factor: ADVISOR_CHECKPOINT.factor,
+                });
+                const taskBody = await issueBody(issue.id);
+                // Observe the implementer's stream: error lines for drift,
+                // a narrative tail for the advisor.
+                const errorLines: string[] = [];
+                const narrative: string[] = [];
+                const observed: sandcastle.LoggingOption =
+                  logging.type === "file"
+                    ? {
+                        ...logging,
+                        onAgentStreamEvent: (event) => {
+                          logging.onAgentStreamEvent?.(event);
+                          if (event.type === "raw")
+                            errorLines.push(
+                              ...sandcastle.errorLinesOf(event.line),
+                            );
+                          else {
+                            narrative.push(
+                              event.type === "text"
+                                ? event.message
+                                : `${event.name}: ${event.formattedArgs}`,
+                            );
+                            if (narrative.length > 200) narrative.shift();
+                          }
+                        },
+                      }
+                    : logging;
+                const segmentOf = (
+                  run: (
+                    pauseSignal: AbortSignal,
+                  ) => Promise<Awaited<ReturnType<typeof runImplementer>>>,
+                ) => {
+                  const controller = new AbortController();
+                  return {
+                    result: run(controller.signal),
+                    pause: () => controller.abort(),
+                  };
+                };
+                const fresh = (progressCheck: string) =>
+                  segmentOf((pauseSignal) =>
+                    runImplementer(observed, "", undefined, "None.", {
+                      progressCheck,
+                      pauseSignal,
+                    }),
+                  );
+                const checkpointed = await sandcastle.runWithCheckpoints({
+                  budgetMinutes: budget.budgetMinutes,
+                  max: ADVISOR_CHECKPOINT.max,
+                  budget: advisorBudget,
+                  detector: sandcastle.createDriftDetector({
+                    briefFiles: approachPlan?.files,
+                    repeatThreshold: ADVISOR_CHECKPOINT.repeatThreshold,
+                    diffLimit: sandcastle.diffLineLimit(
+                      budget.size,
+                      ADVISOR_CHECKPOINT.factor,
+                    ),
+                  }),
+                  start: () => fresh("None."),
+                  // Committed and uncommitted changes against the batch base,
+                  // read without optional locks so the running implementer's
+                  // own git commands never meet a held index.lock.
+                  snapshot: async () => {
+                    const numstat = await sandbox!.exec(
+                      `export GIT_OPTIONAL_LOCKS=0; git diff --numstat ${batchBaseSha} && git ls-files --others --exclude-standard | while IFS= read -r f; do printf '%s\t0\t%s\n' "$(wc -l < "$f" | tr -d ' ')" "$f"; done`,
+                    );
+                    if (numstat.exitCode !== 0)
+                      throw new Error("progress snapshot failed");
+                    return {
+                      files: sandcastle.parseNumstat(numstat.stdout),
+                      log: errorLines.map((line) => `${line}\n`).join(""),
+                    };
+                  },
+                  check: (n, signal, progress) =>
+                    agentMap.track(
+                      {
+                        batch: iteration,
+                        role: "advisor",
+                        issueId: issue.id,
+                        title: `${issue.title} (checkpoint ${n}: ${signal.kind})`,
+                        branch: issue.branch,
+                      },
+                      async (advisorLogging) => {
+                        // The paused implementer's state, including uncommitted work.
+                        const diff = await sandbox!.exec(
+                          `git diff ${batchBaseSha}`,
+                        );
+                        const status = await sandbox!.exec(
+                          "git status --porcelain --untracked-files=all",
+                        );
+                        return sandcastle.withProgressCheck(
+                          runAdvisorPrompt(
+                            advisorLogging,
+                            "./.sandcastle/progress-check-prompt.md",
+                            {
+                              TASK_ID: issue.id,
+                              ISSUE_TITLE: issue.title,
+                              TASK_BODY: taskBody,
+                              APPROACH_PLAN: approachPlan
+                                ? sandcastle.formatApproachPlan(approachPlan)
+                                : "No approach brief.",
+                              CHECKPOINT_NUMBER: String(n),
+                              CHECKPOINT_SIGNAL: `${signal.kind}: ${signal.detail}`,
+                              ELAPSED_MINUTES: String(
+                                Math.round(progress.elapsedMinutes),
+                              ),
+                              BUDGET_MINUTES: String(
+                                Math.round(progress.budgetMinutes),
+                              ),
+                              PROGRESS_DIFF:
+                                diff.stdout.slice(-60_000) || "No changes.",
+                              PROGRESS_STATUS:
+                                status.stdout.slice(0, 10_000) || "Clean.",
+                              PROGRESS_LOG:
+                                narrative.join("\n").slice(-8_000) ||
+                                "No output.",
+                            },
+                          ),
+                          signal,
+                        );
+                      },
+                    ),
+                  // Same session when the provider can resume; else a fresh
+                  // attempt on the same worktree with the check as input.
+                  resume: (paused, check) => {
+                    const progressCheck = sandcastle.formatProgressCheck(check);
+                    if (!paused.resume)
+                      return { mode: "fresh", segment: fresh(progressCheck) };
+                    return {
+                      mode: "session",
+                      segment: segmentOf(async (pauseSignal) => {
+                        const resumed = await paused.resume!(
+                          [
+                            "A progress checkpoint paused you so the advisor could check your work against the task and approach.",
+                            progressCheck,
+                            "Continue from the current worktree; your uncommitted changes are intact. Follow the direction, or write `Disputed direction:` with your reason and continue your approach. Finish with the completion signal from your instructions.",
+                          ].join("\n\n"),
+                          { logging: observed, pauseSignal },
+                        );
+                        // A resume is one iteration; continue fresh if unfinished.
+                        if (resumed.paused || resumed.completionSignal)
+                          return resumed;
+                        const rest = await runImplementer(
+                          observed,
+                          "",
+                          undefined,
+                          "None.",
+                          { progressCheck, pauseSignal },
+                        );
+                        return {
+                          ...rest,
+                          stdout: resumed.stdout + rest.stdout,
+                          commits: [...resumed.commits, ...rest.commits],
+                        };
+                      }),
+                    };
+                  },
+                });
+                const record = {
+                  estimateMinutes: budget.estimateMinutes,
+                  budgetMinutes: budget.budgetMinutes,
+                  elapsedMinutes: checkpointed.elapsedMinutes,
+                  source: budget.source,
+                  outcome: checkpointed.outcome,
+                  // The implementer may dispute direction with a reason.
+                  disputed: checkpointed.stdout.includes("Disputed direction:"),
+                  checkpoints: checkpointed.checkpoints.map((c) => ({
+                    signal: c.signal.kind,
+                    verdict:
+                      c.check?.verdict ?? (c.skipped ? "skipped" : "invalid"),
+                    resumed: c.resumed,
+                  })),
+                };
+                console.log(
+                  `  ${issue.id} checkpoints ${checkpointed.outcome}: estimate ${budget.estimateMinutes} min (${budget.source}), budget ${budget.budgetMinutes}, actual ${checkpointed.elapsedMinutes}; ${record.checkpoints.map((c) => `${c.signal}=${c.verdict}${c.resumed ? `/${c.resumed}` : ""}`).join(", ") || "none"}`,
+                );
+                if (checkpointed.outcome !== "completed") {
+                  const last = checkpointed.checkpoints.at(-1);
+                  throw new Error(
+                    `Progress checkpoint ${checkpointed.outcome} for issue ${issue.id}; retain the branch and leave its issue open.` +
+                      (last?.check
+                        ? `\nAdvisor assessment:\n${sandcastle.formatProgressCheck(last.check)}`
+                        : checkpointed.error
+                          ? `\nAdvisor: ${checkpointed.error}`
+                          : ""),
+                  );
+                }
+                return {
+                  ...checkpointed.result,
+                  stdout: checkpointed.stdout,
+                  commits: [...checkpointed.commits],
+                  progress: record,
+                };
+              };
               let implement:
                 | Awaited<ReturnType<typeof runImplementer>>
                 | undefined;
@@ -806,7 +1020,9 @@ async function executeWorkflow() {
                   },
                   async (logging) => {
                     await ensureSandbox();
-                    return runImplementer(logging, "");
+                    return ADVISOR_CHECKPOINT.mode === "on"
+                      ? runCheckpointed(logging)
+                      : runImplementer(logging, "");
                   },
                 );
               } catch (error) {

@@ -390,7 +390,11 @@ async function loadWorkflow() {
   const stuckField=document.createElement('select');stuckField.id='workflow-advisorStuck';stuckField.setAttribute('aria-label','Stuck advisor');
   for(const [value,text] of [['off','Off'],['on','Diagnose stalled implementations']]){const option=document.createElement('option');option.value=value;option.textContent=text;stuckField.append(option);}
   stuckField.value=(workflowConfig.advisor && workflowConfig.advisor.stuck) || 'off';stuckLabel.append(stuckField);
-  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel,approachLabel,stuckLabel);workflowDiagnostic(data);
+  const checkpointLabel=document.createElement('label');checkpointLabel.textContent='Progress checkpoints';
+  const checkpointField=document.createElement('select');checkpointField.id='workflow-advisorCheckpoint';checkpointField.setAttribute('aria-label','Progress checkpoints');
+  for(const [value,text] of [['off','Off'],['on','Pause long or drifting implementations for a check']]){const option=document.createElement('option');option.value=value;option.textContent=text;checkpointField.append(option);}
+  checkpointField.value=(workflowConfig.advisor && workflowConfig.advisor.checkpoint && workflowConfig.advisor.checkpoint.mode) || 'off';checkpointLabel.append(checkpointField);
+  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel,approachLabel,stuckLabel,checkpointLabel);workflowDiagnostic(data);
 }
 document.getElementById('workflow-form').addEventListener('submit',async event=>{
   event.preventDefault();event.submitter.disabled=true;
@@ -412,7 +416,9 @@ document.getElementById('workflow-form').addEventListener('submit',async event=>
     if(mergeMode !== 'batch' || next.merge) next.merge={mode:mergeMode};
     const approachMode=document.getElementById('workflow-advisorApproach').value;
     const stuckMode=document.getElementById('workflow-advisorStuck').value;
-    if(approachMode !== 'off' || stuckMode !== 'off' || next.advisor) next.advisor={...(next.advisor||{}),approach:approachMode,stuck:stuckMode};
+    const checkpointMode=document.getElementById('workflow-advisorCheckpoint').value;
+    if(approachMode !== 'off' || stuckMode !== 'off' || checkpointMode !== 'off' || next.advisor) next.advisor={...(next.advisor||{}),approach:approachMode,stuck:stuckMode};
+    if(next.advisor && (checkpointMode !== 'off' || next.advisor.checkpoint)) next.advisor.checkpoint={...(next.advisor.checkpoint||{}),mode:checkpointMode};
     workflowConfig=(await request('/api/workflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)})).config;
     workflowDiagnostic(await request('/api/workflow'));message('Workflow saved. Revision '+workflowConfig.revision.slice(0,12)+'. Applies to the next run.');
   } catch(error) {message(error.message,true);} finally {event.submitter.disabled=false;}

@@ -44,6 +44,16 @@ advisor diagnosed it. Continue from the current branch and worktree state, and
 follow the next steps unless the task or code proves one wrong; if so, say why
 in the commit body. Do not restart from scratch or widen the scope.
 
+# PROGRESS CHECK
+
+{{PROGRESS_CHECK}}
+
+When a progress check is shown above (not `None.`), a checkpoint paused your
+earlier work and an advisor compared it with the task and approach. Continue
+from the current branch and worktree state, including uncommitted changes, and
+follow the direction. If you disagree, write `Disputed direction:` with your
+reason in your output and in the commit body, then continue your approach.
+
 # REQUIRED CONTEXT
 
 Before editing:

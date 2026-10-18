@@ -273,6 +273,10 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       'const ADVISOR_STUCK: "off" | "on" = runtime.workflow.config.advisor?.stuck ?? "off";',
     );
     content = content.replace(
+      'const ADVISOR_CHECKPOINT: sandcastle.CheckpointPolicy = { mode: "off" };',
+      'const ADVISOR_CHECKPOINT: sandcastle.CheckpointPolicy = runtime.workflow.config.advisor?.checkpoint ?? { mode: "off" };',
+    );
+    content = content.replace(
       "const ADVISOR_STUCK_ATTEMPTS = 1;",
       "const ADVISOR_STUCK_ATTEMPTS = runtime.workflow.config.advisor?.stuckAttempts ?? 1;",
     );

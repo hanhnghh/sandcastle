@@ -655,6 +655,179 @@ describe("createSandbox", () => {
     }
   });
 
+  it("sandbox.run() pauseSignal stops the agent, keeps its session and work, and resume() continues it", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-pause-flow-"));
+    const hostProjectsDir = await mkdtemp(
+      join(tmpdir(), "sandbox-pause-host-projects-"),
+    );
+    const sandboxProjectsDir = await mkdtemp(
+      join(tmpdir(), "sandbox-pause-sb-projects-"),
+    );
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    const promptDir = await mkdtemp(join(tmpdir(), "sandbox-pause-prompt-"));
+    const promptFile = join(promptDir, "prompt.md");
+    await writeFile(promptFile, "Implement {{TASK}}.");
+    const sessionId = "pause-session-1";
+    const sandboxBaseDir = mkdtempSync(join(tmpdir(), "sandbox-pause-sb-"));
+    const fakeHandle: BindMountSandboxHandle = {
+      worktreePath: sandboxBaseDir,
+      exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+      copyFileIn: async (hostPath, sandboxPath) => {
+        await mkdir(dirname(sandboxPath), { recursive: true });
+        await copyFile(hostPath, sandboxPath);
+      },
+      copyFileOut: async (sandboxPath, hostPath) => {
+        await mkdir(dirname(hostPath), { recursive: true });
+        await copyFile(sandboxPath, hostPath);
+      },
+      close: async () => {},
+    };
+    const commands: string[] = [];
+    let started: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => (started = resolve));
+    // First call: writes uncommitted work, reports its session, then hangs
+    // until paused. Second call (the resume): completes.
+    const buildSandbox = (sandboxDir: string): SandboxService => {
+      const real = makeLocalSandbox(sandboxDir);
+      return {
+        exec: (command, options) => {
+          // The pausable agent command is wrapped in a process-group launcher.
+          if (command.includes("claude ") && options?.onLine) {
+            commands.push(command);
+            const call = commands.length;
+            const onLine = options.onLine;
+            return Effect.gen(function* () {
+              const cwd = options?.cwd ?? sandboxDir;
+              const sessionsDir = join(
+                sandboxProjectsDir,
+                encodeProjectPath(cwd),
+              );
+              yield* Effect.promise(async () => {
+                await mkdir(sessionsDir, { recursive: true });
+                await writeFile(
+                  join(sessionsDir, `${sessionId}.jsonl`),
+                  JSON.stringify({
+                    type: "system",
+                    subtype: "init",
+                    session_id: sessionId,
+                    cwd,
+                  }),
+                );
+                if (call === 1)
+                  await writeFile(join(cwd, "work.txt"), "half done");
+              });
+              onLine(
+                JSON.stringify({
+                  type: "system",
+                  subtype: "init",
+                  session_id: sessionId,
+                }),
+              );
+              if (call === 1) {
+                onLine(
+                  JSON.stringify({
+                    type: "assistant",
+                    message: { content: [{ type: "text", text: "working" }] },
+                  }),
+                );
+                started();
+                return yield* Effect.never;
+              }
+              const done = toStreamJson("<promise>COMPLETE</promise>");
+              for (const line of done.split("\n")) onLine(line);
+              return { stdout: done, stderr: "", exitCode: 0 };
+            });
+          }
+          return real.exec(command, options);
+        },
+        copyIn: (hostPath, sandboxPath) => real.copyIn(hostPath, sandboxPath),
+        copyFileOut: (sandboxPath, hostPath) =>
+          real.copyFileOut(sandboxPath, hostPath),
+      };
+    };
+    const sandbox = await createSandbox({
+      branch: "pause-flow",
+      sandbox: testSandbox,
+      cwd: hostDir,
+      _test: { buildSandbox, bindMountHandle: fakeHandle },
+    });
+    try {
+      const pause = new AbortController();
+      void firstStarted.then(() => pause.abort());
+      const first = await sandbox.run({
+        agent: claudeCode("test-model", {
+          sessionStorage: { hostProjectsDir, sandboxProjectsDir },
+        }),
+        promptFile,
+        promptArgs: { TASK: "the feature" },
+        maxIterations: 5,
+        pauseSignal: pause.signal,
+      });
+      expect(first.paused).toBe(true);
+      expect(first.completionSignal).toBeUndefined();
+      expect(first.iterations).toHaveLength(1);
+      expect(first.iterations[0]!.sessionId).toBe(sessionId);
+      expect(typeof first.resume).toBe("function");
+      // Uncommitted work survives the pause.
+      const status = await execAsync("git status --porcelain", {
+        cwd: sandbox.worktreePath,
+      });
+      expect(status.stdout).toContain("work.txt");
+
+      const second = await first.resume!("Advisor: continue.");
+      expect(commands).toHaveLength(2);
+      expect(commands[1]).toContain(`--resume '${sessionId}'`);
+      expect(second.paused).toBeUndefined();
+      expect(second.completionSignal).toBe("<promise>COMPLETE</promise>");
+      expect(
+        await readFile(join(sandbox.worktreePath, "work.txt"), "utf8"),
+      ).toBe("half done");
+    } finally {
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+      await rm(hostProjectsDir, { recursive: true, force: true });
+      await rm(sandboxProjectsDir, { recursive: true, force: true });
+      await rm(sandboxBaseDir, { recursive: true, force: true });
+      await rm(promptDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("sandbox.run() with an already-fired pauseSignal starts no agent", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-prepaused-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    let calls = 0;
+    const sandbox = await createSandbox({
+      branch: "prepaused",
+      sandbox: testSandbox,
+      cwd: hostDir,
+      _test: {
+        buildSandbox: (sandboxDir) =>
+          makeMockAgentLayer(sandboxDir, async () => {
+            calls++;
+            return "agent output";
+          }),
+      },
+    });
+    try {
+      const pause = new AbortController();
+      pause.abort();
+      const result = await sandbox.run({
+        agent: testProvider,
+        prompt: "paused before start",
+        maxIterations: 3,
+        pauseSignal: pause.signal,
+      });
+      expect(result.paused).toBe(true);
+      expect(result.iterations).toHaveLength(0);
+      expect(calls).toBe(0);
+    } finally {
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
   it("sandbox.run() appends raw stdout to the same log file when logging.verbose is true", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "sandbox-verbose-"));
     await initRepo(hostDir);

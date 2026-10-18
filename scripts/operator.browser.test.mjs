@@ -686,6 +686,20 @@ test("advisor role and approach critique are configured through the operator", a
     approach: "high-risk",
     stuck: "on",
   });
+  await page.getByLabel("Progress checkpoints").selectOption("on");
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/workflow") &&
+        response.request().method() === "PUT",
+    ),
+    page.getByRole("button", { name: "Save workflow" }).click(),
+  ]);
+  assert.deepEqual((await loadWorkflowConfig({ cwd })).advisor, {
+    approach: "high-risk",
+    stuck: "on",
+    checkpoint: { mode: "on" },
+  });
   await page.getByRole("button", { name: "Remove advisor role" }).click();
   await Promise.all([
     page.waitForResponse(

@@ -363,6 +363,76 @@ failure reported to the owner includes the advisor's diagnosis. Advisor runs
 count against `maxInvocations`. Agent Map shows the advice on advisor nodes
 (escalated or owner-only causes as blocked).
 
+### Advisor: progress checkpoints
+
+With the advisor role configured, `"advisor": { "checkpoint": { "mode": "on" } }`
+(or **Progress checkpoints** in the workflow form) pauses an implementer that
+runs long or drifts, lets the advisor check its progress, and resumes it with
+direction instead of only failing at the end.
+
+```json
+{
+  "advisor": {
+    "checkpoint": {
+      "mode": "on",
+      "factor": 1.5,
+      "max": 2,
+      "repeatThreshold": 3,
+      "defaults": {
+        "bug": { "minutes": 20, "size": "S" },
+        "*": { "minutes": 45 }
+      }
+    }
+  }
+}
+```
+
+The budget is the approach brief's estimate (#24) times `factor` (1–10,
+default 1.5). Without a brief, the first issue label in `defaults` applies,
+then `*`, then 30 minutes (size M). Time checkpoints fire at 50% and 100% of
+the budget, and after that when the advisor's `remainingBudget` runs out.
+Time spent paused does not count. Drift fires a checkpoint early:
+
+| Signal           | When                                                                                          |
+| ---------------- | --------------------------------------------------------------------------------------------- |
+| `outside-brief`  | a changed file is outside the brief's `files` (only with a brief)                             |
+| `repeated-error` | the same error line appears `repeatThreshold` times in command output (numbers normalized)    |
+| `churn`          | the same file is edited and reverted twice                                                    |
+| `diff-size`      | changed lines exceed the size limit (S 300, M 1000, L 3000, × factor); the limit then doubles |
+
+The implementer's state is sampled every 30 seconds with `GIT_OPTIONAL_LOCKS=0`
+so sampling never holds the index lock while the implementer commits.
+
+At a checkpoint the implementer is paused: its whole process group is stopped
+inside the sandbox (TERM, then KILL), its session is captured, and its
+commits and uncommitted changes stay in the worktree. The advisor reads,
+read-only and without tracker credentials, the brief, the diff including
+uncommitted work, the worktree status and recent activity, and returns
+`<progress-check>{"verdict","assessment","direction","remainingBudget"}</progress-check>`.
+
+- `continue` / `redirect`: the implementer resumes its own session
+  (`sandbox.run().resume()`, for example `codex exec resume`) with the check
+  appended. A provider that cannot resume starts a fresh attempt on the same
+  worktree with the check as `{{PROGRESS_CHECK}}`; Agent Map records which.
+  The implementer may write `Disputed direction:` with a reason and continue
+  its approach; the dispute is recorded.
+- `stop`, malformed output, an advisor that changed its checkout, or a
+  checkpoint after `max` (0–10, default 2): the branch is retained, the issue
+  stays open, and the report includes the advisor's assessment. Other issues
+  continue. Provider and infrastructure failures still follow task retries
+  (#15) first.
+
+Checkpoint runs count against `maxInvocations`; once it is spent, checkpoints
+are skipped and recorded. Agent Map shows each check on an advisor node
+(signal, verdict, assessment, direction) and, on the implementer node, the
+estimate against the actual time with the checkpoint outcomes, for
+calibrating estimates. With `mode` `off` (default) the implementer runs
+exactly as before. Pausing needs a POSIX shell in the sandbox.
+
+`pauseSignal` is also available on `sandbox.run()`: it stops the agent and
+resolves with `paused: true` instead of failing, so the caller can continue
+with `.resume()`.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation
