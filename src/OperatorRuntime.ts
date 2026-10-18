@@ -24,6 +24,7 @@ import {
   operatorRoles,
   OperatorError,
   roleSetting,
+  advisorSetting,
   type RoleSetting,
   type RoleConfig,
   type OperatorRole,
@@ -104,6 +105,8 @@ export interface ProjectRuntime {
   agent(role: OperatorRole, options?: RoleAgentOptions): AgentProvider;
   /** The role's effective primary target and ordered fallback chain. */
   roleSetting(role: OperatorRole): RoleSetting;
+  /** The optional advisor provider with its fallback chain, or null when not configured. */
+  advisor(options?: RoleAgentOptions): AgentProvider | null;
   /** Build the primary provider followed by each configured fallback, in order. */
   agentChain(
     role: OperatorRole,
@@ -359,6 +362,10 @@ const hydrate = (cwd: string, record: RuntimeRecord): ProjectRuntime => {
     agent: (role, options) =>
       buildRoleAgentWithFallback(roleSetting(record.config, role), options),
     roleSetting: (role) => roleSetting(record.config, role),
+    advisor: (options) => {
+      const setting = advisorSetting(record.config);
+      return setting ? buildRoleAgentWithFallback(setting, options) : null;
+    },
     agentChain: (role, options) => {
       const setting = roleSetting(record.config, role);
       return [setting, ...setting.fallback].map((target) => ({
@@ -404,10 +411,12 @@ const hydrate = (cwd: string, record: RuntimeRecord): ProjectRuntime => {
             track: (task, execute) =>
               map.track(
                 (() => {
-                  const { fallback: _chain, ...primary } = roleSetting(
-                    record.config,
-                    task.role,
-                  );
+                  const setting =
+                    task.role === "advisor"
+                      ? advisorSetting(record.config)
+                      : roleSetting(record.config, task.role);
+                  if (!setting) return task;
+                  const { fallback: _chain, ...primary } = setting;
                   return { ...task, ...primary };
                 })(),
                 execute,
@@ -426,6 +435,16 @@ export const createProjectRuntime = (
       const fs = yield* FileSystem.FileSystem;
       const config = yield* loadRoleConfigEffect(options.cwd);
       const workflow = yield* loadWorkflowSnapshotEffect(options.cwd);
+      if (
+        (workflow.config.advisor?.approach ?? "off") !== "off" &&
+        !advisorSetting(config)
+      )
+        return yield* Effect.fail(
+          new OperatorError({
+            message:
+              "advisor.approach is enabled but no advisor role is configured; add roles.advisor to .sandcastle/roles.json (schema version 2) or set advisor.approach to off.",
+          }),
+        );
       if (workflow.config.review?.requireDifferentProvider) {
         const conflict = reviewProviderConflict(config);
         if (conflict)

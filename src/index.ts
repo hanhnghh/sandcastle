@@ -150,6 +150,7 @@ export {
   providerCapabilities,
   roleProviders,
   roleSetting,
+  advisorSetting,
   migrateRoleConfig,
 } from "./Operator.js";
 export type {
@@ -167,6 +168,30 @@ export {
   reviewProviderConflict,
 } from "./ReviewProviders.js";
 export type { InstructionsResult } from "./ReviewProviders.js";
+export {
+  APPROACH_CRITIQUE_TAG,
+  APPROACH_PLAN_TAG,
+  approachCritiqueSchema,
+  approachPlanSchema,
+  formatApproachCritique,
+  formatApproachPlan,
+  parseApproachCritique,
+  parseApproachPlan,
+  runApproachCritique,
+  withApproachCritique,
+} from "./ApproachCritique.js";
+export type {
+  AdvisorBudget,
+  ApproachConcern,
+  ApproachCritique,
+  ApproachCritiqueOptions,
+  ApproachCritiqueResult,
+  ApproachPlan,
+  ApproachRound,
+  ApproachRun,
+  ApproachRunEvidence,
+  ConcernDisposition,
+} from "./ApproachCritique.js";
 export {
   classifyPipelineFailure,
   createCircuitBreaker,

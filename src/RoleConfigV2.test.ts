@@ -30,7 +30,7 @@ const print = (agent: ReturnType<typeof buildRoleAgent>) =>
   agent.buildPrintCommand({ prompt: "test", dangerouslySkipPermissions: true })
     .command;
 const v2 = (
-  roles: Partial<Record<(typeof operatorRoles)[number], unknown>>,
+  roles: Partial<Record<(typeof operatorRoles)[number] | "advisor", unknown>>,
 ): unknown => {
   const base = migrateRoleConfig(
     // Version-one defaults, explicitly converted.
@@ -256,4 +256,59 @@ test("runtime.agent attaches the configured fallback chain; roles without fallba
     { provider: "claudeCode", model: "claude-sonnet-5-5", effort: "high" },
   ]);
   expect(agentChainOf(runtime.agent("reviewer"))).toHaveLength(1);
+});
+
+test("the optional advisor role exists only in version 2 and the runtime builds it", async () => {
+  const { advisorSetting } = await import("./Operator.js");
+  const cwd = await project();
+  const v1 = await loadRoleConfig({ cwd });
+  await expect(
+    saveRoleConfig({
+      cwd,
+      config: {
+        ...v1,
+        roles: {
+          ...v1.roles,
+          advisor: { provider: "codex", model: "m", effort: "high" },
+        },
+      },
+    }),
+  ).rejects.toThrow();
+  expect(advisorSetting(v1)).toBeNull();
+  const saved = await saveRoleConfig({
+    cwd,
+    config: v2({
+      advisor: {
+        provider: "claudeCode",
+        model: "claude-opus-5-5",
+        effort: "high",
+        fallback: [{ provider: "codex", model: "gpt-6.1-sol", effort: "high" }],
+      },
+    }),
+  });
+  expect(advisorSetting(saved)).toMatchObject({
+    provider: "claudeCode",
+    fallback: [{ provider: "codex" }],
+  });
+  await expect(
+    saveRoleConfig({
+      cwd,
+      config: v2({
+        advisor: { provider: "cursor", model: "m", effort: "high" },
+      }),
+    }),
+  ).rejects.toThrow();
+  const promptPath = join(cwd, "prompt.md");
+  await writeFile(promptPath, "prompt");
+  const options = {
+    cwd,
+    sandboxIdentity: "sha256:test",
+    promptFiles: Object.fromEntries(
+      operatorRoles.map((role) => [role, promptPath]),
+    ) as Record<(typeof operatorRoles)[number], string>,
+  };
+  const runtime = await createProjectRuntime(options);
+  expect(runtime.advisor()?.name).toBe("claude-code");
+  await saveRoleConfig({ cwd, config: v2({}) });
+  expect((await createProjectRuntime(options)).advisor()).toBeNull();
 });

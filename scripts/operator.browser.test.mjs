@@ -639,3 +639,48 @@ test("cross-provider review preset and review policy save through the operator",
   assert.deepEqual(workflow.merge, { mode: "per-branch" });
   assert.equal(workflow.review.maxRepairRounds, 0);
 });
+
+test("advisor role and approach critique are configured through the operator", async (t) => {
+  const { page, cwd } = await fixture(t);
+  await page.getByRole("button", { name: "Add advisor role" }).click();
+  assert.equal(
+    await page.getByLabel("Advisor provider", { exact: true }).inputValue(),
+    "claudeCode",
+  );
+  await page.getByRole("button", { name: "Save settings" }).click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "Settings saved." })
+    .waitFor();
+  let saved = await loadRoleConfig({ cwd });
+  assert.equal(saved.schemaVersion, 2);
+  assert.deepEqual(saved.roles.advisor, {
+    provider: "claudeCode",
+    model: "claude-opus-5-5",
+    effort: "high",
+  });
+  assert.equal(saved.roles.implementer.provider, "codex");
+  await page.getByLabel("Advisor approach critique").selectOption("high-risk");
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/workflow") &&
+        response.request().method() === "PUT",
+    ),
+    page.getByRole("button", { name: "Save workflow" }).click(),
+  ]);
+  assert.deepEqual((await loadWorkflowConfig({ cwd })).advisor, {
+    approach: "high-risk",
+  });
+  await page.getByRole("button", { name: "Remove advisor role" }).click();
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/config") &&
+        response.request().method() === "PUT",
+    ),
+    page.getByRole("button", { name: "Save settings" }).click(),
+  ]);
+  saved = await loadRoleConfig({ cwd });
+  assert.equal(saved.roles.advisor, undefined);
+});

@@ -291,6 +291,46 @@ changed files cannot be computed. The audit record states the scope
 `"readiness": { "fullEvery": 5 }` in `.sandcastle/workflow.json`;
 `selectIncrementalReadiness` exposes the selection rules.
 
+### Advisor: approach critique before implementation
+
+An optional **advisor** role critiques the implementer's intended approach
+before any code is written. It gives direction; code review stays with the
+reviewer. Add it as `roles.advisor` in `.sandcastle/roles.json` (schema version
+2, same provider/model/effort/fallback fields as other roles) or with **Add
+advisor role** in the operator; absent means off.
+
+Enable it with `"advisor": { "approach": "high-risk" }` in
+`.sandcastle/workflow.json` (or **Advisor approach critique** in the workflow
+form): `off` (default), `high-risk` (issues labelled `risk:high`, configurable
+with `highRiskLabel`) or `all`. Run admission fails with an actionable message
+if the approach critique is enabled without an advisor role.
+
+Flow in `parallel-planner-with-review`, on the first attempt of a selected
+issue:
+
+1. The implementer runs in plan mode (`{{APPROACH_MODE}}` = `plan`) and emits
+   `<approach-plan>` with goal, size (`S | M | L`), estimate (minutes,
+   iterations), files, steps, tests and risks. It must not change the
+   repository; a dirty worktree or commit escalates.
+2. The advisor runs in a fresh worktree of the issue branch with no tracker
+   credentials (`approach-critique-prompt.md`) and emits `<approach-critique>`
+   with `proceed | revise | escalate`, a summary and concerns. Any commit or
+   change in its checkout escalates.
+3. `revise`: the implementer revises the brief and answers every concern
+   (`accepted` or `disputed` with a reason); the advisor re-checks, up to
+   `approachRounds` (default 1). Disagreement left after the budget escalates.
+4. `proceed`: the implementer implements with the critique as
+   `{{APPROACH_CRITIQUE}}` and records accepted/disputed concerns in its commit.
+   `escalate`, malformed output or a missing disposition retains the branch for
+   the owner with the critique; other issues continue. Retries reuse the first
+   attempt's outcome.
+
+`maxInvocations` (default 20) caps advisor runs per workflow run; once spent,
+remaining issues proceed uncritiqued and the skip is recorded. Agent Map shows
+advisor nodes with verdict and concerns (`revise` → stopped, `escalate` →
+blocked). Host automation can use `runApproachCritique`,
+`parseApproachPlan`, `parseApproachCritique` and `withApproachCritique`.
+
 Use `loadRoleConfig({ cwd })` and `saveRoleConfig({ cwd, config })` to edit from
 host automation. Save validates the entire document, computes the revision,
 writes a private temporary file, syncs it and atomically renames it. Validation

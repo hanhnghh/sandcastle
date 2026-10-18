@@ -520,3 +520,61 @@ it("records the review verdict and findings and does not show a changes-requeste
     review: { verdict: "invalid" },
   });
 });
+
+it("records advisor nodes with the approach critique and maps verdicts to statuses", async () => {
+  const { withApproachCritique } = await import("./ApproachCritique.js");
+  const cwd = await mkdtemp(join(tmpdir(), "agent-map-advisor-"));
+  cleanup.push(() => rm(cwd, { recursive: true, force: true }));
+  const map = await createAgentMap({ cwd, name: "Advisor" });
+  cleanup.push(() => map.finish("completed"));
+  const server = await startDashboard({ cwd, port: 0 });
+  cleanup.push(server.close);
+  const concern = {
+    id: "C1",
+    severity: "major",
+    point: "Wrong seam",
+    suggestion: "Use the adapter",
+  };
+  for (const [title, critique] of [
+    ["proceed", { verdict: "proceed", summary: "Sound", concerns: [] }],
+    ["revise", { verdict: "revise", summary: "Rework", concerns: [concern] }],
+    [
+      "escalate",
+      {
+        verdict: "escalate",
+        summary: "Contract contradicts itself",
+        concerns: [],
+      },
+    ],
+  ] as const)
+    await map.track(
+      { batch: 1, role: "advisor", issueId: "22", title, branch: "b" },
+      () =>
+        withApproachCritique({
+          stdout: `<approach-critique>${JSON.stringify(critique)}</approach-critique><promise>COMPLETE</promise>`,
+          commits: [],
+          completionSignal: "<promise>COMPLETE</promise>",
+        }),
+    );
+  const snapshot = (await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
+    r.json(),
+  )) as {
+    nodes: { title: string; role: string; status: string }[];
+  };
+  const byTitle = Object.fromEntries(
+    snapshot.nodes.map((node) => [node.title, node]),
+  );
+  expect(byTitle.proceed).toMatchObject({
+    role: "advisor",
+    status: "completed",
+    approach: { verdict: "proceed" },
+  });
+  expect(byTitle.revise).toMatchObject({
+    status: "stopped",
+    approach: { verdict: "revise", concerns: [concern] },
+  });
+  expect(byTitle.escalate).toMatchObject({
+    status: "blocked",
+    approach: { verdict: "escalate" },
+  });
+});

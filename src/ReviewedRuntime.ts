@@ -261,6 +261,32 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       "const MAX_PLANNER_ATTEMPTS = runtime.workflow.config.limits.plannerAttempts;",
     );
     content = content.replace(
+      'const ADVISOR_APPROACH: "off" | "high-risk" | "all" = "off";',
+      'const ADVISOR_APPROACH: "off" | "high-risk" | "all" = runtime.workflow.config.advisor?.approach ?? "off";',
+    );
+    content = content.replace(
+      'const ADVISOR_HIGH_RISK_LABEL = "risk:high";',
+      'const ADVISOR_HIGH_RISK_LABEL = runtime.workflow.config.advisor?.highRiskLabel ?? "risk:high";',
+    );
+    content = content.replace(
+      "const ADVISOR_APPROACH_ROUNDS = 1;",
+      "const ADVISOR_APPROACH_ROUNDS = runtime.workflow.config.advisor?.approachRounds ?? 1;",
+    );
+    content = content.replace(
+      "const advisorBudget = { remaining: 20 };",
+      "const advisorBudget = { remaining: runtime.workflow.config.advisor?.maxInvocations ?? 20 };",
+    );
+    // The advisor comes from the optional roles.advisor; admission refuses an
+    // enabled approach critique without it.
+    content = content.replace(
+      /const advisorAgent = \(\) =>[^\n]*\n/,
+      `const advisorAgent = () => runtime.advisor(${
+        isolated
+          ? "{ sessionStorage: { hostSessionsDir: `${CODEX_HOME_HOST}/sessions`, sandboxSessionsDir: `${CODEX_HOME_SANDBOX}/sessions` } }"
+          : ""
+      })!;\n`,
+    );
+    content = content.replace(
       "const READINESS_FULL_EVERY = 5;",
       "const READINESS_FULL_EVERY = runtime.workflow.config.readiness.fullEvery ?? 5;",
     );
