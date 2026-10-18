@@ -1,4 +1,11 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -276,4 +283,42 @@ test("Agent Map records distinct implementer and reviewer providers", async () =
     await map.finish("completed");
     await server.close();
   }
+});
+
+test("run admission refuses a malformed or expired Claude token only when a role uses Claude Code", async () => {
+  const cwd = await project();
+  const prompt = join(cwd, "prompt.md");
+  await writeFile(prompt, "prompt");
+  await mkdir(join(cwd, ".sandcastle"), { recursive: true });
+  const options = {
+    cwd,
+    sandboxIdentity: "sha256:test",
+    promptFiles: Object.fromEntries(
+      operatorRoles.map((role) => [role, prompt]),
+    ) as Record<(typeof operatorRoles)[number], string>,
+  };
+  const env = (value: string) =>
+    writeFile(join(cwd, ".sandcastle/.env"), value);
+  // Codex-only roles ignore the Claude token entirely.
+  await env("CLAUDE_CODE_OAUTH_TOKEN=broken\n");
+  await expect(createProjectRuntime(options)).resolves.toBeDefined();
+  const base = await loadRoleConfig({ cwd });
+  await saveRoleConfig({
+    cwd,
+    config: withRoles(base, {
+      reviewer: { ...codexRole, fallback: [claudeRole] },
+    }),
+  });
+  await expect(createProjectRuntime(options)).rejects.toThrow(
+    /uses Claude Code.*not a Claude Code OAuth token/,
+  );
+  await env(
+    `CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-${"a".repeat(40)}\nCLAUDE_CODE_OAUTH_TOKEN_ISSUED_AT=2020-01-01\n`,
+  );
+  await expect(createProjectRuntime(options)).rejects.toThrow(/expired/);
+  // A missing token is left to the environment preflight (host login).
+  await env("");
+  await expect(createProjectRuntime(options)).resolves.toBeDefined();
+  await env(`CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-${"a".repeat(40)}\n`);
+  await expect(createProjectRuntime(options)).resolves.toBeDefined();
 });

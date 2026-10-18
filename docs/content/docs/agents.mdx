@@ -21,8 +21,12 @@ Required environment variables (one of):
 
 | Variable | Description |
 | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token — get one by running `claude setup-token` on your host. Lets the agent use your Claude subscription instead of an API key. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token. Run `npx sandcastle claude-login` to create one with `claude setup-token` and store it in `.sandcastle/.env`. Lets the agent use your Claude subscription instead of an API key. |
 | `ANTHROPIC_API_KEY` | Anthropic API key (alternative to `CLAUDE_CODE_OAUTH_TOKEN`) |
+
+`npx sandcastle claude-login` runs `claude setup-token` (browser sign-in), asks for the printed token with masked input, checks its format and writes `CLAUDE_CODE_OAUTH_TOKEN` with `CLAUDE_CODE_OAUTH_TOKEN_ISSUED_AT` to `.sandcastle/.env` (mode 0600, other entries kept). `--verify` first confirms the token with one minimal request that uses only the token; `--force` replaces a configured token. `sandcastle init --agent claude-code` offers the same login (`--claude-login true|false`).
+
+Setup tokens last one year; the recorded issue date lets Sandcastle warn 30 days before expiry. `claude auth status` reports any token as logged in without validating it, so Sandcastle checks it locally instead: declared in `.sandcastle/.env`, `sk-ant-oat…` format, not expired, and not shadowed by `ANTHROPIC_API_KEY` (non-interactive runs may bill the API key instead of the subscription).
 
 Plus:
 

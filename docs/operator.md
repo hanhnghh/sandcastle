@@ -614,7 +614,16 @@ declares it. Secret environment keys declared in `.sandcastle/.env` are checked
 using the existing environment resolver. Auth results explicitly mean file/value
 presence, not verified remote login. Missing declarations are reported as such;
 no credential contents are returned. Follow the project's existing login/setup
-instructions (for isolated Codex, `CODEX_HOME=.sandcastle/codex-home codex login`).
+instructions (for isolated Codex, `CODEX_HOME=.sandcastle/codex-home codex login`;
+for Claude, `npx sandcastle claude-login`).
+
+When a role or fallback uses Claude Code, preflight adds a **Claude
+subscription** line from a local check: a missing token (with no
+`ANTHROPIC_API_KEY` declared as the alternative), a malformed token or an
+expired one fails preflight; an expiring token or an API-key conflict is
+reported but passes. Run admission refuses to start a project whose Claude
+token is declared but malformed or expired, before any role runs; a missing
+token is left to preflight because a host run can use the host's Claude login.
 
 Custom SDK adapters can declare `environment: { uid, tools, authFiles }`, using
 executable names and a mapping of safe status labels to trusted host credential

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { claudeCredentialProblem } from "./ClaudeSubscription.js";
 import type { ReadinessVerificationInput } from "./Readiness.js";
 import {
   loadWorkflowSnapshotEffect,
@@ -22,6 +23,7 @@ import { createAgentMap, type AgentMap } from "./AgentMap.js";
 import {
   loadRoleConfigEffect,
   operatorRoles,
+  rolesUseProvider,
   OperatorError,
   roleSetting,
   advisorSetting,
@@ -445,6 +447,19 @@ export const createProjectRuntime = (
           new OperatorError({
             message:
               "advisor.approach, advisor.stuck or advisor.checkpoint is enabled but no advisor role is configured; add roles.advisor to .sandcastle/roles.json (schema version 2) or turn the advisor options off.",
+          }),
+        );
+      // A declared but malformed or expired Claude token fails before any
+      // role is invoked rather than mid-run. A missing token is left to the
+      // environment preflight: a host run can use the host's Claude login.
+      const usesClaude = rolesUseProvider(config, "claudeCode");
+      const claudeProblem = usesClaude
+        ? claudeCredentialProblem({ cwd: options.cwd })
+        : null;
+      if (claudeProblem)
+        return yield* Effect.fail(
+          new OperatorError({
+            message: `A role uses Claude Code but its credential is not usable: ${claudeProblem}`,
           }),
         );
       if (workflow.config.review?.requireDifferentProvider) {

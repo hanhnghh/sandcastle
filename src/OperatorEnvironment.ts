@@ -6,7 +6,15 @@ import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
-import { OperatorError } from "./Operator.js";
+import {
+  OperatorError,
+  loadRoleConfigEffect,
+  rolesUseProvider,
+} from "./Operator.js";
+import {
+  checkClaudeSubscription,
+  claudeCredentialProblem,
+} from "./ClaudeSubscription.js";
 import { defaultImageName } from "./mountUtils.js";
 import { writePrivateRecord } from "./writePrivateRecord.js";
 
@@ -540,6 +548,22 @@ export const preflightEnvironmentEffect = (
       const present = !!env[name];
       onLog(`Auth ${name}: ${present ? "present" : "missing"}\n`);
       if (!present) healthy = false;
+    }
+    // Claude subscription: local check (format, expiry, API-key conflict)
+    // when a role uses Claude Code or the token is declared.
+    const roles = yield* loadRoleConfigEffect(cwd).pipe(
+      Effect.map((config) => rolesUseProvider(config, "claudeCode")),
+      Effect.catchAll(() => Effect.succeed(false)),
+    );
+    if (roles || /^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=/m.test(declarations)) {
+      const claude = checkClaudeSubscription({ cwd });
+      const problem = roles
+        ? claudeCredentialProblem({ cwd, requireCredential: true })
+        : null;
+      onLog(
+        `Claude subscription: ${claude.status} — ${problem ?? claude.message}\n`,
+      );
+      if (problem) healthy = false;
     }
     if (!names.length && !Object.keys(selected.authFiles).length)
       onLog(

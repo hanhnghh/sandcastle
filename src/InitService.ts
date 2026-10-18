@@ -442,8 +442,8 @@ const AGENT_REGISTRY: AgentEntry[] = [
     defaultModel: "claude-opus-4-8",
     factoryImport: "claudeCode",
     dockerfileTemplate: CLAUDE_CODE_DOCKERFILE,
-    envExample: `# Claude Code OAuth token — get one by running \`claude setup-token\` on your host.
-# Lets the agent use your Claude subscription instead of an API key.
+    envExample: `# Claude Code OAuth token — run \`npx sandcastle claude-login\` to create and store one
+# (it runs \`claude setup-token\`). Lets the agent use your Claude subscription instead of an API key.
 CLAUDE_CODE_OAUTH_TOKEN=
 # Or use an Anthropic API key instead — uncomment and fill in:
 # ANTHROPIC_API_KEY=`,
@@ -680,7 +680,7 @@ export function getNextStepsLines(
     ];
     if (agent.name === "claude-code") {
       lines.push(
-        "   To use your Claude subscription instead of an API key, run `claude setup-token` on your host and paste the result into CLAUDE_CODE_OAUTH_TOKEN.",
+        "   To use your Claude subscription instead of an API key, run `npx sandcastle claude-login` (it runs `claude setup-token` and stores CLAUDE_CODE_OAUTH_TOKEN in .sandcastle/.env).",
       );
     }
     lines.push(
@@ -711,7 +711,7 @@ export function getNextStepsLines(
     ];
     if (agent.name === "claude-code") {
       lines.push(
-        "   To use your Claude subscription instead of an API key, run `claude setup-token` on your host and paste the result into CLAUDE_CODE_OAUTH_TOKEN.",
+        "   To use your Claude subscription instead of an API key, run `npx sandcastle claude-login` (it runs `claude setup-token` and stores CLAUDE_CODE_OAUTH_TOKEN in .sandcastle/.env).",
       );
     }
     lines.push(

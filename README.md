@@ -39,7 +39,7 @@ npm install --save-dev @ai-hero/sandcastle
 npx @ai-hero/sandcastle init
 ```
 
-3. Edit `.sandcastle/.env` and fill in your default values for `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token` on your host to get one). To use an Anthropic API key instead, uncomment and fill in `ANTHROPIC_API_KEY`.
+3. Edit `.sandcastle/.env` and fill in your default values for `CLAUDE_CODE_OAUTH_TOKEN` (run `npx sandcastle claude-login` to create and store one). To use an Anthropic API key instead, uncomment and fill in `ANTHROPIC_API_KEY`.
 
 ```bash
 cp .sandcastle/.env.example .sandcastle/.env
