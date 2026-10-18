@@ -269,6 +269,14 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       'const ADVISOR_HIGH_RISK_LABEL = runtime.workflow.config.advisor?.highRiskLabel ?? "risk:high";',
     );
     content = content.replace(
+      'const ADVISOR_STUCK: "off" | "on" = "off";',
+      'const ADVISOR_STUCK: "off" | "on" = runtime.workflow.config.advisor?.stuck ?? "off";',
+    );
+    content = content.replace(
+      "const ADVISOR_STUCK_ATTEMPTS = 1;",
+      "const ADVISOR_STUCK_ATTEMPTS = runtime.workflow.config.advisor?.stuckAttempts ?? 1;",
+    );
+    content = content.replace(
       "const ADVISOR_APPROACH_ROUNDS = 1;",
       "const ADVISOR_APPROACH_ROUNDS = runtime.workflow.config.advisor?.approachRounds ?? 1;",
     );

@@ -1924,7 +1924,7 @@ android {
       );
       expect(mainTs).toContain("implement-prompt.md");
       expect(mainTs).toContain("review-prompt.md");
-      expect(mainTs).toContain("implement.commits.length > 0");
+      expect(mainTs).toContain("implement!.commits.length > 0");
     });
 
     it("main.mts captures reviewer result and merges commits from both runs", async () => {
@@ -1936,10 +1936,12 @@ android {
         "utf-8",
       );
       // The review loop result must be captured, not discarded
-      expect(mainTs).toContain("const loop = await sandcastle.runReviewLoop");
-      // Commits from the implementer and every review/repair run must be merged
-      expect(mainTs).toContain("implement.commits");
-      expect(mainTs).toContain("...implementationCommits, ...loop.commits");
+      expect(mainTs).toContain("const reviewLoop = () =>");
+      expect(mainTs).toContain("let loop = await reviewLoop();");
+      // Commits from the implementer and every review/repair/advised run must be merged
+      expect(mainTs).toContain("implement!.commits");
+      expect(mainTs).toContain("reviewCommits.push(...loop.commits);");
+      expect(mainTs).toContain("...implementationCommits, ...reviewCommits");
     });
 
     it("main.mts uses Promise.allSettled for parallel execution", async () => {

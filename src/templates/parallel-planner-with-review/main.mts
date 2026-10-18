@@ -79,6 +79,9 @@ const ADVISOR_APPROACH: "off" | "high-risk" | "all" = "off";
 const ADVISOR_HIGH_RISK_LABEL = "risk:high";
 const ADVISOR_APPROACH_ROUNDS = 1;
 const advisorBudget = { remaining: 20 };
+// Consult the advisor when an implementation stalls: "off" | "on".
+const ADVISOR_STUCK: "off" | "on" = "off";
+const ADVISOR_STUCK_ATTEMPTS = 1;
 const advisorAgent = () => sandcastle.claudeCode("claude-opus-4-8");
 // Post-merge readiness is incremental; every Nth post-merge run is full.
 const READINESS_FULL_EVERY = 5;
@@ -552,6 +555,7 @@ async function executeWorkflow() {
                   mode: "implement",
                   critique: approachCritique,
                 },
+                stuckAdvice = "None.",
               ) =>
                 sandbox!.run({
                   logging,
@@ -570,6 +574,7 @@ async function executeWorkflow() {
                     REVIEW_FINDINGS: reviewFindings,
                     APPROACH_MODE: approach.mode,
                     APPROACH_CRITIQUE: approach.critique,
+                    STUCK_ADVICE: stuckAdvice,
                   },
                 });
               const ensureSandbox = async () => {
@@ -581,6 +586,113 @@ async function executeWorkflow() {
                   copyToWorktree,
                 });
               };
+              // Every advisor run: a fresh worktree of the issue branch without tracker
+              // credentials; any change to its checkout counts as a commit.
+              const runAdvisorPrompt = async (
+                logging: sandcastle.LoggingOption,
+                promptFile: string,
+                promptArgs: Record<string, string>,
+              ) => {
+                const advisorSandbox = await sandcastle.createSandbox({
+                  branch: `sandcastle/advisor-${randomUUID()}`,
+                  baseBranch: issue.branch,
+                  sandbox: docker({ env: { ...readinessEnvironment } }),
+                  copyToWorktree: [],
+                });
+                try {
+                  const run = await advisorSandbox.run({
+                    logging,
+                    name: "advisor",
+                    maxIterations: 1,
+                    agent: advisorAgent(),
+                    promptFile,
+                    promptArgs,
+                  });
+                  const status = await advisorSandbox.exec(
+                    "git status --porcelain --untracked-files=all",
+                  );
+                  return status.stdout.trim()
+                    ? {
+                        ...run,
+                        commits: [
+                          ...run.commits,
+                          { sha: "uncommitted-advisor-changes" },
+                        ],
+                      }
+                    : run;
+                } finally {
+                  await advisorSandbox.close();
+                }
+              };
+              // Stuck advisor: diagnose a stalled implementation and give the
+              // implementer a bounded number of advised attempts.
+              const consultStuck = async <T extends unknown>(
+                trigger: sandcastle.StuckTrigger,
+                log: string,
+                findings: string,
+                retry: (
+                  advice: sandcastle.StuckAdvice,
+                  n: number,
+                ) => Promise<{ resolved: boolean; value: T }>,
+              ) => {
+                const taskBody = await issueBody(issue.id);
+                const stuck = await sandcastle.adviseWhenStuck({
+                  trigger,
+                  attempts: ADVISOR_STUCK_ATTEMPTS,
+                  budget: advisorBudget,
+                  retry,
+                  advise: (n) =>
+                    agentMap.track(
+                      {
+                        batch: iteration,
+                        role: "advisor",
+                        issueId: issue.id,
+                        title: `${issue.title} (stuck ${n}: ${trigger})`,
+                        branch: issue.branch,
+                      },
+                      async (logging) => {
+                        // Read the implementer's current state, including uncommitted work.
+                        const diff = await sandbox!.exec(
+                          `git diff ${batchBaseSha}`,
+                        );
+                        const status = await sandbox!.exec(
+                          "git status --porcelain --untracked-files=all",
+                        );
+                        return sandcastle.withStuckAdvice(
+                          runAdvisorPrompt(
+                            logging,
+                            "./.sandcastle/stuck-advisor-prompt.md",
+                            {
+                              TASK_ID: issue.id,
+                              ISSUE_TITLE: issue.title,
+                              TASK_BODY: taskBody,
+                              STUCK_TRIGGER: trigger,
+                              STUCK_DIFF:
+                                diff.stdout.slice(-60_000) || "No changes.",
+                              STUCK_STATUS:
+                                status.stdout.slice(0, 10_000) || "Clean.",
+                              STUCK_LOG: log.slice(-8_000) || "No output.",
+                              STUCK_FINDINGS: findings || "None.",
+                            },
+                          ),
+                        );
+                      },
+                    ),
+                });
+                console.log(
+                  `  ${issue.id} stuck advisor (${trigger}): ${stuck.outcome}`,
+                );
+                return stuck;
+              };
+              const stuckReport = (stuck: {
+                advice?: sandcastle.StuckAdvice;
+                error?: string;
+              }) =>
+                stuck.advice
+                  ? `\nAdvisor diagnosis:\n${sandcastle.formatStuckAdvice(stuck.advice)}`
+                  : stuck.error
+                    ? `\nAdvisor: ${stuck.error}`
+                    : "";
               // Approach critique: the implementer writes a brief in plan mode and
               // the advisor critiques it, before any code change. Retries reuse
               // the first attempt's outcome.
@@ -593,50 +705,22 @@ async function executeWorkflow() {
                   ));
               if (approachWanted) {
                 const taskBody = await issueBody(issue.id);
-                const runAdvisor = async (
+                const runAdvisor = (
                   logging: sandcastle.LoggingOption,
                   plan: sandcastle.ApproachPlan,
                   round: number,
-                ) => {
-                  // Fresh worktree of the issue branch, no tracker credentials.
-                  const advisorSandbox = await sandcastle.createSandbox({
-                    branch: `sandcastle/advisor-${randomUUID()}`,
-                    baseBranch: issue.branch,
-                    sandbox: docker({ env: { ...readinessEnvironment } }),
-                    copyToWorktree: [],
-                  });
-                  try {
-                    const run = await advisorSandbox.run({
-                      logging,
-                      name: "advisor",
-                      maxIterations: 1,
-                      agent: advisorAgent(),
-                      promptFile: "./.sandcastle/approach-critique-prompt.md",
-                      promptArgs: {
-                        TASK_ID: issue.id,
-                        ISSUE_TITLE: issue.title,
-                        TASK_BODY: taskBody,
-                        APPROACH_PLAN: sandcastle.formatApproachPlan(plan),
-                        APPROACH_ROUND: String(round),
-                      },
-                    });
-                    // The advisor must leave its checkout untouched.
-                    const status = await advisorSandbox.exec(
-                      "git status --porcelain --untracked-files=all",
-                    );
-                    return status.stdout.trim()
-                      ? {
-                          ...run,
-                          commits: [
-                            ...run.commits,
-                            { sha: "uncommitted-advisor-changes" },
-                          ],
-                        }
-                      : run;
-                  } finally {
-                    await advisorSandbox.close();
-                  }
-                };
+                ) =>
+                  runAdvisorPrompt(
+                    logging,
+                    "./.sandcastle/approach-critique-prompt.md",
+                    {
+                      TASK_ID: issue.id,
+                      ISSUE_TITLE: issue.title,
+                      TASK_BODY: taskBody,
+                      APPROACH_PLAN: sandcastle.formatApproachPlan(plan),
+                      APPROACH_ROUND: String(round),
+                    },
+                  );
                 const approach = await sandcastle.runApproachCritique({
                   rounds: ADVISOR_APPROACH_ROUNDS,
                   budget: advisorBudget,
@@ -702,30 +786,94 @@ async function executeWorkflow() {
                     approach.critique,
                   );
               }
-              const implement = await agentMap.track(
-                {
-                  batch: iteration,
-                  role: "implementer",
-                  issueId: issue.id,
-                  title:
-                    attempt === 1
-                      ? issue.title
-                      : `${issue.title} (retry ${attempt})`,
-                  branch: issue.branch,
-                },
-                async (logging) => {
-                  await ensureSandbox();
-                  return runImplementer(logging, "");
-                },
-              );
-
-              if (implement.completionSignal !== "<promise>COMPLETE</promise>")
+              let implement:
+                | Awaited<ReturnType<typeof runImplementer>>
+                | undefined;
+              let stalled:
+                | { trigger: sandcastle.StuckTrigger; log: string }
+                | undefined;
+              try {
+                implement = await agentMap.track(
+                  {
+                    batch: iteration,
+                    role: "implementer",
+                    issueId: issue.id,
+                    title:
+                      attempt === 1
+                        ? issue.title
+                        : `${issue.title} (retry ${attempt})`,
+                    branch: issue.branch,
+                  },
+                  async (logging) => {
+                    await ensureSandbox();
+                    return runImplementer(logging, "");
+                  },
+                );
+              } catch (error) {
+                // Without the stuck advisor an idle timeout fails as before.
+                if (
+                  ADVISOR_STUCK !== "on" ||
+                  !sandbox ||
+                  !sandcastle.isIdleTimeout(error)
+                )
+                  throw error;
+                stalled = {
+                  trigger: "idle-timeout",
+                  log: sandcastle.describeFailure(error),
+                };
+              }
+              if (
+                !stalled &&
+                ADVISOR_STUCK === "on" &&
+                implement!.completionSignal !== "<promise>COMPLETE</promise>"
+              )
+                stalled = {
+                  trigger: "implementation-incomplete",
+                  log: implement!.stdout,
+                };
+              if (stalled) {
+                const trigger = stalled.trigger;
+                const stuck = await consultStuck(
+                  trigger,
+                  stalled.log,
+                  "",
+                  async (advice, n) => {
+                    const run = await agentMap.track(
+                      {
+                        batch: iteration,
+                        role: "implementer",
+                        issueId: issue.id,
+                        title: `${issue.title} (advised ${n})`,
+                        branch: issue.branch,
+                      },
+                      (logging) =>
+                        runImplementer(
+                          logging,
+                          "",
+                          undefined,
+                          sandcastle.formatStuckAdvice(advice),
+                        ),
+                    );
+                    implement = run;
+                    return {
+                      resolved:
+                        run.completionSignal === "<promise>COMPLETE</promise>",
+                      value: run,
+                    };
+                  },
+                );
+                if (stuck.outcome !== "resolved")
+                  throw new Error(
+                    `Implementation stalled for issue ${issue.id} (${trigger}; advisor ${stuck.outcome}); retain the branch and leave its issue open.${stuckReport(stuck)}`,
+                  );
+              }
+              if (implement!.completionSignal !== "<promise>COMPLETE</promise>")
                 throw new Error(
                   `Implementation did not complete for issue ${issue.id}; retain the branch and leave its issue open.`,
                 );
               const implementationCommits =
-                implement.commits.length > 0
-                  ? implement.commits
+                implement!.commits.length > 0
+                  ? implement!.commits
                   : (
                       await runHost("git", [
                         "rev-list",
@@ -740,59 +888,110 @@ async function executeWorkflow() {
               // Retained commits still require a fresh completed review before merging.
               if (sandbox && implementationCommits.length > 0) {
                 // Bounded review→repair loop: only an approved verdict is merged.
-                const loop = await sandcastle.runReviewLoop({
-                  maxRepairRounds: MAX_REPAIR_ROUNDS,
-                  review: (round) =>
-                    agentMap.track(
-                      {
-                        batch: iteration,
-                        role: "reviewer",
-                        issueId: issue.id,
-                        title:
-                          round === 1
-                            ? issue.title
-                            : `${issue.title} (re-review ${round})`,
-                        branch: issue.branch,
-                      },
-                      (logging) =>
-                        sandcastle.withReviewVerdict(
-                          sandbox!.run({
+                const reviewLoop = () =>
+                  sandcastle.runReviewLoop({
+                    maxRepairRounds: MAX_REPAIR_ROUNDS,
+                    review: (round) =>
+                      agentMap.track(
+                        {
+                          batch: iteration,
+                          role: "reviewer",
+                          issueId: issue.id,
+                          title:
+                            round === 1
+                              ? issue.title
+                              : `${issue.title} (re-review ${round})`,
+                          branch: issue.branch,
+                        },
+                        (logging) =>
+                          sandcastle.withReviewVerdict(
+                            sandbox!.run({
+                              logging,
+                              name: "reviewer",
+                              maxIterations: 1,
+                              agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+                              completionSignal: [
+                                "<promise>COMPLETE</promise>",
+                                "<promise>BLOCKED</promise>",
+                              ],
+                              promptFile: "./.sandcastle/review-prompt.md",
+                              promptArgs: {
+                                TASK_ID: issue.id,
+                                ISSUE_TITLE: issue.title,
+                                BRANCH: issue.branch,
+                                REVIEW_BASE_SHA: batchBaseSha,
+                                REVIEW_ROUND: String(round),
+                                REVIEW_REPAIR_ROUNDS: String(MAX_REPAIR_ROUNDS),
+                              },
+                            }),
+                          ),
+                      ),
+                    repair: (findings, round) =>
+                      agentMap.track(
+                        {
+                          batch: iteration,
+                          role: "implementer",
+                          issueId: issue.id,
+                          title: `${issue.title} (repair ${round})`,
+                          branch: issue.branch,
+                        },
+                        (logging) =>
+                          runImplementer(
                             logging,
-                            name: "reviewer",
-                            maxIterations: 1,
-                            agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-                            completionSignal: [
-                              "<promise>COMPLETE</promise>",
-                              "<promise>BLOCKED</promise>",
-                            ],
-                            promptFile: "./.sandcastle/review-prompt.md",
-                            promptArgs: {
-                              TASK_ID: issue.id,
-                              ISSUE_TITLE: issue.title,
-                              BRANCH: issue.branch,
-                              REVIEW_BASE_SHA: batchBaseSha,
-                              REVIEW_ROUND: String(round),
-                              REVIEW_REPAIR_ROUNDS: String(MAX_REPAIR_ROUNDS),
-                            },
-                          }),
-                        ),
-                    ),
-                  repair: (findings, round) =>
-                    agentMap.track(
-                      {
-                        batch: iteration,
-                        role: "implementer",
-                        issueId: issue.id,
-                        title: `${issue.title} (repair ${round})`,
-                        branch: issue.branch,
-                      },
-                      (logging) =>
-                        runImplementer(
-                          logging,
-                          sandcastle.formatReviewFindings(findings),
-                        ),
-                    ),
-                });
+                            sandcastle.formatReviewFindings(findings),
+                          ),
+                      ),
+                  });
+                const reviewCommits: { sha: string }[] = [];
+                let loop = await reviewLoop();
+                reviewCommits.push(...loop.commits);
+                if (
+                  loop.outcome === "changes-requested" &&
+                  ADVISOR_STUCK === "on"
+                ) {
+                  const findings = sandcastle.formatReviewFindings(
+                    loop.findings,
+                  );
+                  const stuck = await consultStuck(
+                    "review-budget-exhausted",
+                    loop.last.stdout,
+                    findings,
+                    async (advice, n) => {
+                      const run = await agentMap.track(
+                        {
+                          batch: iteration,
+                          role: "implementer",
+                          issueId: issue.id,
+                          title: `${issue.title} (advised ${n})`,
+                          branch: issue.branch,
+                        },
+                        (logging) =>
+                          runImplementer(
+                            logging,
+                            findings,
+                            undefined,
+                            sandcastle.formatStuckAdvice(advice),
+                          ),
+                      );
+                      reviewCommits.push(...run.commits);
+                      if (
+                        run.completionSignal !== "<promise>COMPLETE</promise>"
+                      )
+                        return { resolved: false, value: loop };
+                      // An advised repair goes through the normal review loop again.
+                      loop = await reviewLoop();
+                      reviewCommits.push(...loop.commits);
+                      return {
+                        resolved: loop.outcome === "approved",
+                        value: loop,
+                      };
+                    },
+                  );
+                  if (stuck.outcome !== "resolved")
+                    console.warn(
+                      `  ! ${issue.id} review still unapproved after the advisor (${stuck.outcome}).${stuckReport(stuck)}`,
+                    );
+                }
                 if (loop.outcome !== "approved")
                   console.warn(
                     `  ! ${issue.id} review ${loop.outcome} after ${loop.rounds.length} round(s); branch retained.\n` +
@@ -809,11 +1008,11 @@ async function executeWorkflow() {
                     loop.outcome === "approved"
                       ? "<promise>COMPLETE</promise>"
                       : "<promise>BLOCKED</promise>",
-                  commits: [...implementationCommits, ...loop.commits],
+                  commits: [...implementationCommits, ...reviewCommits],
                 };
               }
 
-              return implement;
+              return implement!;
             } finally {
               await sandbox?.close();
             }

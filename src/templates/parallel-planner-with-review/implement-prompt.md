@@ -35,6 +35,15 @@ When the mode is `implement`, follow the accepted approach. If a critique is
 shown above, apply its accepted direction and record in the commit body which
 concerns you accepted and which you disputed, with reasons.
 
+# ADVISOR GUIDANCE AFTER A STALL
+
+{{STUCK_ADVICE}}
+
+When guidance is shown above (not `None.`), an earlier attempt stalled and an
+advisor diagnosed it. Continue from the current branch and worktree state, and
+follow the next steps unless the task or code proves one wrong; if so, say why
+in the commit body. Do not restart from scratch or widen the scope.
+
 # REQUIRED CONTEXT
 
 Before editing:

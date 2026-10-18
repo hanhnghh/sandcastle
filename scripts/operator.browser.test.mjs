@@ -671,6 +671,20 @@ test("advisor role and approach critique are configured through the operator", a
   ]);
   assert.deepEqual((await loadWorkflowConfig({ cwd })).advisor, {
     approach: "high-risk",
+    stuck: "off",
+  });
+  await page.getByLabel("Stuck advisor").selectOption("on");
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/workflow") &&
+        response.request().method() === "PUT",
+    ),
+    page.getByRole("button", { name: "Save workflow" }).click(),
+  ]);
+  assert.deepEqual((await loadWorkflowConfig({ cwd })).advisor, {
+    approach: "high-risk",
+    stuck: "on",
   });
   await page.getByRole("button", { name: "Remove advisor role" }).click();
   await Promise.all([

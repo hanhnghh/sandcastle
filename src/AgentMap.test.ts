@@ -578,3 +578,55 @@ it("records advisor nodes with the approach critique and maps verdicts to status
     approach: { verdict: "escalate" },
   });
 });
+
+it("records stuck advice on advisor nodes and blocks escalated or owner-only causes", async () => {
+  const { withStuckAdvice } = await import("./StuckAdvisor.js");
+  const cwd = await mkdtemp(join(tmpdir(), "agent-map-stuck-"));
+  cleanup.push(() => rm(cwd, { recursive: true, force: true }));
+  const map = await createAgentMap({ cwd, name: "Stuck" });
+  cleanup.push(() => map.finish("completed"));
+  const server = await startDashboard({ cwd, port: 0 });
+  cleanup.push(server.close);
+  const advice = (extra: Record<string, unknown>) => ({
+    diagnosis: "Missing fixture key",
+    cause: "wrong-approach",
+    nextSteps: ["Add the key"],
+    confidence: "high",
+    escalate: false,
+    ...extra,
+  });
+  for (const [title, value] of [
+    ["fix", advice({})],
+    ["escalate", advice({ escalate: true })],
+    ["environment", advice({ cause: "environment" })],
+  ] as const)
+    await map.track(
+      { batch: 1, role: "advisor", issueId: "22", title, branch: "b" },
+      () =>
+        withStuckAdvice({
+          stdout: `<stuck-advice>${JSON.stringify(value)}</stuck-advice><promise>COMPLETE</promise>`,
+          commits: [],
+          completionSignal: "<promise>COMPLETE</promise>",
+        }),
+    );
+  const snapshot = (await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
+    r.json(),
+  )) as {
+    nodes: { title: string }[];
+  };
+  const byTitle = Object.fromEntries(
+    snapshot.nodes.map((node) => [node.title, node]),
+  );
+  expect(byTitle.fix).toMatchObject({
+    status: "completed",
+    advice: { cause: "wrong-approach", nextSteps: ["Add the key"] },
+  });
+  expect(byTitle.escalate).toMatchObject({
+    status: "blocked",
+    advice: { escalate: true },
+  });
+  expect(byTitle.environment).toMatchObject({
+    status: "blocked",
+    advice: { cause: "environment" },
+  });
+});
