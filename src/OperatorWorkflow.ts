@@ -87,6 +87,20 @@ export const workflowConfigSchema = z
           ),
       })
       .strict(),
+    /** Advisor policy (requires the optional advisor role). Absent means off. */
+    advisor: z
+      .object({
+        /** Approach critique before implementation: off, issues with the high-risk label, or all. */
+        approach: z.enum(["off", "high-risk", "all"]),
+        /** Label marking high-risk issues. Default risk:high. */
+        highRiskLabel: label.optional(),
+        /** Revise rounds after a revise verdict (0–3). Default 1. */
+        approachRounds: z.number().int().min(0).max(3).optional(),
+        /** Advisor invocations allowed per run (1–200). Default 20. */
+        maxInvocations: z.number().int().min(1).max(200).optional(),
+      })
+      .strict()
+      .optional(),
     /** Merge policy. Absent means batch integration. */
     merge: z
       .object({

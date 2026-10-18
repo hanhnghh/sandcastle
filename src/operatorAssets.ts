@@ -145,12 +145,17 @@ function fallbackRow(role, list, target) {
   row.append(labelled(name + ' provider', provider), labelled(name + ' model', model), effortSlot, remove);
   list.append(row);
 }
+let projectName = '';
 async function load() {
   const data = await request('/api/config');
-  fields.replaceChildren();
   config = data.config;
   providers = data.providers;
-  document.getElementById('project').textContent = 'Project: ' + data.project;
+  projectName = data.project;
+  render();
+}
+function render() {
+  fields.replaceChildren();
+  document.getElementById('project').textContent = 'Project: ' + projectName;
   for (const [role, settings] of Object.entries(config.roles)) {
     const group = document.createElement('fieldset');
     const legend = document.createElement('legend');
@@ -210,7 +215,23 @@ async function load() {
       });
       group.append(preset);
     }
+    if (role === 'advisor') {
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.textContent = 'Remove advisor role';
+      remove.addEventListener('click', () => { delete config.roles.advisor; render(); message('Advisor removed. Save settings to apply.'); });
+      group.append(remove);
+    }
     fields.append(group);
+  }
+  if (!config.roles.advisor) {
+    const addAdvisor = document.createElement('button');
+    addAdvisor.type = 'button'; addAdvisor.textContent = 'Add advisor role';
+    addAdvisor.addEventListener('click', () => {
+      config = { ...config, roles: { ...config.roles, advisor: { provider: 'claudeCode', model: 'claude-opus-5-5', effort: 'high' } } };
+      render();
+      message('Advisor added (critiques direction only, never edits code). Save settings to apply.');
+    });
+    fields.append(addAdvisor);
   }
 }
 function readEffort(control) {
@@ -235,7 +256,7 @@ document.getElementById('roles').addEventListener('submit', async event => {
       roles[role] = { provider, model: selected === 'custom' ? document.getElementById(role + '-custom').value : selected };
       if (effort !== undefined) roles[role].effort = effort;
       if (fallback.length) roles[role].fallback = fallback;
-      if (provider !== 'codex' || fallback.length || effort === undefined) upgrade = true;
+      if (role === 'advisor' || provider !== 'codex' || fallback.length || effort === undefined) upgrade = true;
     }
     const next = { schemaVersion: upgrade ? 2 : 1, revision: config.revision, roles };
     const saved = await request('/api/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(next) });
@@ -361,7 +382,11 @@ async function loadWorkflow() {
   const mergeField=document.createElement('select');mergeField.id='workflow-mergeMode';mergeField.setAttribute('aria-label','Merge mode');
   for(const [value,text] of [['batch','Batch: one merger after every pipeline settles'],['per-branch','Per-branch: merge each approved branch at once']]){const option=document.createElement('option');option.value=value;option.textContent=text;mergeField.append(option);}
   mergeField.value=(workflowConfig.merge && workflowConfig.merge.mode) || 'batch';mergeLabel.append(mergeField);
-  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel);workflowDiagnostic(data);
+  const approachLabel=document.createElement('label');approachLabel.textContent='Advisor approach critique';
+  const approachField=document.createElement('select');approachField.id='workflow-advisorApproach';approachField.setAttribute('aria-label','Advisor approach critique');
+  for(const [value,text] of [['off','Off'],['high-risk','High-risk issues only'],['all','All issues']]){const option=document.createElement('option');option.value=value;option.textContent=text;approachField.append(option);}
+  approachField.value=(workflowConfig.advisor && workflowConfig.advisor.approach) || 'off';approachLabel.append(approachField);
+  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel,approachLabel);workflowDiagnostic(data);
 }
 document.getElementById('workflow-form').addEventListener('submit',async event=>{
   event.preventDefault();event.submitter.disabled=true;
@@ -381,6 +406,8 @@ document.getElementById('workflow-form').addEventListener('submit',async event=>
     if(Object.keys(review).length) next.review=review;
     const mergeMode=document.getElementById('workflow-mergeMode').value;
     if(mergeMode !== 'batch' || next.merge) next.merge={mode:mergeMode};
+    const approachMode=document.getElementById('workflow-advisorApproach').value;
+    if(approachMode !== 'off' || next.advisor) next.advisor={...(next.advisor||{}),approach:approachMode};
     workflowConfig=(await request('/api/workflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)})).config;
     workflowDiagnostic(await request('/api/workflow'));message('Workflow saved. Revision '+workflowConfig.revision.slice(0,12)+'. Applies to the next run.');
   } catch(error) {message(error.message,true);} finally {event.submitter.disabled=false;}

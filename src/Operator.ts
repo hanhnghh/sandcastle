@@ -147,7 +147,10 @@ const roleConfigV2Schema = z
   .object({
     schemaVersion: z.literal(2),
     revision: z.string(),
-    roles: rolesOf(roleSchemaV2),
+    roles: rolesOf(roleSchemaV2).extend({
+      /** Optional advisor: critiques direction, never edits code. Absent = off. */
+      advisor: roleSchemaV2.optional(),
+    }),
   })
   .strict();
 /** Internal source-schema validator shared with frozen runtime handoff. Accepts versions 1 and 2. */
@@ -178,6 +181,17 @@ export const roleSetting = (
     model: value.model,
     ...(value.effort === undefined ? {} : { effort: value.effort }),
     fallback: "fallback" in value ? (value.fallback ?? []) : [],
+  };
+};
+/** The optional advisor's setting, or null when not configured (version 1 never has one). */
+export const advisorSetting = (config: RoleConfig): RoleSetting | null => {
+  if (config.schemaVersion !== 2 || !config.roles.advisor) return null;
+  const value = config.roles.advisor;
+  return {
+    provider: value.provider,
+    model: value.model,
+    ...(value.effort === undefined ? {} : { effort: value.effort }),
+    fallback: value.fallback ?? [],
   };
 };
 /** Explicitly convert a configuration to schema version 2 without changing any role's behaviour. */

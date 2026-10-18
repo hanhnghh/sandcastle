@@ -30,6 +30,7 @@ const agentRoles = [
   "reviewer",
   "merger",
   "readiness",
+  "advisor",
 ] as const;
 const roleSchema = z.enum(agentRoles);
 const nodeStatusSchema = z.enum([
@@ -75,6 +76,23 @@ const nodeSchema = z.object({
     )
     .optional(),
   error: z.string().optional(),
+  approach: z
+    .object({
+      verdict: z.enum(["proceed", "revise", "escalate", "invalid"]),
+      summary: z.string().optional(),
+      concerns: z
+        .array(
+          z.object({
+            id: z.string(),
+            severity: z.string(),
+            point: z.string(),
+            suggestion: z.string(),
+          }),
+        )
+        .default([]),
+      error: z.string().optional(),
+    })
+    .optional(),
   review: z
     .object({
       verdict: z.enum(["approve", "changes-requested", "blocked", "invalid"]),
@@ -112,6 +130,7 @@ const nodeSchema = z.object({
 
 const resultSchema = z.object({
   review: nodeSchema.shape.review,
+  approach: nodeSchema.shape.approach,
   branch: z.string().optional(),
   completionSignal: z.string().optional(),
   commits: z.array(z.object({ sha: z.string() })).optional(),
@@ -414,8 +433,18 @@ export const createAgentMap = (options: {
                 const signal = parsed.success
                   ? parsed.data.completionSignal
                   : undefined;
+                const approach = parsed.success
+                  ? parsed.data.approach?.verdict
+                  : undefined;
                 const verdict = parsed.success
-                  ? parsed.data.review?.verdict
+                  ? (parsed.data.review?.verdict ??
+                    (approach === "revise"
+                      ? "changes-requested"
+                      : approach === "escalate"
+                        ? "blocked"
+                        : approach === "invalid"
+                          ? "invalid"
+                          : undefined))
                   : undefined;
                 active.status =
                   verdict === "changes-requested" || verdict === "invalid"
@@ -431,6 +460,8 @@ export const createAgentMap = (options: {
                 if (parsed.success) {
                   active.branch = parsed.data.branch || active.branch;
                   if (parsed.data.review) active.review = parsed.data.review;
+                  if (parsed.data.approach)
+                    active.approach = parsed.data.approach;
                   active.commits = parsed.data.commits?.map((c) => c.sha) ?? [];
                   const last = parsed.data.iterations?.at(-1);
                   active.usage = parsed.data.iterations

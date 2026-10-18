@@ -73,6 +73,13 @@ const breaker = sandcastle.createCircuitBreaker(PROVIDER_FAILURE_THRESHOLD);
 // "batch": one merger integrates the whole batch after every pipeline settles.
 // "per-branch": each approved branch is integrated as soon as it is approved.
 const MERGE_MODE: "batch" | "per-branch" = "batch";
+// Advisor approach critique before implementation: "off" | "high-risk" | "all".
+// The advisor critiques direction only; it never edits code or the tracker.
+const ADVISOR_APPROACH: "off" | "high-risk" | "all" = "off";
+const ADVISOR_HIGH_RISK_LABEL = "risk:high";
+const ADVISOR_APPROACH_ROUNDS = 1;
+const advisorBudget = { remaining: 20 };
+const advisorAgent = () => sandcastle.claudeCode("claude-opus-4-8");
 // Post-merge readiness is incremental; every Nth post-merge run is full.
 const READINESS_FULL_EVERY = 5;
 let postMergeAssessments = 0;
@@ -165,6 +172,21 @@ const loadPlannerInventory = async (): Promise<unknown[]> =>
 
 const currentBranch = async () =>
   (await runHost("git", ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+
+// Host-side tracker reads for the advisor (the advisor itself has no tracker access).
+async function issueView(
+  id: string,
+): Promise<{ body?: string; labels?: { name: string }[] }> {
+  return JSON.parse(
+    await runHost("gh", ["issue", "view", id, "--json", "body,labels"]),
+  );
+}
+async function issueLabels(id: string): Promise<string[]> {
+  return ((await issueView(id)).labels ?? []).map((label) => label.name);
+}
+async function issueBody(id: string): Promise<string> {
+  return (await issueView(id)).body ?? "";
+}
 
 async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
   if (!readinessEnabled) return;
@@ -506,6 +528,8 @@ async function executeWorkflow() {
       issues.map(async (issue) => {
         // Provider/infrastructure failures retry on the retained branch;
         // task failures (blocked, unapproved) are never retried.
+        // Critique accepted on the first attempt; reused by retries.
+        let approachCritique = "None.";
         const result = await sandcastle.runTaskWithRetries({
           retries: TASK_RETRIES,
           breaker,
@@ -524,6 +548,10 @@ async function executeWorkflow() {
               const runImplementer = (
                 logging: sandcastle.LoggingOption,
                 reviewFindings: string,
+                approach: { mode: "plan" | "implement"; critique: string } = {
+                  mode: "implement",
+                  critique: approachCritique,
+                },
               ) =>
                 sandbox!.run({
                   logging,
@@ -540,8 +568,140 @@ async function executeWorkflow() {
                     ISSUE_TITLE: issue.title,
                     BRANCH: issue.branch,
                     REVIEW_FINDINGS: reviewFindings,
+                    APPROACH_MODE: approach.mode,
+                    APPROACH_CRITIQUE: approach.critique,
                   },
                 });
+              const ensureSandbox = async () => {
+                sandbox ??= await sandcastle.createSandbox({
+                  branch: issue.branch,
+                  baseBranch: batchBaseSha,
+                  sandbox: docker({ env: trackerEnvironment }),
+                  hooks,
+                  copyToWorktree,
+                });
+              };
+              // Approach critique: the implementer writes a brief in plan mode and
+              // the advisor critiques it, before any code change. Retries reuse
+              // the first attempt's outcome.
+              const approachWanted =
+                attempt === 1 &&
+                ADVISOR_APPROACH !== "off" &&
+                (ADVISOR_APPROACH === "all" ||
+                  (await issueLabels(issue.id)).includes(
+                    ADVISOR_HIGH_RISK_LABEL,
+                  ));
+              if (approachWanted) {
+                const taskBody = await issueBody(issue.id);
+                const runAdvisor = async (
+                  logging: sandcastle.LoggingOption,
+                  plan: sandcastle.ApproachPlan,
+                  round: number,
+                ) => {
+                  // Fresh worktree of the issue branch, no tracker credentials.
+                  const advisorSandbox = await sandcastle.createSandbox({
+                    branch: `sandcastle/advisor-${randomUUID()}`,
+                    baseBranch: issue.branch,
+                    sandbox: docker({ env: { ...readinessEnvironment } }),
+                    copyToWorktree: [],
+                  });
+                  try {
+                    const run = await advisorSandbox.run({
+                      logging,
+                      name: "advisor",
+                      maxIterations: 1,
+                      agent: advisorAgent(),
+                      promptFile: "./.sandcastle/approach-critique-prompt.md",
+                      promptArgs: {
+                        TASK_ID: issue.id,
+                        ISSUE_TITLE: issue.title,
+                        TASK_BODY: taskBody,
+                        APPROACH_PLAN: sandcastle.formatApproachPlan(plan),
+                        APPROACH_ROUND: String(round),
+                      },
+                    });
+                    // The advisor must leave its checkout untouched.
+                    const status = await advisorSandbox.exec(
+                      "git status --porcelain --untracked-files=all",
+                    );
+                    return status.stdout.trim()
+                      ? {
+                          ...run,
+                          commits: [
+                            ...run.commits,
+                            { sha: "uncommitted-advisor-changes" },
+                          ],
+                        }
+                      : run;
+                  } finally {
+                    await advisorSandbox.close();
+                  }
+                };
+                const approach = await sandcastle.runApproachCritique({
+                  rounds: ADVISOR_APPROACH_ROUNDS,
+                  budget: advisorBudget,
+                  plan: (round, previous) =>
+                    agentMap.track(
+                      {
+                        batch: iteration,
+                        role: "implementer",
+                        issueId: issue.id,
+                        title: `${issue.title} (approach ${round})`,
+                        branch: issue.branch,
+                      },
+                      async (logging) => {
+                        await ensureSandbox();
+                        const run = await runImplementer(logging, "", {
+                          mode: "plan",
+                          critique: previous
+                            ? sandcastle.formatApproachCritique(previous)
+                            : "None.",
+                        });
+                        // A plan-mode run must not change the repository.
+                        const status = await sandbox!.exec(
+                          "git status --porcelain --untracked-files=all",
+                        );
+                        return status.stdout.trim()
+                          ? {
+                              ...run,
+                              commits: [
+                                ...run.commits,
+                                { sha: "uncommitted-plan-changes" },
+                              ],
+                            }
+                          : run;
+                      },
+                    ),
+                  critique: (round, plan) =>
+                    agentMap.track(
+                      {
+                        batch: iteration,
+                        role: "advisor",
+                        issueId: issue.id,
+                        title: `${issue.title} (approach critique ${round})`,
+                        branch: issue.branch,
+                      },
+                      (logging) =>
+                        sandcastle.withApproachCritique(
+                          runAdvisor(logging, plan, round),
+                        ),
+                    ),
+                });
+                console.log(
+                  `  ${issue.id} approach ${approach.outcome}${approach.reason ? ` (${approach.reason})` : ""}: concerns accepted ${approach.counts.accepted}, disputed ${approach.counts.disputed}`,
+                );
+                if (approach.outcome === "escalate")
+                  throw new Error(
+                    `Approach escalated for issue ${issue.id} (${approach.reason}); branch retained for the owner.\n` +
+                      (approach.critique
+                        ? sandcastle.formatApproachCritique(approach.critique)
+                        : (approach.rounds.at(-1)?.error ?? "")),
+                  );
+                if (approach.critique)
+                  approachCritique = sandcastle.formatApproachCritique(
+                    approach.critique,
+                  );
+              }
               const implement = await agentMap.track(
                 {
                   batch: iteration,
@@ -554,14 +714,7 @@ async function executeWorkflow() {
                   branch: issue.branch,
                 },
                 async (logging) => {
-                  sandbox = await sandcastle.createSandbox({
-                    branch: issue.branch,
-                    baseBranch: batchBaseSha,
-                    sandbox: docker({ env: trackerEnvironment }),
-                    hooks,
-                    copyToWorktree,
-                  });
-
+                  await ensureSandbox();
                   return runImplementer(logging, "");
                 },
               );

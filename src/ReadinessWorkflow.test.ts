@@ -76,6 +76,16 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   if(branches.some(b=>b.endsWith('-'+process.env.READINESS_FIXTURE_MERGE_BLOCKED_ISSUE))) {console.log('<promise>BLOCKED</promise>');process.exit(0);}
   for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); execFileSync('gh',['issue','close',String(number)]); }
   if(process.env.READINESS_FIXTURE_MERGE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
+} else if(prompt.includes('Critique the implementation approach for task')) {
+  const number=prompt.match(/approach for task (\\d+)/)[1];record('advisor:'+number);
+  if(process.env.GH_TOKEN || process.env.GITHUB_TOKEN) throw Error('Tracker credential leaked to advisor');
+  const mode=process.env.READINESS_FIXTURE_ADVISOR||'proceed';const round=Number(prompt.match(/\\(round (\\d+)\\)/)[1]);
+  if(mode==='malformed') console.log('No critique today.');
+  else {
+    if(mode==='dirty') fs.writeFileSync('advisor-note.txt','x');
+    const verdict=mode==='escalate'?'escalate':((mode==='revise'&&round===1)||mode==='always-revise')?'revise':'proceed';
+    console.log('<approach-critique>'+JSON.stringify({verdict,summary:'Checked round '+round,concerns:verdict==='revise'?[{id:'C1',severity:'major',point:'Missing idempotency',suggestion:'Add a request key'}]:[]})+'</approach-critique>');
+  }
 } else if(prompt.includes('Review task ')) {
   const number=prompt.match(/Review task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);record('review:'+number);
   if(process.env.READINESS_FIXTURE_REVIEW_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
@@ -85,6 +95,13 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
 }
 else if(prompt.includes('Implement task ')) {
   const number=prompt.match(/Implement task (\\d+)/)[1];execFileSync('gh',['issue','view',number]);
+  if(prompt.includes('Mode: '+String.fromCharCode(96)+'plan')) {
+    const revising=prompt.includes('Verdict: revise');record((revising?'approach-revise:':'approach:')+number);
+    const plan={goal:'Implement '+number,size:'S',estimate:{minutes:5,iterations:1},files:['task-'+number+'.txt'],steps:['Write the file'],tests:['The file exists'],risks:[]};
+    if(revising) plan.dispositions=[{concern:'C1',decision:process.env.READINESS_FIXTURE_DISPUTE==='1'?'disputed':'accepted',reason:'Handled in the brief'}];
+    console.log('<approach-plan>'+JSON.stringify(plan)+'</approach-plan>');console.log('<promise>COMPLETE</promise>');process.exit(0);
+  }
+  if(prompt.includes('Verdict: proceed. Checked')) record('critique-received:'+number);
   const providerFailed=fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').includes('provider-fail:'+number);
   if(process.env.READINESS_FIXTURE_PROVIDER_FAIL==='always' || (process.env.READINESS_FIXTURE_PROVIDER_FAIL==='once' && !providerFailed)) {record('provider-fail:'+number);console.error('HTTP 429 Too Many Requests: rate limit');process.exit(1);}
   if(prompt.includes('- [F1] (major)')) {record('repair:'+number);fs.appendFileSync('repair-'+number+'.txt','repaired\\n');git('add','.');git('commit','-m','Repair '+number);console.log('<promise>COMPLETE</promise>');process.exit(0);}
@@ -249,6 +266,27 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
             : value.effort;
     }
     await saveRoleConfig({ cwd, config });
+    if (extraEnv.READINESS_FIXTURE_ADVISOR_ROLE === "1") {
+      const { migrateRoleConfig } = await import("./index.js");
+      const v2 = migrateRoleConfig(await loadRoleConfig({ cwd })) as Extract<
+        Awaited<ReturnType<typeof loadRoleConfig>>,
+        { schemaVersion: 2 }
+      >;
+      await saveRoleConfig({
+        cwd,
+        config: {
+          ...v2,
+          roles: {
+            ...v2.roles,
+            advisor: {
+              provider: "codex",
+              model: "configured-advisor",
+              effort: "high",
+            },
+          },
+        },
+      });
+    }
   }
   const mainPath = join(cwd, ".sandcastle/main.mts");
   let main = await readFile(mainPath, "utf8");
@@ -257,6 +295,10 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
     .replace(
       'const MERGE_MODE: "batch" | "per-branch" = "batch";',
       `const MERGE_MODE: "batch" | "per-branch" = ${JSON.stringify(extraEnv.READINESS_FIXTURE_MERGE_MODE ?? "batch")};`,
+    )
+    .replace(
+      'const ADVISOR_APPROACH: "off" | "high-risk" | "all" = "off";',
+      `const ADVISOR_APPROACH: "off" | "high-risk" | "all" = ${JSON.stringify(extraEnv.READINESS_FIXTURE_APPROACH ?? "off")};`,
     )
     .replace(
       "const PROVIDER_FAILURE_THRESHOLD = 3;",
@@ -330,6 +372,16 @@ const defaultImageName = () => "fixture-image";`,
               config.limits.plannerAttempts,
           ),
         },
+        ...(extraEnv.READINESS_FIXTURE_APPROACH
+          ? {
+              advisor: {
+                approach: extraEnv.READINESS_FIXTURE_APPROACH as
+                  | "off"
+                  | "high-risk"
+                  | "all",
+              },
+            }
+          : {}),
         ...(extraEnv.READINESS_FIXTURE_MERGE_MODE
           ? {
               merge: {
@@ -603,6 +655,97 @@ it("per-branch mode retains a branch whose merge is blocked without stopping the
     result.issues.find((issue: { number: number }) => issue.number === 20)
       .state,
   ).toBe("open");
+}, 90_000);
+
+const approachTrace = (trace: string[]) =>
+  trace.filter(
+    (value) =>
+      value.endsWith(":22") &&
+      !value.startsWith("plan:") &&
+      !value.startsWith("merger:"),
+  );
+
+it("approach critique: proceed passes the critique to implementation", async () => {
+  const result = await execute({ READINESS_FIXTURE_APPROACH: "all" });
+  expect(result.error).toBeUndefined();
+  expect(approachTrace(result.trace)).toEqual([
+    "approach:22",
+    "advisor:22",
+    "critique-received:22",
+    "implement:22",
+    "review:22",
+    "merge:22",
+  ]);
+}, 90_000);
+
+it("approach critique: revise requires an answered revised brief before implementation", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_APPROACH: "all",
+    READINESS_FIXTURE_ADVISOR: "revise",
+  });
+  expect(result.error).toBeUndefined();
+  expect(approachTrace(result.trace).slice(0, 5)).toEqual([
+    "approach:22",
+    "advisor:22",
+    "approach-revise:22",
+    "advisor:22",
+    "critique-received:22",
+  ]);
+  expect(result.trace).toContain("merge:22");
+}, 90_000);
+
+for (const [mode, extra] of [
+  ["escalate", {}],
+  ["malformed", {}],
+  ["dirty", {}],
+  ["always-revise", { READINESS_FIXTURE_DISPUTE: "1" }],
+] as const)
+  it(`approach critique: ${mode} escalates without implementing or merging`, async () => {
+    const result = await execute({
+      READINESS_FIXTURE_APPROACH: "all",
+      READINESS_FIXTURE_ADVISOR: mode,
+      ...extra,
+    });
+    expect(result.error).toBeDefined();
+    expect(result.trace).toContain("advisor:22");
+    expect(result.trace).not.toContain("implement:22");
+    expect(result.trace).not.toContain("merge:22");
+  }, 90_000);
+
+it("Codex runtime refuses an enabled approach critique without an advisor role", async () => {
+  // Admission fails before any agent or Agent Map run exists.
+  await expect(
+    execute({
+      READINESS_FIXTURE_CODEX: "1",
+      READINESS_FIXTURE_APPROACH: "all",
+    }),
+  ).rejects.toThrow(/no advisor role is configured/);
+}, 90_000);
+
+it("Codex runtime runs the configured advisor model and keeps the five role models", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_APPROACH: "all",
+    READINESS_FIXTURE_ADVISOR_ROLE: "1",
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.trace).toContain("advisor:22");
+  expect(result.trace).toContain("merge:22");
+  const models = result.modelArgs.map(
+    (args: string[]) => args[args.indexOf("-m") + 1],
+  );
+  expect(models).toContain("configured-advisor");
+  expect(models).toContain("configured-implementer");
+  expect(models).toContain("configured-reviewer");
+}, 90_000);
+
+it("approach critique in high-risk mode skips issues without the high-risk label", async () => {
+  const result = await execute({ READINESS_FIXTURE_APPROACH: "high-risk" });
+  expect(result.error).toBeUndefined();
+  expect(
+    result.trace.some((value: string) => value.startsWith("advisor:")),
+  ).toBe(false);
+  expect(result.trace).toContain("merge:22");
 }, 90_000);
 
 it("stops before the next planner when post-merge project verification fails", async () => {

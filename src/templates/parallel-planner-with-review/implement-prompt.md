@@ -12,6 +12,29 @@ interpret an acceptance criterion. Work on this task only. Preserve unrelated
 working-tree changes and accumulated branch progress. Do not close the task;
 the verified merge phase owns closure.
 
+# APPROACH MODE
+
+Mode: `{{APPROACH_MODE}}`.
+
+Advisor critique of the approach (or `None.`):
+
+{{APPROACH_CRITIQUE}}
+
+When the mode is `plan`, write an approach brief only. Read the task and the
+relevant code, but do not edit, create or delete files and do not commit. Emit
+exactly one brief, then the completion signal:
+
+<approach-plan>{"goal":"…","size":"S|M|L","estimate":{"minutes":30,"iterations":2},"files":["path"],"steps":["…"],"tests":["…"],"risks":["…"]}</approach-plan>
+
+`size` and `estimate` are your honest expectation for implementing the brief.
+When a critique is shown above, revise the brief and add `"dispositions"` with
+one entry per concern: `{"concern":"C1","decision":"accepted|disputed","reason":"…"}`.
+Dispute a concern only with a concrete reason from the task or the code.
+
+When the mode is `implement`, follow the accepted approach. If a critique is
+shown above, apply its accepted direction and record in the commit body which
+concerns you accepted and which you disputed, with reasons.
+
 # REQUIRED CONTEXT
 
 Before editing:
