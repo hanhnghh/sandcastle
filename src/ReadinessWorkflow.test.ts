@@ -82,6 +82,16 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   const mode=process.env.READINESS_FIXTURE_STUCK||'fix';
   if(mode==='malformed') console.log('Cannot tell.');
   else console.log('<stuck-advice>'+JSON.stringify({diagnosis:'The task file is missing a required line.',cause:mode==='environment'?'environment':'wrong-approach',nextSteps:['Write the required line','Commit it'],confidence:'high',escalate:mode==='escalate'})+'</stuck-advice>');
+} else if(prompt.includes('is paused at progress')) {
+  const number=prompt.match(/implementer of task (\\d+)/)[1];const signal=prompt.match(/because .([a-z-]+):/)[1];record('checkpoint:'+number+':'+signal);
+  if(process.env.GH_TOKEN || process.env.GITHUB_TOKEN) throw Error('Tracker credential leaked to advisor');
+  if(prompt.includes('?? task-'+number+'.txt')) record('advisor-saw-work:'+number);
+  const mode=process.env.READINESS_FIXTURE_CHECKPOINT||'continue';
+  if(mode==='malformed') console.log('Looks fine.');
+  else {
+    if(mode==='dirty') fs.writeFileSync('advisor-note.txt','x');
+    console.log('<progress-check>'+JSON.stringify({verdict:mode==='dirty'?'continue':mode,assessment:'Half way: the task file is partial',direction:mode==='redirect'?'Finish the task file':'',remainingBudget:5})+'</progress-check>');
+  }
 } else if(prompt.includes('Critique the implementation approach for task')) {
   const number=prompt.match(/approach for task (\\d+)/)[1];record('advisor:'+number);
   if(process.env.GH_TOKEN || process.env.GITHUB_TOKEN) throw Error('Tracker credential leaked to advisor');
@@ -113,6 +123,20 @@ else if(prompt.includes('Implement task ')) {
   if(process.env.READINESS_FIXTURE_PROVIDER_FAIL==='always' || (process.env.READINESS_FIXTURE_PROVIDER_FAIL==='once' && !providerFailed)) {record('provider-fail:'+number);console.error('HTTP 429 Too Many Requests: rate limit');process.exit(1);}
   if(prompt.includes('Diagnosis (wrong-approach')) {record('advised:'+number);fs.appendFileSync('advised-'+number+'.txt','advised\\n');git('add','.');git('commit','-m','Advised '+number);console.log('<promise>COMPLETE</promise>');process.exit(0);}
   if(prompt.includes('- [F1] (major)')) {record('repair:'+number);fs.appendFileSync('repair-'+number+'.txt','repaired\\n');git('add','.');git('commit','-m','Repair '+number);console.log('<promise>COMPLETE</promise>');process.exit(0);}
+  const checkpointImpl=number==='22'?process.env.READINESS_FIXTURE_CHECKPOINT_IMPL:undefined;
+  if(checkpointImpl) {
+    const check=prompt.match(/Verdict: (continue|redirect)\\./);
+    if(check) {
+      record('checkpoint-resumed:'+number+':'+check[1]);
+      if(fs.existsSync('task-'+number+'.txt') && fs.readFileSync('task-'+number+'.txt','utf8')==='partial') record('kept-work:'+number);
+      fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);console.log('<promise>COMPLETE</promise>');process.exit(0);
+    }
+    record('implement:'+number);fs.writeFileSync('task-'+number+'.txt','partial');
+    if(checkpointImpl==='outside') fs.writeFileSync('outside-'+number+'.txt','x');
+    if(checkpointImpl==='errors') for(let i=0;i<3;i++) {console.log('Error: fixture build failed at step '+i);await new Promise(r=>setTimeout(r,150));}
+    // Runs until paused; a survivor records itself after the pause.
+    await new Promise(r=>setTimeout(r,4000));record('implementer-survived:'+number);process.exit(0);
+  }
   record('implement:'+number);
   if(process.env.READINESS_FIXTURE_NO_PROGRESS!=='1' && !(number==='22' && process.env.READINESS_FIXTURE_RETAINED==='1')) {fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);}
   if(process.env.READINESS_FIXTURE_BLOCKED==='1' || process.env.READINESS_FIXTURE_IMPL_STALL==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
@@ -309,6 +333,15 @@ import(${JSON.stringify(pathToFileURL(join(root, "agent.mjs")).href)});
       `const ADVISOR_STUCK: "off" | "on" = ${JSON.stringify(extraEnv.READINESS_FIXTURE_STUCK_MODE ?? "off")};`,
     )
     .replace(
+      'const ADVISOR_CHECKPOINT: sandcastle.CheckpointPolicy = { mode: "off" };',
+      `const ADVISOR_CHECKPOINT: sandcastle.CheckpointPolicy = ${extraEnv.READINESS_FIXTURE_CHECKPOINT_POLICY ?? '{ mode: "off" }'};`,
+    )
+    // Checkpoint budgets in fixture time: one budget minute is 100 ms.
+    .replace(
+      "budgetMinutes: budget.budgetMinutes,",
+      `budgetMinutes: budget.budgetMinutes, pollMs: 50, minuteMs: ${extraEnv.READINESS_FIXTURE_CHECKPOINT_MINUTE_MS ?? 100},`,
+    )
+    .replace(
       'const ADVISOR_APPROACH: "off" | "high-risk" | "all" = "off";',
       `const ADVISOR_APPROACH: "off" | "high-risk" | "all" = ${JSON.stringify(extraEnv.READINESS_FIXTURE_APPROACH ?? "off")};`,
     )
@@ -385,9 +418,17 @@ const defaultImageName = () => "fixture-image";`,
           ),
         },
         ...(extraEnv.READINESS_FIXTURE_APPROACH ||
-        extraEnv.READINESS_FIXTURE_STUCK_MODE
+        extraEnv.READINESS_FIXTURE_STUCK_MODE ||
+        extraEnv.READINESS_FIXTURE_CHECKPOINT_POLICY
           ? {
               advisor: {
+                ...(extraEnv.READINESS_FIXTURE_CHECKPOINT_POLICY
+                  ? {
+                      checkpoint: JSON.parse(
+                        extraEnv.READINESS_FIXTURE_CHECKPOINT_POLICY,
+                      ),
+                    }
+                  : {}),
                 ...(extraEnv.READINESS_FIXTURE_APPROACH
                   ? {
                       approach: extraEnv.READINESS_FIXTURE_APPROACH as
@@ -492,6 +533,7 @@ const defaultImageName = () => "fixture-image";`,
   return {
     error,
     stdout,
+    tracePath: trace,
     modelArgs:
       extraEnv.READINESS_FIXTURE_CODEX === "1"
         ? (await readFile(join(root, "models.jsonl"), "utf8"))
@@ -855,6 +897,184 @@ it("stuck advisor off keeps the blocked implementation behaviour", async () => {
   expect(
     result.trace.filter((value: string) => value === "implement:22"),
   ).toHaveLength(1);
+}, 90_000);
+
+const checkpointPolicy = (extra: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    mode: "on",
+    defaults: { "*": { minutes: 4, size: "S" } },
+    ...extra,
+  });
+
+/** Wait until a paused implementer would have recorded itself, then reread. */
+const survivors = async (tracePath: string) => {
+  await new Promise((resolve) => setTimeout(resolve, 4_500));
+  return (await readFile(tracePath, "utf8"))
+    .split("\n")
+    .filter((value) => value.startsWith("implementer-survived:"));
+};
+
+const nodesOf = (result: { snapshots: { nodes: unknown[] }[] }) =>
+  result.snapshots.flatMap((snapshot) => snapshot.nodes) as {
+    role: string;
+    issueId?: string;
+    status: string;
+    checkpoint?: { verdict: string; signal: string };
+    progress?: Record<string, unknown>;
+  }[];
+
+it("progress checkpoint: a time checkpoint pauses the implementer, the advisor sees its uncommitted work, and it continues to merge", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_CHECKPOINT_POLICY: checkpointPolicy(),
+    READINESS_FIXTURE_CHECKPOINT_IMPL: "slow",
+  });
+  expect(result.error).toBeUndefined();
+  expect(stuckTrace(result.trace)).toEqual([
+    "implement:22",
+    "checkpoint:22:time",
+    "advisor-saw-work:22",
+    "checkpoint-resumed:22:continue",
+    "kept-work:22",
+    "review:22",
+    "merge:22",
+  ]);
+  // The paused process was stopped, not left running beside the resume.
+  expect(await survivors(result.tracePath)).toEqual([]);
+  const nodes = nodesOf(result);
+  expect(
+    nodes.find((node) => node.role === "advisor" && node.issueId === "22"),
+  ).toMatchObject({
+    status: "completed",
+    checkpoint: { verdict: "continue", signal: "time" },
+  });
+  expect(
+    nodes.find((node) => node.role === "implementer" && node.issueId === "22")
+      ?.progress,
+  ).toMatchObject({
+    estimateMinutes: 4,
+    budgetMinutes: 6,
+    source: "default",
+    outcome: "completed",
+    // The scripted agent has no session storage: the fallback is recorded.
+    checkpoints: [{ signal: "time", verdict: "continue", resumed: "fresh" }],
+  });
+  expect(result.stdout).toMatch(
+    /22 checkpoints completed: estimate 4 min \(default\), budget 6, actual/,
+  );
+}, 90_000);
+
+for (const [mode, outcome] of [
+  ["stop", "stopped"],
+  ["malformed", "invalid-check"],
+  ["dirty", "invalid-check"],
+] as const)
+  it(`progress checkpoint: ${mode} advice retains the branch and reports to the owner`, async () => {
+    const result = await execute({
+      READINESS_FIXTURE_CHECKPOINT_POLICY: checkpointPolicy(),
+      READINESS_FIXTURE_CHECKPOINT_IMPL: "slow",
+      READINESS_FIXTURE_CHECKPOINT: mode,
+    });
+    expect(result.error).toBeDefined();
+    const trace = stuckTrace(result.trace);
+    expect(trace).toContain("checkpoint:22:time");
+    expect(trace.some((value) => value.startsWith("checkpoint-resumed:"))).toBe(
+      false,
+    );
+    expect(trace).not.toContain("merge:22");
+    const report = result.stdout + String(result.error);
+    expect(report).toContain(`Progress checkpoint ${outcome} for issue 22`);
+    if (mode === "stop") expect(report).toContain("Advisor assessment");
+    if (mode === "dirty") expect(report).toContain("changed the repository");
+    expect(await survivors(result.tracePath)).toEqual([]);
+  }, 90_000);
+
+it("progress checkpoint: the checkpoint cap stops the implementer without consulting the advisor", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_CHECKPOINT_POLICY: checkpointPolicy({ max: 0 }),
+    READINESS_FIXTURE_CHECKPOINT_IMPL: "slow",
+  });
+  expect(result.error).toBeDefined();
+  expect(
+    result.trace.some((value: string) => value.startsWith("checkpoint:")),
+  ).toBe(false);
+  expect(result.stdout + String(result.error)).toContain(
+    "Progress checkpoint cap-reached for issue 22",
+  );
+  expect(await survivors(result.tracePath)).toEqual([]);
+}, 90_000);
+
+it("progress checkpoint: a repeated error fires an early checkpoint before the time budget", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_CHECKPOINT_POLICY: checkpointPolicy(),
+    READINESS_FIXTURE_CHECKPOINT_IMPL: "errors",
+    // One budget minute is 10 s: no time checkpoint within the test.
+    READINESS_FIXTURE_CHECKPOINT_MINUTE_MS: "10000",
+    READINESS_FIXTURE_CHECKPOINT: "redirect",
+  });
+  expect(result.error).toBeUndefined();
+  expect(stuckTrace(result.trace)).toEqual([
+    "implement:22",
+    "checkpoint:22:repeated-error",
+    "advisor-saw-work:22",
+    "checkpoint-resumed:22:redirect",
+    "kept-work:22",
+    "review:22",
+    "merge:22",
+  ]);
+}, 90_000);
+
+it("progress checkpoint: a file outside the approach brief fires an early checkpoint and the brief sets the budget", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_APPROACH: "all",
+    READINESS_FIXTURE_CHECKPOINT_POLICY: checkpointPolicy(),
+    READINESS_FIXTURE_CHECKPOINT_IMPL: "outside",
+    READINESS_FIXTURE_CHECKPOINT_MINUTE_MS: "10000",
+  });
+  expect(result.error).toBeUndefined();
+  const trace = stuckTrace(result.trace);
+  expect(trace.slice(trace.indexOf("implement:22"))).toEqual([
+    "implement:22",
+    "checkpoint:22:outside-brief",
+    "advisor-saw-work:22",
+    // The fresh attempt keeps the accepted approach critique as input.
+    "critique-received:22",
+    "checkpoint-resumed:22:continue",
+    "kept-work:22",
+    "review:22",
+    "merge:22",
+  ]);
+  expect(
+    nodesOf(result).find((node) => node.role === "implementer" && node.progress)
+      ?.progress,
+  ).toMatchObject({ estimateMinutes: 5, source: "brief" });
+}, 90_000);
+
+it("Codex runtime applies the saved progress-checkpoint policy with the configured advisor model", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_ADVISOR_ROLE: "1",
+    READINESS_FIXTURE_CHECKPOINT_POLICY: checkpointPolicy(),
+    READINESS_FIXTURE_CHECKPOINT_IMPL: "slow",
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.trace).toContain("checkpoint:22:time");
+  expect(result.trace).toContain("checkpoint-resumed:22:continue");
+  expect(result.trace).toContain("merge:22");
+  expect(
+    result.modelArgs.map((args: string[]) => args[args.indexOf("-m") + 1]),
+  ).toContain("configured-advisor");
+  expect(await survivors(result.tracePath)).toEqual([]);
+}, 90_000);
+
+it("progress checkpoints off keep the implementer unpaused", async () => {
+  const result = await execute();
+  expect(result.error).toBeUndefined();
+  expect(
+    result.trace.some((value: string) => value.startsWith("checkpoint")),
+  ).toBe(false);
+  expect(nodesOf(result).some((node) => node.progress || node.checkpoint)).toBe(
+    false,
+  );
 }, 90_000);
 
 it("stops before the next planner when post-merge project verification fails", async () => {

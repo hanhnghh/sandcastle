@@ -130,6 +130,13 @@ export interface ResumeSandboxRunResultOptions {
    *   with a fresh signal, or `.close()` to tear down.
    */
   readonly signal?: AbortSignal;
+  /**
+   * An `AbortSignal` that pauses the run: the in-flight agent is stopped,
+   * its session is captured, and the run resolves with `paused: true`
+   * (commits so far included, uncommitted changes left in the worktree).
+   * Continue it with `.resume()` when present. Not inherited by `.resume()`.
+   */
+  readonly pauseSignal?: AbortSignal;
 }
 
 export interface SandboxRunOptions extends ResumeSandboxRunResultOptions {
@@ -166,6 +173,8 @@ export interface SandboxRunResult {
   readonly commits: { sha: string }[];
   /** Path to the log file, if logging was drained to a file. */
   readonly logFilePath?: string;
+  /** True when `pauseSignal` stopped the run before completion. */
+  readonly paused?: boolean;
   /**
    * Continue the last captured agent session for exactly one iteration inside
    * the same long-lived sandbox. Present only when the provider supports
@@ -474,6 +483,7 @@ const buildSandboxHandle = (
               resumeSession: runOptions.resumeSession,
               forkSession: runOptions.forkSession,
               signal: runOptions.signal,
+              pauseSignal: runOptions.pauseSignal,
               skipPromptExpansion: isInlinePrompt,
               timeouts,
               keepSourceBranch: mergeToHead,
@@ -507,6 +517,7 @@ const buildSandboxHandle = (
         commits: result.commits,
         logFilePath:
           resolvedLogging.type === "file" ? resolvedLogging.path : undefined,
+        ...(result.paused ? { paused: true } : {}),
       };
 
       // Expose .resume()/.fork() only when the provider supports session
@@ -525,6 +536,10 @@ const buildSandboxHandle = (
             sandboxHandle.run({
               ...runOptions,
               ...resumeOptions,
+              // The continuation is an inline prompt: never inherit the
+              // original file arguments or an already-fired pause.
+              promptArgs: resumeOptions?.promptArgs,
+              pauseSignal: resumeOptions?.pauseSignal,
               prompt: nextPrompt,
               promptFile: undefined,
               maxIterations: 1,
@@ -537,6 +552,10 @@ const buildSandboxHandle = (
             sandboxHandle.run({
               ...runOptions,
               ...forkOptions,
+              // The continuation is an inline prompt: never inherit the
+              // original file arguments or an already-fired pause.
+              promptArgs: forkOptions?.promptArgs,
+              pauseSignal: forkOptions?.pauseSignal,
               prompt: nextPrompt,
               promptFile: undefined,
               maxIterations: 1,

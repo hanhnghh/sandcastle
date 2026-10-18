@@ -100,6 +100,35 @@ export const workflowConfigSchema = z
         stuck: z.enum(["off", "on"]).optional(),
         /** Advised implementer attempts per stall (0–2). Default 1. */
         stuckAttempts: z.number().int().min(0).max(2).optional(),
+        /** Progress checkpoints while the implementer runs. Default off. */
+        checkpoint: z
+          .object({
+            mode: z.enum(["off", "on"]),
+            /** Budget = estimate × factor (1–10). Default 1.5. */
+            factor: z.number().min(1).max(10).optional(),
+            /** Checkpoints per implementation (0–10). Default 2. */
+            max: z.number().int().min(0).max(10).optional(),
+            /** Repeats of the same error before a checkpoint (2–20). Default 3. */
+            repeatThreshold: z.number().int().min(2).max(20).optional(),
+            /** Estimates by issue label when there is no approach brief; `*` is the fallback. */
+            defaults: z
+              .record(
+                z.string().min(1).max(100),
+                z
+                  .object({
+                    minutes: z
+                      .number()
+                      .int()
+                      .min(1)
+                      .max(24 * 60),
+                    size: z.enum(["S", "M", "L"]).optional(),
+                  })
+                  .strict(),
+              )
+              .optional(),
+          })
+          .strict()
+          .optional(),
         /** Advisor invocations allowed per run (1–200). Default 20. */
         maxInvocations: z.number().int().min(1).max(200).optional(),
       })

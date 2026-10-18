@@ -630,3 +630,94 @@ it("records stuck advice on advisor nodes and blocks escalated or owner-only cau
     advice: { cause: "environment" },
   });
 });
+
+it("records progress checks on advisor nodes and estimate vs actual on implementers", async () => {
+  const { withProgressCheck } = await import("./ProgressCheckpoint.js");
+  const cwd = await mkdtemp(join(tmpdir(), "agent-map-checkpoint-"));
+  cleanup.push(() => rm(cwd, { recursive: true, force: true }));
+  const map = await createAgentMap({ cwd, name: "Checkpoint" });
+  cleanup.push(() => map.finish("completed"));
+  const server = await startDashboard({ cwd, port: 0 });
+  cleanup.push(server.close);
+  const signal = { kind: "outside-brief" as const, detail: "docs/x.md" };
+  for (const [title, stdout] of [
+    [
+      "redirect",
+      `<progress-check>${JSON.stringify({ verdict: "redirect", assessment: "Drifting into docs", direction: "Return to src/api", remainingBudget: 10 })}</progress-check>`,
+    ],
+    [
+      "stop",
+      `<progress-check>${JSON.stringify({ verdict: "stop", assessment: "Needs a product decision", direction: "", remainingBudget: 0 })}</progress-check>`,
+    ],
+    ["malformed", "no check"],
+  ] as const)
+    await map.track(
+      { batch: 1, role: "advisor", issueId: "26", title, branch: "b" },
+      () =>
+        withProgressCheck(
+          {
+            stdout: `${stdout}<promise>COMPLETE</promise>`,
+            commits: [],
+            completionSignal: "<promise>COMPLETE</promise>",
+          },
+          signal,
+        ),
+    );
+  await map.track(
+    {
+      batch: 1,
+      role: "implementer",
+      issueId: "26",
+      title: "impl",
+      branch: "b",
+    },
+    async () => ({
+      stdout: "",
+      commits: [{ sha: "abc" }],
+      completionSignal: "<promise>COMPLETE</promise>",
+      progress: {
+        estimateMinutes: 20,
+        budgetMinutes: 30,
+        elapsedMinutes: 34.5,
+        source: "brief",
+        outcome: "completed",
+        disputed: false,
+        checkpoints: [
+          { signal: "time", verdict: "continue", resumed: "session" },
+        ],
+      },
+    }),
+  );
+  const snapshot = (await fetch(`${server.url}/api/runs/${map.id}`).then((r) =>
+    r.json(),
+  )) as { nodes: { title: string }[] };
+  const byTitle = Object.fromEntries(
+    snapshot.nodes.map((node) => [node.title, node]),
+  );
+  expect(byTitle.redirect).toMatchObject({
+    status: "completed",
+    checkpoint: {
+      verdict: "redirect",
+      signal: "outside-brief",
+      direction: "Return to src/api",
+    },
+  });
+  expect(byTitle.stop).toMatchObject({
+    status: "blocked",
+    checkpoint: { verdict: "stop" },
+  });
+  expect(byTitle.malformed).toMatchObject({
+    status: "stopped",
+    checkpoint: { verdict: "invalid" },
+  });
+  expect(byTitle.impl).toMatchObject({
+    status: "completed",
+    progress: {
+      estimateMinutes: 20,
+      elapsedMinutes: 34.5,
+      checkpoints: [
+        { signal: "time", verdict: "continue", resumed: "session" },
+      ],
+    },
+  });
+});

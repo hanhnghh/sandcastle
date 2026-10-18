@@ -16,6 +16,8 @@ import type { AgentProvider, IterationUsage } from "./AgentProvider.js";
 import type { Timeouts } from "./run.js";
 import { TextDeltaBuffer } from "./TextDeltaBuffer.js";
 import { credentialsToUnset, scopeCommand } from "./CredentialScope.js";
+import { pausableCommand, stopPausableCommand } from "./PausableCommand.js";
+import { randomUUID } from "node:crypto";
 import {
   agentChainOf,
   classifyProviderFailure,
@@ -44,8 +46,9 @@ const invokeAgent = (
   resumeSession?: string,
   forkSession?: boolean,
   signal?: AbortSignal,
+  pauseSignal?: AbortSignal,
 ): Effect.Effect<
-  { result: string; sessionId?: string; usage?: IterationUsage },
+  { result: string; sessionId?: string; usage?: IterationUsage; paused?: true },
   SandboxError
 > =>
   Effect.gen(function* () {
@@ -153,6 +156,38 @@ const invokeAgent = (
       abortCleanup = () => signal.removeEventListener("abort", onAbort);
     }
 
+    // Pause: stop the agent but resolve successfully with what it produced so
+    // far and its session id, so the caller can capture and resume it.
+    const pauseDeferred = yield* Deferred.make<
+      {
+        result: string;
+        sessionId?: string;
+        usage?: IterationUsage;
+        paused: true;
+      },
+      never
+    >();
+    let pauseCleanup: (() => void) | null = null;
+    // Process group file for a pausable agent (see PausableCommand).
+    const pidFile = `/tmp/sandcastle-agent-${randomUUID()}.pid`;
+    if (pauseSignal) {
+      const onPause = () => {
+        Effect.runFork(
+          Deferred.succeed(pauseDeferred, {
+            result: resultText || accumulatedOutput,
+            sessionId,
+            usage,
+            paused: true,
+          }),
+        );
+      };
+      if (pauseSignal.aborted) onPause();
+      else {
+        pauseSignal.addEventListener("abort", onPause, { once: true });
+        pauseCleanup = () => pauseSignal.removeEventListener("abort", onPause);
+      }
+    }
+
     resetTimer();
 
     // Some Codex versions persist activity that exec --json does not forward.
@@ -204,8 +239,12 @@ const invokeAgent = (
         resumeSession,
         forkSession,
       });
+      const scoped = scopeCommand(
+        printCmd.command,
+        credentialsToUnset(provider),
+      );
       const execResult = yield* sandbox.exec(
-        scopeCommand(printCmd.command, credentialsToUnset(provider)),
+        pauseSignal ? pausableCommand(scoped, pidFile) : scoped,
         {
           onLine: (line) => {
             // Surface the raw line FIRST so verbose mode/forwarders see every
@@ -282,10 +321,17 @@ const invokeAgent = (
     );
 
     let raced: Effect.Effect<
-      { result: string; sessionId?: string; usage?: IterationUsage },
+      {
+        result: string;
+        sessionId?: string;
+        usage?: IterationUsage;
+        paused?: true;
+      },
       AgentIdleTimeoutError | SandboxError
     > = Effect.raceFirst(execEffect, Deferred.await(timeoutSignal));
     raced = Effect.raceFirst(raced, Deferred.await(completionTimeoutDeferred));
+    if (pauseSignal)
+      raced = Effect.raceFirst(raced, Deferred.await(pauseDeferred));
     if (signal) {
       raced = Effect.raceFirst(
         raced,
@@ -293,10 +339,11 @@ const invokeAgent = (
       );
     }
 
-    return yield* raced.pipe(
+    const outcome = yield* raced.pipe(
       Effect.ensuring(
         Effect.sync(() => {
           abortCleanup?.();
+          pauseCleanup?.();
           interruptFiber(timeoutFiber);
           timeoutFiber = null;
           interruptFiber(warningFiber);
@@ -304,6 +351,16 @@ const invokeAgent = (
         }),
       ),
     );
+    // Interrupting the exec does not stop the sandboxed process: stop its
+    // whole process group before the worktree is read or resumed.
+    if (outcome.paused)
+      yield* sandbox
+        .exec(stopPausableCommand(pidFile), { cwd: sandboxRepoDir })
+        .pipe(
+          Effect.timeoutOption(Duration.seconds(30)),
+          Effect.catchAll(() => Effect.void),
+        );
+    return outcome;
   }).pipe(Effect.scoped);
 
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
@@ -344,6 +401,12 @@ export interface OrchestrateOptions {
   readonly forkSession?: boolean;
   /** An AbortSignal that cancels the orchestration when aborted. */
   readonly signal?: AbortSignal;
+  /**
+   * An AbortSignal that pauses the orchestration: the in-flight agent is
+   * stopped, its session is captured and the run resolves with
+   * `paused: true` instead of failing. No further iteration starts.
+   */
+  readonly pauseSignal?: AbortSignal;
   /** When true, skip prompt expansion (shell expression evaluation). Set for dynamic inline prompts. */
   readonly skipPromptExpansion?: boolean;
   /** Override default timeouts for built-in lifecycle steps. Unset keys keep their defaults. */
@@ -376,6 +439,8 @@ export interface OrchestrateResult {
   readonly branch: string;
   /** Host path to the preserved worktree from the last iteration, set when the worktree was left behind due to uncommitted changes on a successful run. */
   readonly preservedWorktreePath?: string;
+  /** True when `pauseSignal` stopped the run before completion. */
+  readonly paused?: boolean;
 }
 
 export const orchestrate = (
@@ -421,6 +486,16 @@ export const orchestrate = (
 
     for (let i = 1; i <= iterations; i++) {
       yield* checkAbort();
+      if (options.pauseSignal?.aborted)
+        return {
+          iterations: allIterations,
+          completionSignal: undefined,
+          stdout: allStdout,
+          commits: allCommits,
+          branch: resolvedBranch,
+          preservedWorktreePath: iterationPreservedPath,
+          paused: true,
+        };
       yield* display.status(label(`Iteration ${i}/${iterations}`), "info");
 
       const sandboxResult = yield* factory.withSandbox(
@@ -549,6 +624,7 @@ export const orchestrate = (
                       result: string;
                       sessionId?: string;
                       usage?: IterationUsage;
+                      paused?: true;
                     }
                   | undefined;
                 for (let index = 0; index < chain.length; index++) {
@@ -581,6 +657,7 @@ export const orchestrate = (
                       index === 0 ? iterationResumeSession : undefined,
                       index === 0 ? iterationForkSession : undefined,
                       options.signal,
+                      options.pauseSignal,
                     ),
                   );
                   if (Either.isRight(attempt)) {
@@ -641,6 +718,7 @@ export const orchestrate = (
                   result: agentOutput,
                   sessionId,
                   usage: streamUsage,
+                  paused,
                 } = invocation!;
 
                 // Flush any remaining buffered text deltas
@@ -707,6 +785,7 @@ export const orchestrate = (
                   usage,
                   provider: activeProvider.name,
                   providerAttempts,
+                  paused,
                 } as const;
               }),
           ),
@@ -726,6 +805,18 @@ export const orchestrate = (
         provider: lifecycleResult.result.provider,
         providerAttempts: lifecycleResult.result.providerAttempts,
       });
+
+      // A paused agent's buffered output is partial; it never completes.
+      if (lifecycleResult.result.paused)
+        return {
+          iterations: allIterations,
+          completionSignal: undefined,
+          stdout: allStdout,
+          commits: allCommits,
+          branch: resolvedBranch,
+          preservedWorktreePath: iterationPreservedPath,
+          paused: true,
+        };
 
       if (lifecycleResult.result.completionSignal !== undefined) {
         yield* display.status(

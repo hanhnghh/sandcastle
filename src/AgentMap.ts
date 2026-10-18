@@ -76,6 +76,36 @@ const nodeSchema = z.object({
     )
     .optional(),
   error: z.string().optional(),
+  checkpoint: z
+    .object({
+      verdict: z.enum(["continue", "redirect", "stop", "invalid"]),
+      signal: z.string(),
+      signalDetail: z.string().optional(),
+      assessment: z.string().optional(),
+      direction: z.string().optional(),
+      remainingBudget: z.number().optional(),
+      error: z.string().optional(),
+    })
+    .optional(),
+  progress: z
+    .object({
+      estimateMinutes: z.number(),
+      budgetMinutes: z.number(),
+      elapsedMinutes: z.number(),
+      source: z.string(),
+      outcome: z.string(),
+      disputed: z.boolean().optional(),
+      checkpoints: z
+        .array(
+          z.object({
+            signal: z.string(),
+            verdict: z.string(),
+            resumed: z.string().optional(),
+          }),
+        )
+        .default([]),
+    })
+    .optional(),
   advice: z
     .object({
       cause: z.string(),
@@ -142,6 +172,8 @@ const resultSchema = z.object({
   review: nodeSchema.shape.review,
   approach: nodeSchema.shape.approach,
   advice: nodeSchema.shape.advice,
+  checkpoint: nodeSchema.shape.checkpoint,
+  progress: nodeSchema.shape.progress,
   branch: z.string().optional(),
   completionSignal: z.string().optional(),
   commits: z.array(z.object({ sha: z.string() })).optional(),
@@ -448,8 +480,16 @@ export const createAgentMap = (options: {
                   ? parsed.data.approach?.verdict
                   : undefined;
                 const advised = parsed.success ? parsed.data.advice : undefined;
+                const checked = parsed.success
+                  ? parsed.data.checkpoint?.verdict
+                  : undefined;
                 const verdict = parsed.success
                   ? (parsed.data.review?.verdict ??
+                    (checked === "stop"
+                      ? "blocked"
+                      : checked === "invalid"
+                        ? "invalid"
+                        : undefined) ??
                     (advised?.cause === "invalid"
                       ? "invalid"
                       : advised?.escalate ||
@@ -480,6 +520,10 @@ export const createAgentMap = (options: {
                   active.branch = parsed.data.branch || active.branch;
                   if (parsed.data.review) active.review = parsed.data.review;
                   if (parsed.data.advice) active.advice = parsed.data.advice;
+                  if (parsed.data.checkpoint)
+                    active.checkpoint = parsed.data.checkpoint;
+                  if (parsed.data.progress)
+                    active.progress = parsed.data.progress;
                   if (parsed.data.approach)
                     active.approach = parsed.data.approach;
                   active.commits = parsed.data.commits?.map((c) => c.sha) ?? [];

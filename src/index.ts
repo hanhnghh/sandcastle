@@ -169,6 +169,36 @@ export {
 } from "./ReviewProviders.js";
 export type { InstructionsResult } from "./ReviewProviders.js";
 export {
+  PROGRESS_CHECK_TAG,
+  checkpointBudget,
+  createDriftDetector,
+  diffLineLimit,
+  errorLinesOf,
+  formatProgressCheck,
+  parseNumstat,
+  parseProgressCheck,
+  progressCheckSchema,
+  runWithCheckpoints,
+  withProgressCheck,
+} from "./ProgressCheckpoint.js";
+export type {
+  CheckpointBudget,
+  CheckpointDefault,
+  CheckpointPolicy,
+  CheckpointRecord,
+  CheckpointRun,
+  CheckpointSegment,
+  CheckpointSignal,
+  CheckpointSignalKind,
+  CheckpointSize,
+  DriftDetector,
+  ProgressCheck,
+  ProgressCheckEvidence,
+  ProgressCheckpointOptions,
+  ProgressCheckpointResult,
+  ProgressSnapshot,
+} from "./ProgressCheckpoint.js";
+export {
   STUCK_ADVICE_TAG,
   adviseWhenStuck,
   formatStuckAdvice,
