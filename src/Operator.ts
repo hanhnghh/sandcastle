@@ -194,6 +194,21 @@ export const advisorSetting = (config: RoleConfig): RoleSetting | null => {
     fallback: value.fallback ?? [],
   };
 };
+/** True when any role, the advisor or a fallback uses `provider`. */
+export const rolesUseProvider = (
+  config: RoleConfig,
+  provider: RoleProvider,
+): boolean =>
+  [
+    ...operatorRoles.map((role) => roleSetting(config, role)),
+    advisorSetting(config),
+  ].some(
+    (setting) =>
+      !!setting &&
+      [setting, ...setting.fallback].some(
+        (target) => target.provider === provider,
+      ),
+  );
 /** Explicitly convert a configuration to schema version 2 without changing any role's behaviour. */
 export const migrateRoleConfig = (config: RoleConfig): RoleConfig => {
   if (config.schemaVersion === 2) return config;

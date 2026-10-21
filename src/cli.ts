@@ -45,6 +45,7 @@ import type {
 } from "./InitService.js";
 import { ConfigDirError, InitError } from "./errors.js";
 import { ensureCodexSubscriptionLogin } from "./CodexSubscription.js";
+import { ensureClaudeSubscriptionLogin } from "./ClaudeSubscription.js";
 import { VERSION } from "./version.js";
 import { startOperator } from "./OperatorServer.js";
 import { operatorCliAdapter } from "./OperatorCli.js";
@@ -200,6 +201,25 @@ const codexLoginOption = Options.choice("codex-login", ["true", "false"]).pipe(
   Options.optional,
 );
 
+const claudeLoginOption = Options.choice("claude-login", [
+  "true",
+  "false",
+]).pipe(
+  Options.withDescription(
+    "Whether to store a Claude subscription token (claude setup-token) for Claude Code sandboxes",
+  ),
+  Options.optional,
+);
+
+/** Masked prompt for the token printed by `claude setup-token`. */
+const promptClaudeToken = async (): Promise<string | undefined> => {
+  const value = await clack.password({
+    message: "Paste the token printed by `claude setup-token`",
+    mask: "•",
+  });
+  return clack.isCancel(value) ? undefined : value;
+};
+
 const codeGraphVersionOption = Options.text("codegraph-version").pipe(
   Options.withDescription(
     "Pinned @colbymchenry/codegraph version for the codex-afk image",
@@ -230,6 +250,7 @@ const initCommand = Command.make(
     buildImage: buildImageOption,
     installTemplateDeps: installTemplateDepsOption,
     codexLogin: codexLoginOption,
+    claudeLogin: claudeLoginOption,
     codeGraphVersion: codeGraphVersionOption,
   },
   ({
@@ -244,6 +265,7 @@ const initCommand = Command.make(
     buildImage: buildImageFlag,
     installTemplateDeps: installTemplateDepsFlag,
     codexLogin: codexLoginFlag,
+    claudeLogin: claudeLoginFlag,
     codeGraphVersion: codeGraphVersionFlag,
   }) =>
     Effect.gen(function* () {
@@ -575,6 +597,49 @@ const initCommand = Command.make(
         }
       }
 
+      if (selectedAgent.name === "claude-code") {
+        // Offered interactively; never required, so non-interactive init is
+        // unchanged unless --claude-login true is passed.
+        const explicit = profileChoice(claudeLoginFlag, undefined);
+        const shouldLogin =
+          explicit._tag === "Some"
+            ? explicit.value
+            : isInteractive &&
+              (yield* resolveConfirmFlag({
+                choice: Option.none(),
+                flag: "--claude-login",
+                promptMessage:
+                  "Store a Claude subscription token for sandboxes now (runs `claude setup-token`)?",
+                cancelMessage: "Claude login selection cancelled.",
+              }));
+        if (shouldLogin) {
+          if (!isInteractive)
+            yield* Effect.fail(
+              new InitError({
+                message:
+                  "--claude-login needs a terminal to paste the token; run `npx sandcastle claude-login` interactively.",
+              }),
+            );
+          const result = yield* Effect.tryPromise({
+            try: () =>
+              ensureClaudeSubscriptionLogin({
+                cwd,
+                readToken: promptClaudeToken,
+              }),
+            catch: (error) =>
+              new InitError({
+                message: error instanceof Error ? error.message : `${error}`,
+              }),
+          });
+          yield* d.status(
+            result === "configured"
+              ? "Claude subscription token stored in .sandcastle/.env."
+              : "Claude subscription token already configured.",
+            "success",
+          );
+        }
+      }
+
       // Detect the host package manager so the zod offer below and the next
       // steps below both use the right install command.
       const packageManager = yield* detectPackageManager(cwd);
@@ -731,6 +796,56 @@ const removeImageCommand = Command.make(
       );
       yield* d.status("Image removed.", "success");
     }),
+);
+
+// --- Claude subscription login ---
+
+const claudeLoginCommand = Command.make(
+  "claude-login",
+  {
+    verify: Options.boolean("verify").pipe(
+      Options.withDescription(
+        "Confirm the token with one minimal request before storing it",
+      ),
+    ),
+    force: Options.boolean("force").pipe(
+      Options.withDescription("Replace a token that is already configured"),
+    ),
+  },
+  ({ verify, force }) =>
+    Effect.gen(function* () {
+      const d = yield* Display;
+      if (process.stdin.isTTY !== true)
+        return yield* Effect.fail(
+          new InitError({
+            message:
+              "claude-login needs a terminal to paste the token printed by `claude setup-token`.",
+          }),
+        );
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          ensureClaudeSubscriptionLogin({
+            cwd: process.cwd(),
+            readToken: promptClaudeToken,
+            verify,
+            force,
+          }),
+        catch: (error) =>
+          new InitError({
+            message: error instanceof Error ? error.message : `${error}`,
+          }),
+      });
+      yield* d.status(
+        result === "configured"
+          ? "Claude subscription token stored in .sandcastle/.env."
+          : "Claude subscription token already configured; use --force to replace it.",
+        "success",
+      );
+    }),
+).pipe(
+  Command.withDescription(
+    "Store a Claude subscription token (claude setup-token) for Claude Code sandboxes",
+  ),
 );
 
 // --- Docker namespace command ---
@@ -987,6 +1102,7 @@ const rootCommand = Command.make("sandcastle", {}, () =>
 export const sandcastle = rootCommand.pipe(
   Command.withSubcommands([
     initCommand,
+    claudeLoginCommand,
     dockerCommand,
     podmanCommand,
     dashboardCommand,

@@ -98,6 +98,35 @@ describe("sandcastle CLI", () => {
     expect(stdout).toContain("--codegraph-version");
   });
 
+  it("init --help and claude-login --help expose the Claude subscription login", async () => {
+    expect((await runCli("init --help", process.cwd())).stdout).toContain(
+      "--claude-login",
+    );
+    const { stdout } = await runCli("claude-login --help", process.cwd());
+    expect(stdout).toContain("--verify");
+    expect(stdout).toContain("--force");
+  });
+
+  it("claude-login and init --claude-login true refuse without a terminal and write nothing", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
+    await initRepo(hostDir);
+    for (const command of [
+      "claude-login",
+      "init --agent claude-code --template blank --sandbox docker --issue-tracker beads --build-image false --claude-login true",
+    ]) {
+      try {
+        await runCli(command, hostDir);
+        expect.fail("Expected command to fail");
+      } catch (err: unknown) {
+        const { stdout, stderr } = err as { stdout: string; stderr: string };
+        expect(stdout + stderr).toMatch(/needs a terminal/);
+      }
+    }
+    await expect(
+      readFile(join(hostDir, ".sandcastle/.env"), "utf8"),
+    ).rejects.toThrow();
+  });
+
   it("init --help exposes --model flag", async () => {
     const { stdout } = await runCli("init --help", process.cwd());
     expect(stdout).toContain("--model");

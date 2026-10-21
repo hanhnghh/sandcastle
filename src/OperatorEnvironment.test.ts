@@ -425,6 +425,44 @@ else if (args[0]==='build') {
     expect(result.logs).toContain("Auth Codex: missing");
   });
 
+  test("preflight checks the Claude subscription when a role uses Claude Code, without printing the token", async () => {
+    const { defaultRoleConfig, migrateRoleConfig, saveRoleConfig } =
+      await import("./index.js");
+    const { request, cwd } = await dockerFixture();
+    const v2 = migrateRoleConfig(defaultRoleConfig()) as Extract<
+      ReturnType<typeof defaultRoleConfig>,
+      { schemaVersion: 2 }
+    >;
+    await saveRoleConfig({
+      cwd,
+      config: {
+        ...v2,
+        roles: {
+          ...v2.roles,
+          reviewer: { provider: "claudeCode", model: "claude-opus-5-5" },
+        },
+      },
+    });
+    const secret = "credential-should-not-appear".padEnd(40, "x");
+    const preflight = async (env: string) => {
+      await writeFile(join(cwd, ".sandcastle/.env"), env);
+      const { id } = (await (
+        await request("/api/environment/jobs", "POST", { kind: "preflight" })
+      ).json()) as { id: string };
+      return terminal(request, id);
+    };
+    const malformed = await preflight(`CLAUDE_CODE_OAUTH_TOKEN=${secret}\n`);
+    expect(malformed.status).toBe("failed");
+    expect(malformed.logs).toContain("Claude subscription: invalid-format");
+    expect(malformed.logs).not.toContain("credential-should-not-appear");
+    const valid = await preflight(
+      `CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-${secret}\nCLAUDE_CODE_OAUTH_TOKEN_ISSUED_AT=${new Date().toISOString().slice(0, 10)}\n`,
+    );
+    expect(valid.status).toBe("completed");
+    expect(valid.logs).toMatch(/Claude subscription: ok — .*expires/);
+    expect(valid.logs).not.toContain("credential-should-not-appear");
+  });
+
   test("build streams partial lines while the process is still running", async () => {
     const { request, cwd } = await dockerFixture();
     await writeFile(join(cwd, "partial-progress"), "true");
