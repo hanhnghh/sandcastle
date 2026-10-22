@@ -12,6 +12,7 @@ const gitignoreFor = (options: {
   readonly isolatedCodexHome: boolean;
   readonly codeGraph: boolean;
   readonly projectCachePath?: string;
+  readonly baseDependencies?: boolean;
 }): string =>
   [
     ".env",
@@ -23,6 +24,7 @@ const gitignoreFor = (options: {
     ...(options.projectCachePath
       ? [`${options.projectCachePath.replace(/^\.sandcastle\//, "")}/`]
       : []),
+    ...(options.baseDependencies ? ["cache/dependencies/"] : []),
     "",
   ].join("\n");
 
@@ -1575,6 +1577,22 @@ import { z } from "zod";`,
     );
 
     const cachePrefix = project.projectType === "android" ? "GRADLE" : "NPM";
+    // A sandbox on the base branch works in the host checkout itself. Give its
+    // dependency install a sandbox-only directory so Linux binaries never
+    // replace the host's node_modules (which the host runtime executes).
+    const nodeProject = project.projectType !== "android";
+    const baseDependencyConstants = nodeProject
+      ? `\nconst BASE_DEPENDENCIES_HOST = ".sandcastle/cache/dependencies/base";\nconst BASE_DEPENDENCIES_SANDBOX = "/home/agent/workspace/node_modules";`
+      : "";
+    const baseDependencyMkdir = nodeProject
+      ? "\nmkdirSync(BASE_DEPENDENCIES_HOST, { recursive: true });"
+      : "";
+    const baseDependencyMount = nodeProject
+      ? `      ...(branch === BASE_BRANCH
+        ? [{ hostPath: BASE_DEPENDENCIES_HOST, sandboxPath: BASE_DEPENDENCIES_SANDBOX }]
+        : []),
+`
+      : "";
     const sandboxProjectEnv =
       project.projectType === "android"
         ? ', ANDROID_HOME: "/opt/android-sdk", ANDROID_SDK_ROOT: "/opt/android-sdk"'
@@ -1598,7 +1616,7 @@ const ${cachePrefix}_CACHE_HOST = ${JSON.stringify(project.cache.hostPath)};
 const ${cachePrefix}_CACHE_SANDBOX = ${JSON.stringify(project.cache.sandboxPath)};
 const CODEGRAPH_CACHE_ROOT_HOST = ".sandcastle/cache/codegraph";
 const CODEGRAPH_SEED_DATABASE_HOST = ".codegraph/codegraph.db";
-const CODEGRAPH_CACHE_SANDBOX = "/home/agent/workspace/.codegraph";
+const CODEGRAPH_CACHE_SANDBOX = "/home/agent/workspace/.codegraph";${baseDependencyConstants}
 
 mkdirSync(CODEX_HOME_HOST, { recursive: true, mode: 0o700 });
 chmodSync(CODEX_HOME_HOST, 0o700);
@@ -1610,7 +1628,7 @@ if (!existsSync(CODEX_CONFIG_HOST)) {
   );
 }
 chmodSync(CODEX_CONFIG_HOST, 0o600);
-mkdirSync(${cachePrefix}_CACHE_HOST, { recursive: true });
+mkdirSync(${cachePrefix}_CACHE_HOST, { recursive: true });${baseDependencyMkdir}
 
 const codeGraphSyncCommand =
   "if test -f .codegraph/codegraph.db; then codegraph sync --quiet .; else codegraph init .; fi";
@@ -1635,7 +1653,7 @@ const codexSandbox = (branch: string, extraEnv: Record<string, string> = tracker
         readonly: true,
       },
       { hostPath: ${cachePrefix}_CACHE_HOST, sandboxPath: ${cachePrefix}_CACHE_SANDBOX },
-      {
+${baseDependencyMount}      {
         hostPath: sandcastle.prepareCodeGraphCache({
           cacheRoot: CODEGRAPH_CACHE_ROOT_HOST,
           branch,
@@ -2393,6 +2411,9 @@ export const scaffold = (
               isolatedCodexHome,
               codeGraph: isCodexAfk,
               projectCachePath: codexAfkProject?.profile.cache.hostPath,
+              baseDependencies:
+                codexAfkProject !== undefined &&
+                codexAfkProject.profile.projectType !== "android",
             }),
           )
           .pipe(Effect.mapError((e) => new Error(e.message))),

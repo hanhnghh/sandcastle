@@ -83,6 +83,8 @@ const NPM_CACHE_SANDBOX = "/home/agent/.npm";
 const CODEGRAPH_CACHE_ROOT_HOST = ".sandcastle/cache/codegraph";
 const CODEGRAPH_SEED_DATABASE_HOST = ".codegraph/codegraph.db";
 const CODEGRAPH_CACHE_SANDBOX = "/home/agent/workspace/.codegraph";
+const BASE_DEPENDENCIES_HOST = ".sandcastle/cache/dependencies/base";
+const BASE_DEPENDENCIES_SANDBOX = "/home/agent/workspace/node_modules";
 
 mkdirSync(CODEX_HOME_HOST, { recursive: true, mode: 0o700 });
 chmodSync(CODEX_HOME_HOST, 0o700);
@@ -95,6 +97,7 @@ if (!existsSync(CODEX_CONFIG_HOST)) {
 }
 chmodSync(CODEX_CONFIG_HOST, 0o600);
 mkdirSync(NPM_CACHE_HOST, { recursive: true });
+mkdirSync(BASE_DEPENDENCIES_HOST, { recursive: true });
 
 const codeGraphSyncCommand =
   "if test -f .codegraph/codegraph.db; then codegraph sync --quiet .; else codegraph init .; fi";
@@ -119,6 +122,9 @@ const codexSandbox = (branch: string, extraEnv: Record<string, string> = tracker
         readonly: true,
       },
       { hostPath: NPM_CACHE_HOST, sandboxPath: NPM_CACHE_SANDBOX },
+      ...(branch === BASE_BRANCH
+        ? [{ hostPath: BASE_DEPENDENCIES_HOST, sandboxPath: BASE_DEPENDENCIES_SANDBOX }]
+        : []),
       {
         hostPath: sandcastle.prepareCodeGraphCache({
           cacheRoot: CODEGRAPH_CACHE_ROOT_HOST,
