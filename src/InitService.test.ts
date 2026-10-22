@@ -604,6 +604,8 @@ android {
     expect(main).not.toContain("NPM_CACHE_HOST");
     expect(gitignore).toContain("cache/gradle/");
     expect(gitignore).not.toContain("cache/npm/");
+    expect(main).not.toContain("BASE_DEPENDENCIES_HOST");
+    expect(gitignore).not.toContain("cache/dependencies/");
   });
 
   it("detects a named Android module whose compile SDK comes from a version catalog", async () => {
@@ -739,6 +741,18 @@ android {
     expect(main).not.toContain('{ command: "npm install" }');
     expect(dockerfile).toContain("npm --version");
     expect(gitignore).toContain("cache/npm/");
+    // A base-branch sandbox runs in the host checkout; its Linux install must
+    // not replace the host's node_modules.
+    expect(main).toContain(
+      'BASE_DEPENDENCIES_HOST = ".sandcastle/cache/dependencies/base"',
+    );
+    expect(main).toContain(
+      'BASE_DEPENDENCIES_SANDBOX = "/home/agent/workspace/node_modules"',
+    );
+    expect(main).toMatch(
+      /\.\.\.\(branch === BASE_BRANCH\s*\? \[\{ hostPath: BASE_DEPENDENCIES_HOST, sandboxPath: BASE_DEPENDENCIES_SANDBOX \}\]\s*: \[\]\)/,
+    );
+    expect(gitignore).toContain("cache/dependencies/");
   });
 
   it("points Codex agents at separated standards and executable feedback gates", async () => {
