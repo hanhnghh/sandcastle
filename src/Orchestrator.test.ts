@@ -2744,6 +2744,97 @@ describe("Orchestrator Display integration", () => {
     );
   }, 10_000);
 
+  it("starts no idle warnings for output that arrives after a pause", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-idle-warn-paused-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    // The agent keeps writing after the pause, as a sandboxed process does
+    // until its process group is stopped. Those lines must not restart the
+    // idle timers of the settled invocation.
+    const pause = new AbortController();
+    const late: ReturnType<typeof setTimeout>[] = [];
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) => {
+      const real = makeLocalSandbox(dir);
+      return {
+        exec: (command, options) => {
+          if (command.includes("claude ") && options?.onLine) {
+            const onLine = options.onLine;
+            return Effect.gen(function* () {
+              onLine(
+                JSON.stringify({
+                  type: "system",
+                  subtype: "init",
+                  session_id: "s1",
+                }),
+              );
+              setTimeout(() => pause.abort(), 20);
+              for (const ms of [60, 120])
+                late.push(
+                  setTimeout(
+                    () =>
+                      onLine(
+                        JSON.stringify({
+                          type: "assistant",
+                          message: {
+                            content: [{ type: "text", text: "late" }],
+                          },
+                        }),
+                      ),
+                    ms,
+                  ),
+                );
+              return yield* Effect.never;
+            });
+          }
+          return real.exec(command, options);
+        },
+        copyIn: (hostPath, sandboxPath) => real.copyIn(hostPath, sandboxPath),
+        copyFileOut: (sandboxPath, hostPath) =>
+          real.copyFileOut(sandboxPath, hostPath),
+      };
+    });
+
+    const displayEntries = Ref.unsafeMake<ReadonlyArray<DisplayEntry>>([]);
+    const displayLayer = Layer.merge(
+      SilentDisplay.layer(displayEntries),
+      noopAgentStreamEmitterLayer,
+    );
+
+    try {
+      const exitResult = await Effect.runPromise(
+        orchestrate({
+          provider: testProvider,
+          hostRepoDir: hostDir,
+          iterations: 1,
+          prompt: "test",
+          idleTimeoutSeconds: 10,
+          _idleWarningIntervalMs: 50,
+          pauseSignal: pause.signal,
+        }).pipe(
+          Effect.provide(Layer.merge(factoryLayer, displayLayer)),
+          Effect.exit,
+        ),
+      );
+      expect(exitResult._tag).toBe("Success");
+
+      // Long enough for the late lines and several warning intervals.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const warnings = (
+        await Effect.runPromise(Ref.get(displayEntries))
+      ).filter(
+        (e) =>
+          e._tag === "status" &&
+          (e as { message: string }).message.includes("Agent idle for"),
+      );
+      expect(warnings).toEqual([]);
+    } finally {
+      late.forEach(clearTimeout);
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it("resets idle warning counter when agent produces output", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "orch-idle-warn-reset-"));
 
