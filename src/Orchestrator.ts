@@ -86,6 +86,9 @@ const invokeAgent = (
     // Periodic idle warning state
     let warningFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
     let idleMinuteCounter = 0;
+    // Set once the invocation settles. A paused or interrupted agent can
+    // still emit lines; they must not start new idle timers.
+    let settled = false;
 
     const interruptFiber = (
       fiber: Fiber.RuntimeFiber<unknown, unknown> | null,
@@ -94,6 +97,7 @@ const invokeAgent = (
     };
 
     const startWarningInterval = () => {
+      if (settled) return;
       interruptFiber(warningFiber);
       idleMinuteCounter = 0;
       warningFiber = Effect.runFork(
@@ -108,6 +112,7 @@ const invokeAgent = (
     };
 
     const resetTimer = () => {
+      if (settled) return;
       interruptFiber(timeoutFiber);
       if (completionDetected) {
         // Post-signal grace window — successful resolution on expiry.
@@ -342,6 +347,7 @@ const invokeAgent = (
     const outcome = yield* raced.pipe(
       Effect.ensuring(
         Effect.sync(() => {
+          settled = true;
           abortCleanup?.();
           pauseCleanup?.();
           interruptFiber(timeoutFiber);

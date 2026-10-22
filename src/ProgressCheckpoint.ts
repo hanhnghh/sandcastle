@@ -141,8 +141,22 @@ export interface DriftDetector {
   observe(snapshot: ProgressSnapshot): CheckpointSignal | undefined;
 }
 
-const errorLine =
-  /\b(error|errors|fail|failed|failing|failure|exception|traceback|assertionerror)\b/i;
+// Error-shaped output only: thrown errors, compiler and test-runner failures,
+// non-zero exits. Words like "error" inside quoted code do not count.
+const errorLine = new RegExp(
+  [
+    String.raw`\b(?:[A-Z]\w*)?(?:Error|Exception)\b(?::|$)`,
+    String.raw`\berror TS\d+`,
+    String.raw`^\s*(?:FAIL|FAILED|ERROR|ERR!)\b`,
+    String.raw`^\s*[✗✘×]\s`,
+    String.raw`^\s*error(?:\[\w+\])?:`,
+    String.raw`npm ERR!`,
+    String.raw`Traceback \(most recent call last\)`,
+    String.raw`\b\d+ (?:failed|failing)\b`,
+    String.raw`\b(?:exit(?:ed)? (?:with )?code|exit status) [1-9]`,
+    String.raw`\bCommand failed\b`,
+  ].join("|"),
+);
 const normalizeError = (line: string) =>
   line
     .toLowerCase()
@@ -252,18 +266,47 @@ export const createDriftDetector = (options: {
   };
 };
 
+// Stream events and items written by the agent (Claude stream-json, Codex
+// exec --json), and keys that carry tool input such as code being written.
+const agentAuthored = new Set([
+  "assistant",
+  "result",
+  "system",
+  "tool_use",
+  "thinking",
+  "agent_message",
+  "reasoning",
+  "file_change",
+  "todo_list",
+]);
+const toolInputKeys = new Set([
+  "input",
+  "command",
+  "arguments",
+  "args",
+  "patch",
+  "changes",
+]);
+
 /**
  * Error lines in one raw agent stream line (provider JSON or plain text),
  * each reported once per line so a test summary repeating an error does not
- * count twice. Feed them to the detector's `log`.
+ * count twice. Only tool results and command output count, never the agent's
+ * narration or tool input. Feed them to the detector's `log`.
  */
 export const errorLinesOf = (raw: string): string[] => {
   const strings: string[] = [];
   const walk = (value: unknown): void => {
     if (typeof value === "string") strings.push(value);
     else if (Array.isArray(value)) value.forEach(walk);
-    else if (value && typeof value === "object")
-      Object.values(value).forEach(walk);
+    else if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      // The agent's own words and tool inputs are not command output.
+      if (typeof record.type === "string" && agentAuthored.has(record.type))
+        return;
+      for (const [key, child] of Object.entries(record))
+        if (!toolInputKeys.has(key)) walk(child);
+    }
   };
   try {
     walk(JSON.parse(raw));

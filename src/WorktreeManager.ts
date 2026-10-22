@@ -5,7 +5,8 @@ import { randomBytes } from "node:crypto";
 import { join, normalize } from "node:path";
 import { WorktreeError, WorktreeTimeoutError, withTimeout } from "./errors.js";
 
-const WORKTREE_TIMEOUT_MS = 30_000;
+// Large repositories with many worktrees can take well over 30 s under load.
+const WORKTREE_TIMEOUT_MS = 120_000;
 
 /**
  * Git global flags that prevent `git worktree add -b` from writing upstream

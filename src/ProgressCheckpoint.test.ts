@@ -189,6 +189,81 @@ describe("errorLinesOf", () => {
     ]);
     expect(errorLinesOf('{"type":"text","text":"all good"}')).toEqual([]);
   });
+
+  it("ignores the agent's narration and tool input, such as code being written", () => {
+    const code =
+      "return targets.every(entry => !entry.error && entry.agreement?.ok);";
+    // Claude stream-json: an assistant tool call writing that code.
+    expect(
+      errorLinesOf(
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [
+              { type: "text", text: "The error is in the parser." },
+              { type: "tool_use", name: "Write", input: { content: code } },
+            ],
+          },
+        }),
+      ),
+    ).toEqual([]);
+    // Its tool result does count.
+    expect(
+      errorLinesOf(
+        JSON.stringify({
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                content: [
+                  { type: "text", text: "TypeError: x is undefined\nok" },
+                ],
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual(["TypeError: x is undefined"]);
+    // Codex: the command is input, the aggregated output is the result.
+    expect(
+      errorLinesOf(
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: `grep -n "Error: " src/*.ts # ${code}`,
+            aggregated_output: "src/a.ts(3,5): error TS2345: bad argument",
+          },
+        }),
+      ),
+    ).toEqual(["src/a.ts(3,5): error TS2345: bad argument"]);
+    expect(
+      errorLinesOf(
+        JSON.stringify({
+          type: "item.completed",
+          item: { type: "agent_message", text: "Error: none left, 0 failed" },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("counts error-shaped output only", () => {
+    const lines = [
+      "No errors found; nothing failed.",
+      `const failed = results.filter((r) => r.error);`,
+      "catch (error) { log(error.message) }",
+      " Tests  2 failed | 10 passed",
+      "npm ERR! code ELIFECYCLE",
+      "Process exited with code 1",
+      "AssertionError: expected 1 to be 2",
+      "error[E0308]: mismatched types",
+      "  ✗ 489 (sandcastle/issue-489) failed: boom",
+    ];
+    expect(errorLinesOf(lines.join("\n"))).toEqual(
+      lines.slice(3).map((line) => line.trim()),
+    );
+  });
 });
 
 describe("parseNumstat", () => {
