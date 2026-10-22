@@ -142,6 +142,13 @@ export const workflowConfigSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * "batch" (default): plan the next issues after every pipeline of a batch
+     * settles. "rolling": when a pipeline settles and its branch is
+     * integrated, plan issues for the free slots while the others keep
+     * running. Requires per-branch merge.
+     */
+    schedule: z.enum(["batch", "rolling"]).optional(),
     /** Review policy. Absent means every option uses its default. */
     review: z
       .object({
@@ -171,6 +178,12 @@ export const workflowConfigSchema = z
         code: "custom",
         path: ["holdLabels"],
         message: "Scope, state and hold labels must be distinct",
+      });
+    if (config.schedule === "rolling" && config.merge?.mode !== "per-branch")
+      ctx.addIssue({
+        code: "custom",
+        path: ["schedule"],
+        message: "The rolling schedule requires per-branch merge",
       });
     if (
       config.readiness.mode === "apply" &&

@@ -45,10 +45,23 @@ const areasOverlap = (left: string, right: string): boolean =>
   left.startsWith(`${right}/`) ||
   right.startsWith(`${left}/`);
 
+/** An issue already running (rolling refill), with its planned areas. */
+export interface InProgressIssue {
+  readonly id: string;
+  readonly likelyAreas: readonly string[];
+}
+
+/**
+ * Validate a plan against its inventory. During a rolling refill, a
+ * `parallel-conflict` may name issues still in progress instead of selected
+ * ones; they are not candidates and cannot be selected.
+ */
 export function validatePlannerBatch(
   inventory: readonly PlannerCandidate[],
   plan: PlannerBatch,
+  inProgress: readonly InProgressIssue[] = [],
 ): void {
+  const running = new Map(inProgress.map((issue) => [issue.id, issue]));
   const candidates = new Map(
     inventory.map((candidate) => [candidateId(candidate), candidate]),
   );
@@ -120,7 +133,11 @@ export function validatePlannerBatch(
 
     for (const conflictId of decision.conflictsWith) {
       const selectedDecision = decisions.get(conflictId);
-      if (selectedDecision?.disposition !== "selected") {
+      const other =
+        selectedDecision?.disposition === "selected"
+          ? selectedDecision
+          : running.get(conflictId);
+      if (!other) {
         throw new Error(
           `${id} conflicts with non-selected issue ${conflictId}`,
         );
@@ -128,7 +145,7 @@ export function validatePlannerBatch(
       const hasSharedMaterialArea = decision.likelyAreas
         .filter((area) => !incidentalArea(area))
         .some((area) =>
-          selectedDecision.likelyAreas
+          other.likelyAreas
             .filter((selectedArea) => !incidentalArea(selectedArea))
             .some((selectedArea) => areasOverlap(area, selectedArea)),
         );

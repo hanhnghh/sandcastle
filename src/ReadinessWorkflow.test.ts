@@ -69,7 +69,9 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   const issues=JSON.parse(prompt.match(/<issues-json>([\\s\\S]*?)<\\/issues-json>/)[1]); record('plan:'+issues.map(i=>i.number).join(','));
   if(process.env.READINESS_FIXTURE_INVALID_PLAN==='1' && fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').split('plan:22').length===2) { console.log('<plan>'+JSON.stringify({issues:[],decisions:[]})+'</plan>'); console.log('<promise>COMPLETE</promise>'); process.exit(0); }
   if(process.env.READINESS_FIXTURE_STALE_PLAN==='1') { const state=JSON.parse(fs.readFileSync(process.env.READINESS_FIXTURE_STATE,'utf8'));state.find(i=>i.number===22).labels.push({name:'blocked'});fs.writeFileSync(process.env.READINESS_FIXTURE_STATE,JSON.stringify(state)); }
-  console.log('<plan>'+JSON.stringify({issues:issues.map(i=>({id:String(i.number),title:i.title,branch:'sandcastle/issue-'+i.number})),decisions:issues.map(i=>({id:String(i.number),disposition:'selected',reason:'independent',likelyAreas:['task-'+i.number]}))})+'</plan>');
+  if(prompt.includes('Rolling refill')) record('refill:'+issues.map(i=>i.number).join(',')+':'+([...(prompt.match(/In progress \\(not in the inventory\\): ([^\\n]*?)\\. Select/)?.[1]??'').matchAll(/#(\\d+)/g)].map(m=>m[1]).join('+')||'none'));
+  const chosen=issues.slice(0,Number(process.env.READINESS_FIXTURE_PLAN_LIMIT||issues.length));
+  console.log('<plan>'+JSON.stringify({issues:chosen.map(i=>({id:String(i.number),title:i.title,branch:'sandcastle/issue-'+i.number})),decisions:issues.map(i=>chosen.includes(i)?{id:String(i.number),disposition:'selected',reason:'independent',likelyAreas:['task-'+i.number]}:{id:String(i.number),disposition:'unresolved-decision',reason:'next batch',likelyAreas:['task-'+i.number]})})+'</plan>');
 } else if(prompt.includes('Integrate the following completed branches')) {
   const branches=[...new Set(prompt.match(/sandcastle\\/issue-\\d+/g))];
   if(process.env.READINESS_FIXTURE_INDEPENDENT==='1') record('merger:'+branches.map(b=>b.split('-').at(-1)).join('+'));
@@ -138,6 +140,12 @@ else if(prompt.includes('Implement task ')) {
     await new Promise(r=>setTimeout(r,4000));record('implementer-survived:'+number);process.exit(0);
   }
   record('implement:'+number);
+  if(process.env.READINESS_FIXTURE_SLOW===number) {
+    // Hold this pipeline until another issue starts (bounded), so a refill can only be observed while it runs.
+    const until=Date.now()+40000, other='implement:'+process.env.READINESS_FIXTURE_SLOW_UNTIL;
+    while(Date.now()<until && !fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').split('\\n').includes(other)) await new Promise(r=>setTimeout(r,100));
+    record('slow-released:'+number);
+  }
   if(process.env.READINESS_FIXTURE_NO_PROGRESS!=='1' && !(number==='22' && process.env.READINESS_FIXTURE_RETAINED==='1')) {fs.writeFileSync('task-'+number+'.txt','implemented');git('add','.');git('commit','-m','Implement '+number);}
   if(process.env.READINESS_FIXTURE_BLOCKED==='1' || process.env.READINESS_FIXTURE_IMPL_STALL==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
 }
@@ -178,7 +186,9 @@ async function execute(
     JSON.stringify(
       (extraEnv.READINESS_FIXTURE_QUALIFICATION_ONLY === "1"
         ? [22]
-        : [20, 22]
+        : (extraEnv.READINESS_FIXTURE_ISSUES?.split(",").map(Number) ?? [
+            20, 22,
+          ])
       ).map((number) => ({
         number,
         title: `Task ${number}`,
@@ -411,7 +421,7 @@ const defaultImageName = () => "fixture-image";`,
         limits: {
           ...config.limits,
           cycles: Number(extraEnv.READINESS_FIXTURE_CYCLES ?? 3),
-          concurrency: 1,
+          concurrency: Number(extraEnv.READINESS_FIXTURE_CONCURRENCY ?? 1),
           plannerAttempts: Number(
             extraEnv.READINESS_FIXTURE_PLANNER_ATTEMPTS ??
               config.limits.plannerAttempts,
@@ -454,6 +464,13 @@ const defaultImageName = () => "fixture-image";`,
                   | "batch"
                   | "per-branch",
               },
+            }
+          : {}),
+        ...(extraEnv.READINESS_FIXTURE_SCHEDULE
+          ? {
+              schedule: extraEnv.READINESS_FIXTURE_SCHEDULE as
+                | "batch"
+                | "rolling",
             }
           : {}),
         ...(extraEnv.READINESS_FIXTURE_REPAIR_ROUNDS
@@ -703,6 +720,64 @@ it("per-branch mode integrates each approved branch as soon as it is approved", 
     result.issues.every((issue: { state: string }) => issue.state === "closed"),
   ).toBe(true);
 }, 90_000);
+
+it("rolling schedule starts a new issue in a freed slot while a slow pipeline still runs", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_MERGE_MODE: "per-branch",
+    READINESS_FIXTURE_SCHEDULE: "rolling",
+    READINESS_FIXTURE_CONCURRENCY: "2",
+    READINESS_FIXTURE_ISSUES: "20,22,24",
+    READINESS_FIXTURE_PLAN_LIMIT: "2",
+    READINESS_FIXTURE_SLOW: "22",
+    READINESS_FIXTURE_SLOW_UNTIL: "24",
+  });
+  expect(result.error).toBeUndefined();
+  const at = (value: string) => result.trace.indexOf(value);
+  // 20 and 22 start; 20 merges; the refill plans 24 with 22 still running.
+  expect(result.trace).toContain("refill:24:22");
+  expect(at("merger:20")).toBeLessThan(at("refill:24:22"));
+  expect(at("implement:24")).toBeGreaterThan(at("merger:20"));
+  expect(at("implement:24")).toBeLessThan(at("slow-released:22"));
+  expect(at("implement:24")).toBeLessThan(at("merger:22"));
+  // The first plan and one refill; refills with no candidates skip the planner.
+  expect(
+    result.trace.filter((value: string) => /^plan:\d/.test(value)),
+  ).toEqual(["plan:20,22,24", "plan:24"]);
+  expect(
+    result.trace.filter((value: string) => value.startsWith("refill:")),
+  ).toEqual(["refill:24:22"]);
+  expect(result.stdout).toMatch(/Refill: 1 issue\(s\) start from/);
+  expect(
+    result.issues.every((issue: { state: string }) => issue.state === "closed"),
+  ).toBe(true);
+}, 90_000);
+
+it("rolling schedule requires per-branch merge", async () => {
+  const { workflowConfigSchema } = await import("./OperatorWorkflow.js");
+  const base = {
+    schemaVersion: 1,
+    revision: "",
+    repository: "owner/project",
+    scopeLabel: "Sandcastle",
+    readyLabel: "ready-for-agent",
+    blockedLabel: "blocked",
+    holdLabels: [],
+    limits: { cycles: 3, concurrency: 2, plannerAttempts: 3 },
+    readiness: { mode: "report-only", verifier: null, gates: [] },
+  };
+  expect(
+    workflowConfigSchema.safeParse({ ...base, schedule: "rolling" }).success,
+  ).toBe(false);
+  expect(
+    workflowConfigSchema.safeParse({
+      ...base,
+      schedule: "rolling",
+      merge: { mode: "per-branch" },
+    }).success,
+  ).toBe(true);
+});
 
 it("per-branch mode retains a branch whose merge is blocked without stopping the other merge", async () => {
   const result = await execute({

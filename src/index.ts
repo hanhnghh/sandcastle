@@ -239,6 +239,11 @@ export type {
   ApproachRunEvidence,
   ConcernDisposition,
 } from "./ApproachCritique.js";
+export { settleRolling } from "./RollingSettle.js";
+export type {
+  RollingSettleOptions,
+  RollingSettleResult,
+} from "./RollingSettle.js";
 export {
   classifyPipelineFailure,
   createCircuitBreaker,

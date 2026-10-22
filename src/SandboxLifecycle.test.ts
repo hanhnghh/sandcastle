@@ -1280,6 +1280,48 @@ describe("withSandboxLifecycle (worktree mode)", () => {
     expect(result.result).toBe("ok");
   });
 
+  it("retries git config lock contention from a parallel sandbox, then succeeds", async () => {
+    const { hostDir, worktreeDir } = await setupWorktree();
+
+    let safeDirAttempts = 0;
+    // Two sandboxes sharing one global git config: the losing writer fails
+    // with exit 255 until the other releases the lock.
+    const sandbox: SandboxService = {
+      exec: (command, _options) =>
+        Effect.sync(() => {
+          if (command.includes("safe.directory")) {
+            safeDirAttempts++;
+            if (safeDirAttempts === 1) {
+              return {
+                stdout: "",
+                stderr:
+                  "error: could not lock config file /tmp/gitconfig: File exists",
+                exitCode: 255,
+              };
+            }
+          }
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }),
+      copyIn: () => Effect.succeed(undefined as never),
+      copyFileOut: () => Effect.succeed(undefined as never),
+    };
+
+    const result = await Effect.runPromise(
+      withSandboxLifecycle(
+        {
+          hostRepoDir: hostDir,
+          sandboxRepoDir: worktreeDir,
+          branch: "sandcastle/test",
+        },
+        sandbox,
+        () => Effect.succeed("ok"),
+      ).pipe(Effect.provide(testDisplayLayer)),
+    );
+
+    expect(safeDirAttempts).toBe(2);
+    expect(result.result).toBe("ok");
+  });
+
   it("does not retry a non-transient git setup failure", async () => {
     const { hostDir, worktreeDir } = await setupWorktree();
 

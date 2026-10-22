@@ -34,10 +34,15 @@ const GIT_SETUP_RETRY_DELAY_MS = 250;
  */
 const TRANSIENT_EXEC_EXIT_CODES = new Set([126, 137]);
 
+// Parallel sandboxes sharing one global git config (no-sandbox, bind mounts)
+// contend for its lock file; the losing writer fails and can simply retry.
+const CONFIG_LOCK_CONTENTION = /could not lock config file/i;
+
 const isTransientExecError = (err: ExecError | GitSetupTimeoutError): boolean =>
   err._tag === "ExecError" &&
-  err.exitCode !== undefined &&
-  TRANSIENT_EXEC_EXIT_CODES.has(err.exitCode);
+  ((err.exitCode !== undefined &&
+    TRANSIENT_EXEC_EXIT_CODES.has(err.exitCode)) ||
+    CONFIG_LOCK_CONTENTION.test(err.message));
 
 const execOk = (
   sandbox: SandboxService,
