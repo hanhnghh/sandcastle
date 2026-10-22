@@ -74,7 +74,10 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   console.log('<plan>'+JSON.stringify({issues:chosen.map(i=>({id:String(i.number),title:i.title,branch:'sandcastle/issue-'+i.number})),decisions:issues.map(i=>chosen.includes(i)?{id:String(i.number),disposition:'selected',reason:'independent',likelyAreas:['task-'+i.number]}:{id:String(i.number),disposition:'unresolved-decision',reason:'next batch',likelyAreas:['task-'+i.number]})})+'</plan>');
 } else if(prompt.includes('Integrate the following completed branches')) {
   const branches=[...new Set(prompt.match(/sandcastle\\/issue-\\d+/g))];
-  if(process.env.READINESS_FIXTURE_INDEPENDENT==='1') record('merger:'+branches.map(b=>b.split('-').at(-1)).join('+'));
+  if(process.env.READINESS_FIXTURE_INDEPENDENT==='1') record('merger:'+branches.map(b=>b.split('-').at(-1)).sort().join('+'));
+  if(process.env.READINESS_FIXTURE_GATE_ENV==='1') record('merger-workers:'+(process.env.SANDCASTLE_TEST_WORKERS??'unset'));
+  // Hold the first merger so later approvals queue up behind it.
+  if(process.env.READINESS_FIXTURE_MERGE_SLOW==='1' && fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').split('merger:').length===2) await new Promise(r=>setTimeout(r,6000));
   if(branches.some(b=>b.endsWith('-'+process.env.READINESS_FIXTURE_MERGE_BLOCKED_ISSUE))) {console.log('<promise>BLOCKED</promise>');process.exit(0);}
   for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); execFileSync('gh',['issue','close',String(number)]); }
   if(process.env.READINESS_FIXTURE_MERGE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
@@ -140,6 +143,7 @@ else if(prompt.includes('Implement task ')) {
     await new Promise(r=>setTimeout(r,4000));record('implementer-survived:'+number);process.exit(0);
   }
   record('implement:'+number);
+  if(process.env.READINESS_FIXTURE_GATE_ENV==='1') record('implementer-workers:'+(process.env.SANDCASTLE_TEST_WORKERS??'unset'));
   if(process.env.READINESS_FIXTURE_SLOW===number) {
     // Hold this pipeline until another issue starts (bounded), so a refill can only be observed while it runs.
     const until=Date.now()+40000, other='implement:'+process.env.READINESS_FIXTURE_SLOW_UNTIL;
@@ -463,6 +467,16 @@ const defaultImageName = () => "fixture-image";`,
                 mode: extraEnv.READINESS_FIXTURE_MERGE_MODE as
                   | "batch"
                   | "per-branch",
+                ...(extraEnv.READINESS_FIXTURE_COALESCE === "1"
+                  ? { coalesce: true }
+                  : {}),
+                ...(extraEnv.READINESS_FIXTURE_TEST_WORKERS
+                  ? {
+                      testWorkers: Number(
+                        extraEnv.READINESS_FIXTURE_TEST_WORKERS,
+                      ),
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -489,6 +503,13 @@ const defaultImageName = () => "fixture-image";`,
     join(cwd, "package.json"),
     JSON.stringify({ type: "module" }),
   );
+  if (extraEnv.READINESS_FIXTURE_GATE_ENV === "1") {
+    await mkdir(join(cwd, ".sandcastle/scripts"), { recursive: true });
+    await writeFile(
+      join(cwd, ".sandcastle/scripts/test-isolation.sh"),
+      'echo "isolation:$1" >> "$READINESS_FIXTURE_TRACE"\n',
+    );
+  }
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd, encoding: "utf8" });
   git("init", "-qb", "main");
@@ -778,6 +799,73 @@ it("rolling schedule requires per-branch merge", async () => {
     }).success,
   ).toBe(true);
 });
+
+it("coalesced per-branch merge integrates branches approved during a merge with one merger", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_MERGE_MODE: "per-branch",
+    READINESS_FIXTURE_COALESCE: "1",
+    READINESS_FIXTURE_CONCURRENCY: "3",
+    READINESS_FIXTURE_ISSUES: "20,22,24",
+    READINESS_FIXTURE_MERGE_SLOW: "1",
+  });
+  expect(result.error).toBeUndefined();
+  const mergers = result.trace.filter((value: string) =>
+    value.startsWith("merger:"),
+  );
+  // The first approved branch merges alone; the two approved while it ran
+  // share the next merger and its single gate.
+  expect(mergers).toHaveLength(2);
+  expect(mergers[0]!.split("+")).toHaveLength(1);
+  expect(mergers[1]!.split("+")).toHaveLength(2);
+  expect(
+    result.issues.every((issue: { state: string }) => issue.state === "closed"),
+  ).toBe(true);
+}, 90_000);
+
+it("coalesced merge retries a blocked group in halves and retains only the failing branch", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_MERGE_MODE: "per-branch",
+    READINESS_FIXTURE_COALESCE: "1",
+    READINESS_FIXTURE_CONCURRENCY: "3",
+    READINESS_FIXTURE_ISSUES: "20,22,24",
+    READINESS_FIXTURE_MERGE_SLOW: "1",
+    READINESS_FIXTURE_MERGE_BLOCKED_ISSUE: "24",
+  });
+  const mergers = result.trace.filter((value: string) =>
+    value.startsWith("merger:"),
+  );
+  // A group with 24 is blocked untouched, then split until 24 stands alone.
+  expect(
+    mergers.some((value: string) => /\+/.test(value) && value.includes("24")),
+  ).toBe(true);
+  expect(mergers).toContain("merger:24");
+  const state = (n: number) =>
+    result.issues.find((issue: { number: number }) => issue.number === n).state;
+  expect(state(24)).toBe("open");
+  expect([state(20), state(22)]).toEqual(["closed", "closed"]);
+}, 120_000);
+
+it("the merger gate gets the configured test workers and isolation hook; implementers keep their default", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_MERGE_MODE: "per-branch",
+    READINESS_FIXTURE_TEST_WORKERS: "3",
+    READINESS_FIXTURE_GATE_ENV: "1",
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.trace).toContain("merger-workers:3");
+  expect(result.trace).toContain("isolation:3");
+  expect(
+    result.trace.filter((value: string) =>
+      value.startsWith("implementer-workers:"),
+    ),
+  ).toEqual(["implementer-workers:unset", "implementer-workers:unset"]);
+}, 90_000);
 
 it("per-branch mode retains a branch whose merge is blocked without stopping the other merge", async () => {
   const result = await execute({

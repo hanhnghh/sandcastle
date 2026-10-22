@@ -307,6 +307,14 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       'const MERGE_MODE: "batch" | "per-branch" = runtime.workflow.config.merge?.mode ?? "batch";',
     );
     content = content.replace(
+      "const MERGE_COALESCE = false;",
+      "const MERGE_COALESCE = runtime.workflow.config.merge?.coalesce ?? false;",
+    );
+    content = content.replace(
+      "const GATE_TEST_WORKERS = 1;",
+      "const GATE_TEST_WORKERS = runtime.workflow.config.merge?.testWorkers ?? 1;",
+    );
+    content = content.replace(
       "const CONCURRENCY = Number.POSITIVE_INFINITY;",
       "const CONCURRENCY = runtime.workflow.config.limits.concurrency;",
     );

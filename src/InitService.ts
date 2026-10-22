@@ -1717,8 +1717,8 @@ async function syncCodeGraph(sandbox: sandcastle.Sandbox): Promise<void> {
     );
     content = replaceRequired(
       content,
-      "sandbox: docker({ env: trackerEnvironment }),",
-      "sandbox: codexSandbox(BASE_BRANCH),",
+      "sandbox: docker({ env: gateEnvironment }),",
+      "sandbox: codexSandbox(BASE_BRANCH, gateEnvironment),",
     );
     const reviewStart =
       /if \(sandbox && implementationCommits\.length > 0\) \{\s*/.exec(

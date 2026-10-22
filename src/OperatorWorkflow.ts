@@ -139,6 +139,19 @@ export const workflowConfigSchema = z
       .object({
         /** "batch" (default) or "per-branch" integration as branches are approved. */
         mode: z.enum(["batch", "per-branch"]),
+        /**
+         * Per-branch: one merger integrates every branch approved while the
+         * previous merge ran, with one cumulative gate; a failed group is
+         * retried in halves. Default false.
+         */
+        coalesce: z.boolean().optional(),
+        /**
+         * Test workers for the merger's cumulative gate, exported as
+         * SANDCASTLE_TEST_WORKERS (implementers and reviewers keep 1). Above 1,
+         * the merger sandbox first runs .sandcastle/scripts/test-isolation.sh
+         * <workers> when present. 1–8, default 1.
+         */
+        testWorkers: z.number().int().min(1).max(8).optional(),
       })
       .strict()
       .optional(),

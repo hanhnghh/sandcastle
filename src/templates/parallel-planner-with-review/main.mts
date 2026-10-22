@@ -73,6 +73,13 @@ const breaker = sandcastle.createCircuitBreaker(PROVIDER_FAILURE_THRESHOLD);
 // "batch": one merger integrates the whole batch after every pipeline settles.
 // "per-branch": each approved branch is integrated as soon as it is approved.
 const MERGE_MODE: "batch" | "per-branch" = "batch";
+// Per-branch merge: integrate every branch approved while a merge runs in one
+// merger (one cumulative gate); a failed group is retried in halves.
+const MERGE_COALESCE = false;
+// Test workers for the merger's cumulative gate (SANDCASTLE_TEST_WORKERS);
+// implementers and reviewers keep one. With more than one, the merger sandbox
+// first runs .sandcastle/scripts/test-isolation.sh <workers> when present.
+const GATE_TEST_WORKERS = 1;
 // Issue pipelines at once. The rolling schedule needs a finite bound.
 const CONCURRENCY = Number.POSITIVE_INFINITY;
 // "batch": plan again after every pipeline of the batch settles.
@@ -170,6 +177,29 @@ const hooks = {
 // starts. Avoids a full npm install from scratch; the hook above handles
 // platform-specific binaries and any packages added since the last copy.
 const copyToWorktree = ["node_modules"];
+
+// The merger runs the cumulative gate with GATE_TEST_WORKERS test workers and,
+// with more than one, provisions isolated test resources first.
+const gateEnvironment = {
+  ...trackerEnvironment,
+  SANDCASTLE_TEST_WORKERS: String(GATE_TEST_WORKERS),
+};
+const gateHooks =
+  GATE_TEST_WORKERS > 1
+    ? {
+        ...hooks,
+        sandbox: {
+          ...hooks.sandbox,
+          onSandboxReady: [
+            ...(hooks.sandbox?.onSandboxReady ?? []),
+            {
+              command: `if [ -f .sandcastle/scripts/test-isolation.sh ]; then bash .sandcastle/scripts/test-isolation.sh ${GATE_TEST_WORKERS}; fi`,
+              timeoutMs: 600_000,
+            },
+          ],
+        },
+      }
+    : hooks;
 
 // The host records the map independently of the optional dashboard process.
 // In a second terminal: npx sandcastle dashboard
@@ -548,34 +578,56 @@ async function executeWorkflow() {
     await assertBaseline();
     const batchBaseSha = planned.head;
 
-    // Per-branch mode: a FIFO queue integrates one approved branch at a time
-    // while other pipelines continue in their own worktrees.
+    // Per-branch mode: a FIFO queue integrates approved branches while other
+    // pipelines continue in their own worktrees. With coalescing, one merger
+    // takes every branch approved so far and runs the gate once for the group.
     const mergedIssues: typeof issues = [];
     const retainedMerges: { issue: (typeof issues)[number]; error: unknown }[] =
       [];
     let mergeStop: unknown;
     let mergeQueue = Promise.resolve();
+    const pendingMerges: typeof issues = [];
+    const integrateGroup = async (group: typeof issues): Promise<void> => {
+      const before = integrationHead;
+      try {
+        await integrate(group);
+        mergedIssues.push(...group);
+      } catch (error) {
+        // A merger that left the checkout untouched affects only these branches.
+        const untouched =
+          integrationHead === before &&
+          (await runHost("git", ["rev-parse", "HEAD"])).trim() === before &&
+          (await currentBranch()) === planned.branch &&
+          !(await runHost("git", ["status", "--porcelain"])).trim();
+        if (!untouched) {
+          mergeStop = error;
+          return;
+        }
+        if (group.length > 1) {
+          // Find the failing branch: retry each half on its own.
+          console.warn(
+            `  ! merge of ${group.map((issue) => issue.id).join(", ")} failed; retrying in halves: ${error}`,
+          );
+          const half = Math.ceil(group.length / 2);
+          await integrateGroup(group.slice(0, half));
+          if (mergeStop === undefined) await integrateGroup(group.slice(half));
+          return;
+        }
+        retainedMerges.push({ issue: group[0]!, error });
+        console.warn(
+          `  ! ${group[0]!.id} merge failed; branch retained: ${error}`,
+        );
+      }
+    };
     const enqueueMerge = (issue: (typeof issues)[number]) => {
+      pendingMerges.push(issue);
       mergeQueue = mergeQueue.then(async () => {
         if (mergeStop !== undefined) return;
-        const before = integrationHead;
-        try {
-          await integrate([issue]);
-          mergedIssues.push(issue);
-        } catch (error) {
-          // A merger that left the checkout untouched affects only this branch.
-          const untouched =
-            integrationHead === before &&
-            (await runHost("git", ["rev-parse", "HEAD"])).trim() === before &&
-            (await currentBranch()) === planned.branch &&
-            !(await runHost("git", ["status", "--porcelain"])).trim();
-          if (untouched) {
-            retainedMerges.push({ issue, error });
-            console.warn(
-              `  ! ${issue.id} merge failed; branch retained: ${error}`,
-            );
-          } else mergeStop = error;
-        }
+        // An earlier coalesced merge may already have taken this branch.
+        const group = MERGE_COALESCE
+          ? pendingMerges.splice(0)
+          : pendingMerges.splice(0, 1);
+        if (group.length > 0) await integrateGroup(group);
       });
     };
 
@@ -1445,8 +1497,8 @@ async function executeWorkflow() {
         (logging) =>
           sandcastle.run({
             logging,
-            hooks,
-            sandbox: docker({ env: trackerEnvironment }),
+            hooks: gateHooks,
+            sandbox: docker({ env: gateEnvironment }),
             name: "merger",
             maxIterations: 1,
             agent: sandcastle.claudeCode("claude-sonnet-4-6"),
