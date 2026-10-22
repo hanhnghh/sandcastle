@@ -31,7 +31,8 @@ red state between branches is allowed because verification happens against the
 complete batch.
 
 If a branch cannot be safely merged, stop. Leave all tasks open, record the
-exact conflict or blocker, and emit `<promise>BLOCKED</promise>`.
+exact conflict or blocker, restore the checkout (below) and emit
+`<promise>BLOCKED</promise>`.
 
 # CUMULATIVE INTEGRATION GATE
 
@@ -78,7 +79,12 @@ replace `<ID>` in this command with its task ID and run:
 `{{CLOSE_TASK_COMMAND}}`
 
 If any merge, repair, or required gate remains incomplete, leave every affected
-task open and emit `<promise>BLOCKED</promise>`.
+task open, restore the checkout and emit `<promise>BLOCKED</promise>`.
+
+To restore the checkout, abort any merge in progress (`git merge --abort`) and
+run `git reset --hard {{BATCH_BASE_SHA}}`. That commit is the integration head
+before this merge, so only this merger's own work is discarded; the host then
+retries the listed branches separately to find the one that fails.
 
 Otherwise summarize the merged branches and exact gates run, then emit:
 

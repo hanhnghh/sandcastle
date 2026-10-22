@@ -271,6 +271,25 @@ changed the checkout, or a failed post-merge verification, stops the queue.
 In the default schedule, planning the next batch waits for every pipeline and
 the queue to settle.
 
+### Coalesced merges and the gate
+
+With per-branch merge, `"merge": { "mode": "per-branch", "coalesce": true }`
+makes the next merger take every branch approved while the previous merge ran,
+so a group of branches pays for one cumulative gate instead of one each. When a
+group fails and the merger left the checkout untouched (the merge prompt resets
+to the batch base before reporting BLOCKED), the host retries each half on its
+own until the failing branch stands alone; that branch is retained and the
+others are integrated. A failure that changed the checkout still stops the
+queue.
+
+`"merge": { "testWorkers": 3 }` (1–8, default 1) exports
+`SANDCASTLE_TEST_WORKERS=3` to the merger only; implementers and reviewers keep
+the project default. Above 1, the merger sandbox first runs
+`.sandcastle/scripts/test-isolation.sh <workers>` when the project has it, to
+provision one isolated test resource per worker (for example a database per
+worker). The test runner reads the variable and the worker id to pick its
+resource; with 1 the project runs as before.
+
 ### Rolling schedule
 
 With per-branch merge, `"schedule": "rolling"` in `.sandcastle/workflow.json`
