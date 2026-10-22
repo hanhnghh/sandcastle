@@ -268,7 +268,30 @@ branch; then post-merge readiness/verification runs for exactly those branches.
 In `per-branch` mode a merge that fails while leaving the checkout untouched
 (for example a blocked merger) only retains that branch; any failure that
 changed the checkout, or a failed post-merge verification, stops the queue.
-Planning the next batch still waits for every pipeline and the queue to settle.
+In the default schedule, planning the next batch waits for every pipeline and
+the queue to settle.
+
+### Rolling schedule
+
+With per-branch merge, `"schedule": "rolling"` in `.sandcastle/workflow.json`
+(or **Schedule** in the workflow form) keeps the slots full: when a pipeline
+settles, the planner runs again for the free slots (`limits.concurrency` minus
+the pipelines still running) while the others keep going, instead of waiting
+for the whole batch.
+
+- Refill planning joins the merge queue: it sees every merge queued before it,
+  and no merger changes the integration checkout while it plans.
+- The planner gets the issues in progress with their likely areas. It selects
+  at most the free slots, and records an issue held back by work in progress as
+  `parallel-conflict` naming the in-progress issue.
+- Each refilled issue branches from the integration head at its start.
+  Admission checks, reviews, merges and post-merge readiness are unchanged.
+- An issue started in a round is not planned again in that round; a failed one
+  waits for the next round. A failed refill stops refills for the round while
+  running pipelines finish. With no candidate left, a refill skips the planner.
+
+The default `batch` schedule is unchanged. Host automation can use
+`settleRolling`.
 
 ### Incremental readiness
 

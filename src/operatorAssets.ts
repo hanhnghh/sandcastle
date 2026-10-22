@@ -382,6 +382,10 @@ async function loadWorkflow() {
   const mergeField=document.createElement('select');mergeField.id='workflow-mergeMode';mergeField.setAttribute('aria-label','Merge mode');
   for(const [value,text] of [['batch','Batch: one merger after every pipeline settles'],['per-branch','Per-branch: merge each approved branch at once']]){const option=document.createElement('option');option.value=value;option.textContent=text;mergeField.append(option);}
   mergeField.value=(workflowConfig.merge && workflowConfig.merge.mode) || 'batch';mergeLabel.append(mergeField);
+  const scheduleLabel=document.createElement('label');scheduleLabel.textContent='Schedule';
+  const scheduleField=document.createElement('select');scheduleField.id='workflow-schedule';scheduleField.setAttribute('aria-label','Schedule');
+  for(const [value,text] of [['batch','Batch: plan again after every pipeline settles'],['rolling','Rolling: start new issues as slots free up (per-branch merge)']]){const option=document.createElement('option');option.value=value;option.textContent=text;scheduleField.append(option);}
+  scheduleField.value=workflowConfig.schedule || 'batch';scheduleLabel.append(scheduleField);
   const approachLabel=document.createElement('label');approachLabel.textContent='Advisor approach critique';
   const approachField=document.createElement('select');approachField.id='workflow-advisorApproach';approachField.setAttribute('aria-label','Advisor approach critique');
   for(const [value,text] of [['off','Off'],['high-risk','High-risk issues only'],['all','All issues']]){const option=document.createElement('option');option.value=value;option.textContent=text;approachField.append(option);}
@@ -394,7 +398,7 @@ async function loadWorkflow() {
   const checkpointField=document.createElement('select');checkpointField.id='workflow-advisorCheckpoint';checkpointField.setAttribute('aria-label','Progress checkpoints');
   for(const [value,text] of [['off','Off'],['on','Pause long or drifting implementations for a check']]){const option=document.createElement('option');option.value=value;option.textContent=text;checkpointField.append(option);}
   checkpointField.value=(workflowConfig.advisor && workflowConfig.advisor.checkpoint && workflowConfig.advisor.checkpoint.mode) || 'off';checkpointLabel.append(checkpointField);
-  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel,approachLabel,stuckLabel,checkpointLabel);workflowDiagnostic(data);
+  workflowFields.append(gates,reviewLabel,roundsLabel,mergeLabel,scheduleLabel,approachLabel,stuckLabel,checkpointLabel);workflowDiagnostic(data);
 }
 document.getElementById('workflow-form').addEventListener('submit',async event=>{
   event.preventDefault();event.submitter.disabled=true;
@@ -414,6 +418,8 @@ document.getElementById('workflow-form').addEventListener('submit',async event=>
     if(Object.keys(review).length) next.review=review;
     const mergeMode=document.getElementById('workflow-mergeMode').value;
     if(mergeMode !== 'batch' || next.merge) next.merge={mode:mergeMode};
+    const schedule=document.getElementById('workflow-schedule').value;
+    if(schedule !== 'batch' || next.schedule) next.schedule=schedule;
     const approachMode=document.getElementById('workflow-advisorApproach').value;
     const stuckMode=document.getElementById('workflow-advisorStuck').value;
     const checkpointMode=document.getElementById('workflow-advisorCheckpoint').value;

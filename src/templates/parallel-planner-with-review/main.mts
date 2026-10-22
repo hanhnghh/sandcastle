@@ -73,6 +73,19 @@ const breaker = sandcastle.createCircuitBreaker(PROVIDER_FAILURE_THRESHOLD);
 // "batch": one merger integrates the whole batch after every pipeline settles.
 // "per-branch": each approved branch is integrated as soon as it is approved.
 const MERGE_MODE: "batch" | "per-branch" = "batch";
+// Issue pipelines at once. The rolling schedule needs a finite bound.
+const CONCURRENCY = Number.POSITIVE_INFINITY;
+// "batch": plan again after every pipeline of the batch settles.
+// "rolling" (per-branch merge only): when a pipeline settles and its branch is
+// integrated, plan more issues for the free slots while the others keep running.
+const SCHEDULE: "batch" | "rolling" = "batch";
+function rollingSchedule() {
+  return (
+    SCHEDULE === "rolling" &&
+    MERGE_MODE === "per-branch" &&
+    Number.isFinite(CONCURRENCY)
+  );
+}
 // Advisor approach critique before implementation: "off" | "high-risk" | "all".
 // The advisor critiques direction only; it never edits code or the tracker.
 const ADVISOR_APPROACH: "off" | "high-risk" | "all" = "off";
@@ -296,7 +309,30 @@ async function reassess(batch: number, trigger: sandcastle.ReadinessTrigger) {
   );
 }
 
-async function planNextBatch(batch: number) {
+// Inventory rows identify issues by `id` or `number`.
+const rowIdentity = (row: unknown) => {
+  const candidate = z
+    .object({
+      id: z.union([z.string(), z.number()]).optional(),
+      number: z.number().optional(),
+    })
+    .passthrough()
+    .parse(row);
+  return String(candidate.id ?? candidate.number);
+};
+
+/** Rolling refill: issues to leave out and the free slots to fill. */
+interface RefillRequest {
+  readonly exclude: ReadonlySet<string>;
+  readonly inProgress: readonly {
+    id: string;
+    title: string;
+    likelyAreas: readonly string[];
+  }[];
+  readonly limit: number;
+}
+
+async function planNextBatch(batch: number, refill?: RefillRequest) {
   const backlog = readinessEnabled
     ? await sandcastle.inspectGitHubReadinessBacklog({
         ...readiness,
@@ -308,8 +344,26 @@ async function planNextBatch(batch: number) {
     backlog?.snapshot.head ??
     (await runHost("git", ["rev-parse", "HEAD"])).trim();
   const branch = backlog?.branch ?? (await currentBranch());
-  const inventory = backlog?.eligible ?? (await loadPlannerInventory());
-  let feedback = "No previous validation failure.";
+  const inventory = (
+    backlog?.eligible ?? (await loadPlannerInventory())
+  ).filter((row) => !refill?.exclude.has(rowIdentity(row)));
+  // Nothing left to plan: a refill skips the planner.
+  if (refill && inventory.length === 0)
+    return {
+      plan: { issues: [], decisions: [] } as z.infer<typeof planSchema>,
+      inventory,
+      backlog,
+      head,
+      branch,
+    };
+  // A refill tells the planner what is still running and how much may start.
+  const refillNote = refill
+    ? `Rolling refill: ${refill.limit} pipeline slot(s) are free while other issues are still in progress. ` +
+      `In progress (not in the inventory): ${refill.inProgress.map((issue) => `#${issue.id} ${issue.title} (areas: ${issue.likelyAreas.join(", ") || "unknown"})`).join("; ") || "none"}. ` +
+      `Select at most ${refill.limit} issue(s) that neither depend on nor change the same areas as the issues in progress, or none if nothing can safely start now. ` +
+      `Record an issue held back by work in progress as parallel-conflict with conflictsWith naming the in-progress issue ids.`
+    : undefined;
+  let feedback = refillNote ?? "No previous validation failure.";
 
   for (let attempt = 1; attempt <= MAX_PLANNER_ATTEMPTS; attempt++) {
     let validationFailed = false;
@@ -341,7 +395,7 @@ async function planNextBatch(batch: number) {
           });
 
           try {
-            validatePlannerBatch(inventory, result.output);
+            validatePlannerBatch(inventory, result.output, refill?.inProgress);
           } catch (error) {
             validationFailed = true;
             throw error;
@@ -353,12 +407,46 @@ async function planNextBatch(batch: number) {
     } catch (error) {
       // Observe execution errors, but only retry invalid plans as before.
       if (!validationFailed) throw error;
-      feedback = error instanceof Error ? error.message : String(error);
-      console.warn(`Planner attempt ${attempt} rejected: ${feedback}`);
+      const reason = error instanceof Error ? error.message : String(error);
+      feedback = refillNote ? `${refillNote}\n\n${reason}` : reason;
+      console.warn(`Planner attempt ${attempt} rejected: ${reason}`);
     }
   }
 
   throw new Error(`Planner failed validation: ${feedback}`);
+}
+
+/** Admit planned issues: the readiness snapshot or inventory must be unchanged. */
+async function admitPlanned(
+  planned: Awaited<ReturnType<typeof planNextBatch>>,
+  issues: readonly { id: string }[],
+) {
+  if (planned.backlog) {
+    await sandcastle.admitGitHubReadinessBatch(
+      {
+        ...readiness,
+        repository: readiness.repository!,
+        cwd: process.cwd(),
+      },
+      {
+        snapshot: planned.backlog.snapshot,
+        branch: planned.branch,
+        issues: issues.map((issue) => Number(issue.id)),
+      },
+    );
+  } else {
+    const fresh = await loadPlannerInventory();
+    for (const issue of issues) {
+      const before = planned.inventory.find(
+        (row) => rowIdentity(row) === issue.id,
+      );
+      const after = fresh.find((row) => rowIdentity(row) === issue.id);
+      if (!before || !after || JSON.stringify(before) !== JSON.stringify(after))
+        throw new Error(
+          `Issue ${issue.id} changed after planning; refresh the plan before execution.`,
+        );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,46 +531,7 @@ async function executeWorkflow() {
     // -------------------------------------------------------------------------
 
     // Refresh once before parallel worktree creation; remote reads stay asynchronous.
-    if (planned.backlog) {
-      await sandcastle.admitGitHubReadinessBatch(
-        {
-          ...readiness,
-          repository: readiness.repository!,
-          cwd: process.cwd(),
-        },
-        {
-          snapshot: planned.backlog.snapshot,
-          branch: planned.branch,
-          issues: issues.map((issue) => Number(issue.id)),
-        },
-      );
-    } else {
-      const fresh = await loadPlannerInventory();
-      const identity = (row: unknown) => {
-        const candidate = z
-          .object({
-            id: z.union([z.string(), z.number()]).optional(),
-            number: z.number().optional(),
-          })
-          .passthrough()
-          .parse(row);
-        return String(candidate.id ?? candidate.number);
-      };
-      for (const issue of issues) {
-        const before = planned.inventory.find(
-          (row) => identity(row) === issue.id,
-        );
-        const after = fresh.find((row) => identity(row) === issue.id);
-        if (
-          !before ||
-          !after ||
-          JSON.stringify(before) !== JSON.stringify(after)
-        )
-          throw new Error(
-            `Issue ${issue.id} changed after planning; refresh the plan before execution.`,
-          );
-      }
-    }
+    await admitPlanned(planned, issues);
     // Head the integration checkout must be at; advances after each merge.
     let integrationHead = planned.head;
     const assertBaseline = async () => {
@@ -530,8 +579,69 @@ async function executeWorkflow() {
       });
     };
 
-    const settled = await Promise.allSettled(
-      issues.map(async (issue) => {
+    // Rolling schedule: when a pipeline settles, plan only the free slots.
+    // Planning joins the merge queue, so it sees every merge before it and no
+    // merger changes the integration checkout while the planner reads it.
+    // Each issue starts from the integration head at its start; issues
+    // started in this round are not planned again.
+    const issueBases = new Map(issues.map((issue) => [issue.id, batchBaseSha]));
+    const started = new Set(issues.map((issue) => issue.id));
+    const finished = new Set<string>();
+    const areas = new Map(
+      plan.decisions.map((decision) => [decision.id, decision.likelyAreas]),
+    );
+    const refill = (free: number) => {
+      const planning = mergeQueue.then(() => planRefill(free));
+      mergeQueue = planning.then(
+        () => undefined,
+        () => undefined,
+      );
+      return planning;
+    };
+    const planRefill = async (free: number) => {
+      if (mergeStop !== undefined || breaker.open) return [];
+      await assertBaseline();
+      const next = await planNextBatch(iteration, {
+        exclude: started,
+        inProgress: issues
+          .filter((issue) => !finished.has(issue.id))
+          .map((issue) => ({
+            ...issue,
+            likelyAreas: areas.get(issue.id) ?? [],
+          })),
+        limit: free,
+      });
+      if (next.plan.issues.length > free)
+        console.warn(
+          `  Refill planned ${next.plan.issues.length} issue(s) for ${free} free slot(s); starting the first ${free}.`,
+        );
+      const chosen = next.plan.issues.slice(0, free);
+      for (const decision of next.plan.decisions)
+        areas.set(decision.id, decision.likelyAreas);
+      if (chosen.length === 0) return [];
+      await admitPlanned(next, chosen);
+      console.log(
+        `Refill: ${chosen.length} issue(s) start from ${integrationHead.slice(0, 12)}:`,
+      );
+      for (const issue of chosen) {
+        console.log(`  ${issue.id}: ${issue.title} → ${issue.branch}`);
+        started.add(issue.id);
+        issueBases.set(issue.id, integrationHead);
+        issues.push(issue);
+      }
+      return chosen;
+    };
+
+    const rolling = await sandcastle.settleRolling(
+      {
+        issues: [...issues],
+        concurrency: CONCURRENCY,
+        refill: rollingSchedule() ? refill : undefined,
+        onSettle: (issue) => finished.add(issue.id),
+      },
+      async (issue) => {
+        // The integration head this issue starts from (rolling: its start).
+        const batchBaseSha = issueBases.get(issue.id)!;
         // Provider/infrastructure failures retry on the retained branch;
         // task failures (blocked, unapproved) are never retried.
         // Critique accepted on the first attempt; reused by retries.
@@ -1241,8 +1351,12 @@ async function executeWorkflow() {
         )
           enqueueMerge(issue);
         return result;
-      }),
+      },
     );
+    if (rolling.refillError !== undefined)
+      console.warn(`  ! Rolling refill stopped: ${rolling.refillError}`);
+    // Aligned with `issues`, which refills extend in start order.
+    const settled = rolling.settled;
 
     // Log any agents that threw (network error, sandbox crash, etc.).
     for (const [i, outcome] of settled.entries()) {

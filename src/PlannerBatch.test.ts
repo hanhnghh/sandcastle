@@ -91,4 +91,32 @@ describe("planner batch validation", () => {
       }),
     ).toBeUndefined();
   });
+  it("lets a refill defer an issue that overlaps work still in progress", () => {
+    const deferred = {
+      id: "20",
+      disposition: "parallel-conflict" as const,
+      reason: "Shares the portfolio runner with #24, still running",
+      likelyAreas: ["src/portfolio"],
+      conflictsWith: ["24"],
+    };
+    const plan = {
+      issues: [{ id: "22", title: "Web", branch: "sandcastle/issue-22" }],
+      decisions: [deferred, selected("22", ["apps/web"])],
+    };
+    // Without the running issue the conflict names nothing selected.
+    expect(() => validatePlannerBatch(inventory, plan)).toThrow(
+      "20 conflicts with non-selected issue 24",
+    );
+    expect(() =>
+      validatePlannerBatch(inventory, plan, [
+        { id: "24", likelyAreas: ["src/portfolio/runner.ts"] },
+      ]),
+    ).not.toThrow();
+    // The overlap must still be material.
+    expect(() =>
+      validatePlannerBatch(inventory, plan, [
+        { id: "24", likelyAreas: ["docs"] },
+      ]),
+    ).toThrow("no shared material area with selected conflict 24");
+  });
 });
