@@ -65,9 +65,16 @@ export interface CreateSandboxOptions {
   readonly branch: string;
   /**
    * Ref to fork from when `branch` does not yet exist. Ignored when the branch
-   * already exists. Defaults to `HEAD`.
+   * already exists, unless `mergeBase` is set. Defaults to `HEAD`.
    */
   readonly baseBranch?: string;
+  /**
+   * When `branch` already exists and lacks `baseBranch`, merge `baseBranch`
+   * into it first (uncommitted work is committed; a conflict aborts the merge
+   * and the branch is used as it was). For retained work from an earlier
+   * attempt that must build on newer integrated code.
+   */
+  readonly mergeBase?: boolean;
   /** Sandbox provider (e.g. docker({ imageName: "sandcastle:myrepo" })). */
   readonly sandbox: SandboxProvider;
   /**
@@ -941,7 +948,11 @@ export const createSandbox = async (
         );
         const { path: worktreePath } = yield* WorktreeManager.create(
           hostRepoDir,
-          { branch, baseBranch: options.baseBranch },
+          {
+            branch,
+            baseBranch: options.baseBranch,
+            mergeBase: options.mergeBase,
+          },
         );
 
         const prepared = yield* Effect.gen(function* () {

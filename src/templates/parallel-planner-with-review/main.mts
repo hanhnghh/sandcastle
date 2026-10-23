@@ -786,6 +786,8 @@ async function executeWorkflow() {
                 sandbox ??= await sandcastle.createSandbox({
                   branch: issue.branch,
                   baseBranch: batchBaseSha,
+                  // A retained branch first takes in work integrated since.
+                  mergeBase: true,
                   sandbox: docker({ env: trackerEnvironment }),
                   hooks,
                   copyToWorktree,
