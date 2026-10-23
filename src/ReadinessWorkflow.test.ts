@@ -79,7 +79,7 @@ if(prompt.includes('MISSION — READINESS ASSESSMENT')) {
   // Hold the first merger so later approvals queue up behind it.
   if(process.env.READINESS_FIXTURE_MERGE_SLOW==='1' && fs.readFileSync(process.env.READINESS_FIXTURE_TRACE,'utf8').split('merger:').length===2) await new Promise(r=>setTimeout(r,6000));
   if(branches.some(b=>b.endsWith('-'+process.env.READINESS_FIXTURE_MERGE_BLOCKED_ISSUE))) {console.log('<promise>BLOCKED</promise>');process.exit(0);}
-  for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); execFileSync('gh',['issue','close',String(number)]); }
+  for(const branch of branches) { const number=Number(branch.split('-').at(-1)); record('merge:'+number); git('merge',branch,'--no-edit'); if(!process.env.READINESS_FIXTURE_GATE_SCRIPT) execFileSync('gh',['issue','close',String(number)]); }
   if(process.env.READINESS_FIXTURE_MERGE_BLOCKED==='1') {console.log('<promise>BLOCKED</promise>');process.exit(0);}
 } else if(prompt.includes('has stalled')) {
   const number=prompt.match(/implementation of task (\\d+)/)[1];const trigger=prompt.match(/stalled\\s*\\(.(\\S+?).\\)/)[1];record('stuck-advisor:'+number+':'+trigger);
@@ -477,6 +477,15 @@ const defaultImageName = () => "fixture-image";`,
                       ),
                     }
                   : {}),
+                ...(extraEnv.READINESS_FIXTURE_GATE_SCRIPT
+                  ? {
+                      gate: {
+                        command:
+                          "bash .sandcastle/scripts/fixture-gate.sh {{BATCH_BASE_SHA}}",
+                        repairs: 1,
+                      },
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -503,6 +512,13 @@ const defaultImageName = () => "fixture-image";`,
     join(cwd, "package.json"),
     JSON.stringify({ type: "module" }),
   );
+  if (extraEnv.READINESS_FIXTURE_GATE_SCRIPT) {
+    await mkdir(join(cwd, ".sandcastle/scripts"), { recursive: true });
+    await writeFile(
+      join(cwd, ".sandcastle/scripts/fixture-gate.sh"),
+      extraEnv.READINESS_FIXTURE_GATE_SCRIPT,
+    );
+  }
   if (extraEnv.READINESS_FIXTURE_GATE_ENV === "1") {
     await mkdir(join(cwd, ".sandcastle/scripts"), { recursive: true });
     await writeFile(
@@ -848,6 +864,55 @@ it("coalesced merge retries a blocked group in halves and retains only the faili
   expect(state(24)).toBe("open");
   expect([state(20), state(22)]).toEqual(["closed", "closed"]);
 }, 120_000);
+
+it("a scripted gate runs after the merger, returns a failure for one repair, and closes the issue once it passes", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_MERGE_MODE: "per-branch",
+    READINESS_FIXTURE_ISSUES: "20",
+    // Fails the first run, passes the second.
+    READINESS_FIXTURE_GATE_SCRIPT: [
+      'n=$(grep -c "^gate:" "$READINESS_FIXTURE_TRACE" || true)',
+      'echo "gate:$n:$(test -n "$1" && echo base)" >> "$READINESS_FIXTURE_TRACE"',
+      'test "$n" != 0 || { echo "unit: 1 failed"; exit 1; }',
+      "",
+    ].join("\n"),
+  });
+  expect(result.error).toBeUndefined();
+  const steps = result.trace.filter((value: string) =>
+    /^(merger|gate):/.test(value),
+  );
+  expect(steps).toEqual([
+    "merger:20",
+    "gate:0:base",
+    "merger:20",
+    "gate:1:base",
+  ]);
+  expect(
+    result.issues.find((issue: { number: number }) => issue.number === 20)
+      .state,
+  ).toBe("closed");
+}, 90_000);
+
+it("a scripted gate that keeps failing leaves the issue open and the branch retained", async () => {
+  const result = await execute({
+    READINESS_FIXTURE_INDEPENDENT: "1",
+    READINESS_FIXTURE_CODEX: "1",
+    READINESS_FIXTURE_MERGE_MODE: "per-branch",
+    READINESS_FIXTURE_ISSUES: "20",
+    READINESS_FIXTURE_GATE_SCRIPT:
+      'echo "gate:x:" >> "$READINESS_FIXTURE_TRACE"; echo "unit: 1 failed"; exit 1\n',
+  });
+  // One gate, one repair, one more gate; then the merge counts as failed.
+  expect(
+    result.trace.filter((value: string) => value.startsWith("gate:")),
+  ).toHaveLength(2);
+  expect(
+    result.issues.find((issue: { number: number }) => issue.number === 20)
+      .state,
+  ).toBe("open");
+}, 90_000);
 
 it("the merger gate gets the configured test workers and isolation hook; implementers keep their default", async () => {
   const result = await execute({
