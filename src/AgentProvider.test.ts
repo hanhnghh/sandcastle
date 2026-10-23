@@ -590,6 +590,26 @@ describe("pi factory", () => {
     expect(provider.parseStreamLine(line)).toEqual([]);
   });
 
+  it("parseStreamLine reports a failed turn, such as an overloaded model, as an error", () => {
+    const provider = codex("gpt-5.4-mini");
+    const line = JSON.stringify({
+      type: "turn.failed",
+      error: {
+        message: "Selected model is at capacity. Please try a different model.",
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      {
+        type: "result",
+        result: "Selected model is at capacity. Please try a different model.",
+      },
+      {
+        type: "error",
+        message: "Selected model is at capacity. Please try a different model.",
+      },
+    ]);
+  });
+
   it("parseStreamLine returns empty array for error event with no extractable message", () => {
     const provider = pi("claude-sonnet-4-6");
     const line = JSON.stringify({
@@ -967,6 +987,7 @@ describe("codex factory", () => {
     });
     expect(provider.parseStreamLine(line)).toEqual([
       { type: "result", result: "Internal server error" },
+      { type: "error", message: "Internal server error" },
     ]);
   });
 
@@ -978,6 +999,7 @@ describe("codex factory", () => {
     });
     expect(provider.parseStreamLine(line)).toEqual([
       { type: "result", result: "Authentication failed: invalid API key" },
+      { type: "error", message: "Authentication failed: invalid API key" },
     ]);
   });
 
@@ -989,6 +1011,7 @@ describe("codex factory", () => {
     });
     expect(provider.parseStreamLine(line)).toEqual([
       { type: "result", result: "Rate limit exceeded" },
+      { type: "error", message: "Rate limit exceeded" },
     ]);
   });
 

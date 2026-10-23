@@ -63,6 +63,8 @@ const invokeAgent = (
       );
     }
     let resultText = "";
+    // Last provider-reported failure from the stream (overload, API error).
+    let providerError = "";
     let sessionId: string | undefined;
     let usage: IterationUsage | undefined;
     // Accumulated text/result output, scanned for the completion signal so a
@@ -275,6 +277,8 @@ const invokeAgent = (
                 sessionId = parsed.sessionId;
               } else if (parsed.type === "usage") {
                 usage = parsed.usage;
+              } else if (parsed.type === "error") {
+                providerError = parsed.message;
               }
             }
             // Check for the completion signal AFTER parsing this line so the
@@ -299,6 +303,14 @@ const invokeAgent = (
         // Prefer stderr; fall back to resultText (from parsed stream events),
         // then to the tail of raw stdout (last 20 non-empty lines).
         let errorDetail = execResult.stderr;
+        // A CLI may log only progress on stderr ("Reading prompt from
+        // stdin...") while the real cause is a stream error event; always
+        // name it so provider failures are classified as such.
+        if (providerError && !errorDetail.includes(providerError)) {
+          errorDetail = errorDetail.trim()
+            ? `${errorDetail.trimEnd()}\n${providerError}`
+            : providerError;
+        }
         if (!errorDetail.trim()) {
           errorDetail = resultText;
         }

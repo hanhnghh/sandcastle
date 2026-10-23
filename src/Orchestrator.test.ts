@@ -1656,6 +1656,59 @@ describe("Orchestrator error handling", () => {
     }
   });
 
+  it("names a stream error on failure even when stderr only logs progress", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-stream-error-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const errorLine = JSON.stringify({
+      type: "turn.failed",
+      error: {
+        message: "Selected model is at capacity. Please try a different model.",
+      },
+    });
+
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) => {
+      const real = makeLocalSandbox(dir);
+      return {
+        exec: (command, options) => {
+          if (command.startsWith("codex ") && options?.onLine) {
+            options.onLine(errorLine);
+            return Effect.succeed({
+              stdout: errorLine,
+              stderr: "Reading prompt from stdin...\n",
+              exitCode: 1,
+            });
+          }
+          return real.exec(command, options);
+        },
+        copyIn: (hostPath, sandboxPath) => real.copyIn(hostPath, sandboxPath),
+        copyFileOut: (sandboxPath, hostPath) =>
+          real.copyFileOut(sandboxPath, hostPath),
+      };
+    });
+
+    const exit = await Effect.runPromiseExit(
+      orchestrate({
+        provider: codexFactory("gpt-5.4-mini"),
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+    );
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain("Reading prompt from stdin...");
+        expect(err.message).toContain("Selected model is at capacity");
+      }
+    }
+  });
+
   it("falls back to resultText when stderr is empty on non-zero exit (structured parser)", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "orch-resulttext-fallback-"));
 
