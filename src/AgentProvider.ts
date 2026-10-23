@@ -37,7 +37,9 @@ export type ParsedStreamEvent =
   | { type: "result"; result: string }
   | { type: "tool_call"; name: string; args: string }
   | { type: "session_id"; sessionId: string }
-  | { type: "usage"; usage: IterationUsage };
+  | { type: "usage"; usage: IterationUsage }
+  /** A provider-reported failure (API error, overload, auth), kept apart from agent text. */
+  | { type: "error"; message: string };
 
 const shellEscape = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
 
@@ -738,11 +740,17 @@ const parseCodexStreamLine = (line: string): ParsedStreamEvent[] => {
     }
 
     // Codex emits error events on stdout (not stderr) for auth failures,
-    // rate limits, and API errors. Capture them as result events so the
-    // Orchestrator's stderr-empty fallback can surface them to the user.
-    if (obj.type === "error") {
+    // rate limits, overload and API errors, and `turn.failed` when a turn
+    // ends on one. Capture them as result events for the stderr-empty
+    // fallback and as error events so a failure exit always names them.
+    if (obj.type === "error" || obj.type === "turn.failed") {
       const msg = extractErrorMessage(obj);
-      return msg ? [{ type: "result", result: msg }] : [];
+      return msg
+        ? [
+            { type: "result", result: msg },
+            { type: "error", message: msg },
+          ]
+        : [];
     }
 
     // turn.completed carries token usage for the turn.

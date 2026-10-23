@@ -46,7 +46,7 @@ const patterns: readonly [ProviderFailureKind, RegExp][] = [
   ],
   [
     "unavailable",
-    /\b(500|502|503|504|529)\b|overloaded|service unavailable|bad gateway|gateway timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|network error|socket hang up/i,
+    /\b(500|502|503|504|529)\b|overloaded|at capacity|service unavailable|bad gateway|gateway timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|network error|socket hang up/i,
   ],
 ];
 

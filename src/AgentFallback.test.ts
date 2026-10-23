@@ -28,6 +28,11 @@ test("classifies provider and infrastructure failures, never task failures", () 
     "unavailable",
   );
   expect(classifyProviderFailure("ECONNRESET")).toBe("unavailable");
+  expect(
+    classifyProviderFailure(
+      "codex exited with code 1:\nReading prompt from stdin...\nSelected model is at capacity. Please try a different model.",
+    ),
+  ).toBe("unavailable");
   for (const message of [
     "codex exited with code 1:\nTests failed: 3",
     "TypeError: cannot read properties of undefined",
