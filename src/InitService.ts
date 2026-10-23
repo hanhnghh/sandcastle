@@ -1720,6 +1720,11 @@ async function syncCodeGraph(sandbox: sandcastle.Sandbox): Promise<void> {
       "sandbox: docker({ env: gateEnvironment }),",
       "sandbox: codexSandbox(BASE_BRANCH, gateEnvironment),",
     );
+    content = replaceRequired(
+      content,
+      "sandbox: docker({ env: gateEnvironment }), // scripted gate",
+      "sandbox: codexSandbox(BASE_BRANCH, gateEnvironment), // scripted gate",
+    );
     const reviewStart =
       /if \(sandbox && implementationCommits\.length > 0\) \{\s*/.exec(
         content,

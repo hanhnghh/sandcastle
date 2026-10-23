@@ -98,6 +98,7 @@ export { CwdError } from "./CwdError.js";
 export {
   claudeCode,
   codex,
+  command,
   copilot,
   cursor,
   opencode,

@@ -315,6 +315,10 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       "const GATE_TEST_WORKERS = runtime.workflow.config.merge?.testWorkers ?? 1;",
     );
     content = content.replace(
+      "const MERGE_GATE: { command: string; repairs: number } | undefined = undefined;",
+      "const MERGE_GATE: { command: string; repairs: number } | undefined = runtime.workflow.config.merge?.gate && { command: runtime.workflow.config.merge.gate.command, repairs: runtime.workflow.config.merge.gate.repairs ?? 1 };",
+    );
+    content = content.replace(
       "const CONCURRENCY = Number.POSITIVE_INFINITY;",
       "const CONCURRENCY = runtime.workflow.config.limits.concurrency;",
     );

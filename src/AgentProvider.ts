@@ -849,6 +849,23 @@ export const codex = (
 });
 
 // ---------------------------------------------------------------------------
+// Command provider
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs a shell command in place of a model, for scripted workflow steps such
+ * as a merge gate. The prompt is ignored, every output line is agent text,
+ * and the command should print its own completion signal.
+ */
+export const command = (script: string): AgentProvider => ({
+  name: "command",
+  env: {},
+  captureSessions: false,
+  buildPrintCommand: () => ({ command: script }),
+  parseStreamLine: (line) => [{ type: "text", text: `${line}\n` }],
+});
+
+// ---------------------------------------------------------------------------
 // Cursor agent provider
 // ---------------------------------------------------------------------------
 

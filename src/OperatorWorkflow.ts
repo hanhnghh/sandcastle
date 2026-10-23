@@ -154,6 +154,19 @@ export const workflowConfigSchema = z
          * <workers> when present. 1–8, default 1.
          */
         testWorkers: z.number().int().min(1).max(8).optional(),
+        /**
+         * Scripted cumulative gate run by the host after the merger
+         * integrates: `command` ({{BATCH_BASE_SHA}} replaced) runs in the
+         * merger's sandbox; a failure goes back to the merger for up to
+         * `repairs` repairs (0–3, default 1); a pass closes the issues.
+         */
+        gate: z
+          .object({
+            command: z.string().trim().min(1),
+            repairs: z.number().int().min(0).max(3).optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

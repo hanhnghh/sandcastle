@@ -80,6 +80,12 @@ const MERGE_COALESCE = false;
 // implementers and reviewers keep one. With more than one, the merger sandbox
 // first runs .sandcastle/scripts/test-isolation.sh <workers> when present.
 const GATE_TEST_WORKERS = 1;
+// Scripted cumulative gate. When set, the merger only integrates and commits;
+// the host then runs this command ({{BATCH_BASE_SHA}} replaced) in the
+// merger's sandbox, hands a failing gate's output back to the merger for up to
+// `repairs` repairs, and closes the issues once it passes. Unset: the merger
+// runs the gate and closes the issues itself.
+const MERGE_GATE: { command: string; repairs: number } | undefined = undefined;
 // Issue pipelines at once. The rolling schedule needs a finite bound.
 const CONCURRENCY = Number.POSITIVE_INFINITY;
 // "batch": plan again after every pipeline of the batch settles.
@@ -1485,71 +1491,127 @@ async function executeWorkflow() {
       // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
       // uses to know which branches to merge and which issues to close.
       // -------------------------------------------------------------------------
-      const merge = await agentMap.track(
-        {
-          batch: iteration,
-          role: "merger",
-          title:
-            MERGE_MODE === "batch"
-              ? "Integrate batch"
-              : `Integrate ${mergeIssues.map((i) => i.id).join(", ")}`,
-          branch: await currentBranch(),
-        },
-        (logging) =>
-          sandcastle.run({
-            logging,
-            hooks: gateHooks,
-            sandbox: docker({ env: gateEnvironment }),
-            name: "merger",
-            maxIterations: 1,
-            agent: sandcastle.claudeCode("claude-sonnet-4-6"),
-            completionSignal: [
-              "<promise>COMPLETE</promise>",
-              "<promise>BLOCKED</promise>",
-            ],
-            promptFile: "./.sandcastle/merge-prompt.md",
-            promptArgs: {
-              // A markdown list of branch names, one per line.
-              BRANCHES: mergeBranches.map((b) => `- ${b}`).join("\n"),
-              // A markdown list of issue IDs and titles, one per line.
-              ISSUES: mergeIssues
-                .map((i) => `- ${i.id}: ${i.title}`)
-                .join("\n"),
-              // The integration commit before any branch in this batch is merged.
-              BATCH_BASE_SHA: base,
-            },
-          }),
-      );
+      const ids = mergeIssues.map((i) => i.id).join(", ");
+      // With a scripted gate, a repair run receives the failing gate's output.
+      const runMerger = (gateFailure: string) =>
+        agentMap.track(
+          {
+            batch: iteration,
+            role: "merger",
+            title: gateFailure
+              ? `Repair gate for ${ids}`
+              : MERGE_MODE === "batch"
+                ? "Integrate batch"
+                : `Integrate ${ids}`,
+            branch: planned.branch,
+          },
+          (logging) =>
+            sandcastle.run({
+              logging,
+              hooks: gateHooks,
+              sandbox: docker({ env: gateEnvironment }),
+              name: "merger",
+              maxIterations: 1,
+              agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+              completionSignal: [
+                "<promise>COMPLETE</promise>",
+                "<promise>BLOCKED</promise>",
+              ],
+              promptFile: "./.sandcastle/merge-prompt.md",
+              promptArgs: {
+                // A markdown list of branch names, one per line.
+                BRANCHES: mergeBranches.map((b) => `- ${b}`).join("\n"),
+                // A markdown list of issue IDs and titles, one per line.
+                ISSUES: mergeIssues
+                  .map((i) => `- ${i.id}: ${i.title}`)
+                  .join("\n"),
+                // The integration commit before any branch in this batch is merged.
+                BATCH_BASE_SHA: base,
+                ...(MERGE_GATE ? { GATE_FAILURE: gateFailure } : {}),
+              },
+            }),
+        );
+      // The merger must leave a clean, advanced head containing every branch.
+      const checkIntegrated = async (run: { completionSignal?: string }) => {
+        if (run.completionSignal !== "<promise>COMPLETE</promise>") {
+          throw new Error(
+            "Merge did not complete; readiness and the next planner are stopped",
+          );
+        }
+        const head = (await runHost("git", ["rev-parse", "HEAD"])).trim();
+        if (
+          head === base ||
+          (await currentBranch()) !== planned.branch ||
+          (await runHost("git", ["status", "--porcelain"])).trim()
+        )
+          throw new Error(
+            "Merger did not produce a clean integrated checkout on the planned branch.",
+          );
+        for (const ref of [base, ...mergeBranches])
+          await runHost("git", ["merge-base", "--is-ancestor", ref, head]);
+        return head;
+      };
+      // The gate command runs in place of a model; it prints its own verdict.
+      const runGate = (head: string) =>
+        agentMap.track(
+          {
+            batch: iteration,
+            role: "merger",
+            title: `Gate ${ids} at ${head.slice(0, 8)}`,
+            branch: planned.branch,
+          },
+          (logging) =>
+            sandcastle.run({
+              logging,
+              hooks: gateHooks,
+              sandbox: docker({ env: gateEnvironment }), // scripted gate
+              name: "gate",
+              maxIterations: 1,
+              // Integration suites can stay quiet for a long time.
+              idleTimeoutSeconds: 60 * 60,
+              agent: sandcastle.command(
+                `( ${MERGE_GATE!.command.replaceAll("{{BATCH_BASE_SHA}}", base)} ) 2>&1 && echo '<promise>GATE PASSED</promise>' || echo '<promise>GATE FAILED</promise>'`,
+              ),
+              prompt: "Scripted cumulative gate",
+              completionSignal: [
+                "<promise>GATE PASSED</promise>",
+                "<promise>GATE FAILED</promise>",
+              ],
+            }),
+        );
 
-      if (merge.completionSignal !== "<promise>COMPLETE</promise>") {
-        throw new Error(
-          "Merge did not complete; readiness and the next planner are stopped",
-        );
+      const merge = await runMerger("");
+      let integratedHead = await checkIntegrated(merge);
+      if (MERGE_GATE) {
+        for (let repairs = 0; ; repairs++) {
+          const gate = await runGate(integratedHead);
+          const output = gate.stdout.split("\n").slice(-200).join("\n");
+          if (gate.completionSignal === "<promise>GATE PASSED</promise>") break;
+          if (repairs >= MERGE_GATE.repairs)
+            throw new Error(
+              `Cumulative gate failed at ${integratedHead}:\n${output}`,
+            );
+          console.log(
+            `  ! gate failed for ${ids}; merger repair ${repairs + 1}`,
+          );
+          integratedHead = await checkIntegrated(await runMerger(output));
+        }
+        for (const issue of mergeIssues)
+          await runHost("gh", [
+            "issue",
+            "close",
+            issue.id,
+            "--comment",
+            `Integrated into \`${planned.branch}\` at ${integratedHead}. Cumulative gate passed: \`${MERGE_GATE.command.replaceAll("{{BATCH_BASE_SHA}}", base)}\`.`,
+          ]);
       }
-      const integratedHead = (
-        await runHost("git", ["rev-parse", "HEAD"])
-      ).trim();
-      if (
-        integratedHead === base ||
-        (await currentBranch()) !== planned.branch ||
-        (await runHost("git", ["status", "--porcelain"])).trim()
-      )
-        throw new Error(
-          "Merger did not produce a clean integrated checkout on the planned branch.",
-        );
-      for (const ref of [base, ...mergeBranches])
-        await runHost("git", [
-          "merge-base",
-          "--is-ancestor",
-          ref,
-          integratedHead,
-        ]);
       await reassess(iteration, {
         kind: "post-merge",
         base,
         branches: mergeBranches,
         issues: mergeIssues.map((issue) => Number(issue.id)),
-        completionSignal: merge.completionSignal,
+        // checkIntegrated accepted only a completed merge.
+        completionSignal: "<promise>COMPLETE</promise>",
       });
       integrationHead = integratedHead;
     }
