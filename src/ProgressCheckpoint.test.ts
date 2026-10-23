@@ -316,6 +316,25 @@ describe("errorLinesOf", () => {
     );
   });
 
+  it("keys a Python traceback by its exception line, not the shared header", () => {
+    const traceback = (exception: string) =>
+      [
+        "Traceback (most recent call last):",
+        '  File "/tmp/ledger.py", line 4, in <module>',
+        exception,
+      ].join("\n");
+    expect(errorLinesOf(traceback("KeyError: 'R4'"))).toEqual([
+      "KeyError: 'R4'",
+    ]);
+    expect(
+      errorLinesOf(
+        [traceback("KeyError: 'R4'"), traceback("ValueError: bad hash")].join(
+          "\n",
+        ),
+      ),
+    ).toEqual(["KeyError: 'R4'", "ValueError: bad hash"]);
+  });
+
   it("skips test-runner tallies, which repeat on every run with a failure", () => {
     const tallies = [
       " Tests  2 failed | 10 passed (12)",
