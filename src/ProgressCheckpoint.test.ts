@@ -5,6 +5,7 @@ import {
   createDriftDetector,
   diffLineLimit,
   errorLinesOf,
+  globMatcher,
   parseNumstat,
   runWithCheckpoints,
   withProgressCheck,
@@ -167,6 +168,57 @@ describe("createDriftDetector", () => {
     expect(at(301)).toMatchObject({ kind: "diff-size" });
     expect(at(500)).toBeUndefined();
     expect(at(601)).toMatchObject({ kind: "diff-size" });
+  });
+
+  it("skips ignored files in every signal, so required evidence never reads as drift", () => {
+    const detector = createDriftDetector({
+      diffLimit: diffLineLimit("S", 1),
+      briefFiles: ["src/canvas.ts"],
+      ignore: ["docs/evidence/**", "docs/roadmap/issue-*-ledger.md"],
+    });
+    const evidence = [
+      { path: "docs/evidence/547/receipt.json", lines: 5_000 },
+      { path: "docs/roadmap/issue-547-ledger.md", lines: 900 },
+    ];
+    expect(
+      detector.observe({
+        files: [...evidence, { path: "src/canvas.ts", lines: 120 }],
+        log: "",
+      }),
+    ).toBeUndefined();
+    expect(
+      detector.observe({
+        files: [...evidence, { path: "src/canvas.ts", lines: 301 }],
+        log: "",
+      }),
+    ).toMatchObject({
+      kind: "diff-size",
+      detail: expect.stringContaining("301"),
+    });
+  });
+});
+
+describe("globMatcher", () => {
+  it("lets ** span directories and keeps * within one segment", () => {
+    const matches = globMatcher([
+      "docs/evidence/**",
+      "docs/roadmap/issue-*-ledger.md",
+      "*.snap",
+    ]);
+    expect(matches("docs/evidence/560/ui/compare-frame-default-1440.png")).toBe(
+      true,
+    );
+    expect(matches("docs/roadmap/issue-547-ledger.md")).toBe(true);
+    expect(matches("docs/roadmap/nested/issue-547-ledger.md")).toBe(false);
+    expect(matches("a.snap")).toBe(true);
+    expect(matches("src/a.snap")).toBe(false);
+    expect(matches("docs/evidence.md")).toBe(false);
+  });
+
+  it("treats regular-expression characters literally", () => {
+    const matches = globMatcher(["docs/(draft)+.md"]);
+    expect(matches("docs/(draft)+.md")).toBe(true);
+    expect(matches("docs/draftdraft.md")).toBe(false);
   });
 });
 

@@ -423,7 +423,8 @@ direction instead of only failing at the end.
       "defaults": {
         "bug": { "minutes": 20, "size": "S" },
         "*": { "minutes": 45 }
-      }
+      },
+      "ignore": ["docs/evidence/**", "docs/roadmap/issue-*-ledger.md"]
     }
   }
 }
@@ -441,6 +442,11 @@ Time spent paused does not count. Drift fires a checkpoint early:
 | `repeated-error` | the same error line appears `repeatThreshold` times in command output (numbers normalized)    |
 | `churn`          | the same file is edited and reverted twice                                                    |
 | `diff-size`      | changed lines exceed the size limit (S 300, M 1000, L 3000, × factor); the limit then doubles |
+
+`ignore` lists globs (`**` spans directories, `*` stays within one segment) of
+files every drift signal skips. Use it for evidence the workflow requires, such
+as ledgers, receipts and screenshots, so a diligent implementer is not read as
+drifting. Time checkpoints are unaffected.
 
 The implementer's state is sampled every 30 seconds with `GIT_OPTIONAL_LOCKS=0`
 so sampling never holds the index lock while the implementer commits.
