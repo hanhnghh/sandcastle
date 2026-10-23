@@ -159,6 +159,19 @@ const errorLine = new RegExp(
     String.raw`\bCommand failed\b`,
   ].join("|"),
 );
+/**
+ * Test-runner tallies ("1 failed", "Tests  2 failed | 10 passed",
+ * "Failed Tests 3"). They repeat on every run that still has a failing test,
+ * so they say nothing about whether the same error recurs; the error lines
+ * under them do.
+ */
+const testSummaryLine = new RegExp(
+  [
+    String.raw`^[\s⎯─-]*Failed Tests \d+[\s⎯─-]*$`,
+    String.raw`^\s*(?:Tests?|Test Files|Test Suites)?:?\s*(?:\d+\s+(?:failed|failing|passed|flaky|skipped|pending|todo|total|did not run|interrupted)(?:\s*\([^)]*\))?[\s,|]*)+$`,
+  ].join("|"),
+  "i",
+);
 const normalizeError = (line: string) =>
   line
     .toLowerCase()
@@ -225,6 +238,7 @@ export const createDriftDetector = (options: {
       logOffset += end;
       for (const line of fresh.slice(0, end).split("\n")) {
         if (line.trim().length < 8 || !errorLine.test(line)) continue;
+        if (testSummaryLine.test(line)) continue;
         const key = normalizeError(line);
         const count = (errors.get(key) ?? 0) + 1;
         errors.set(key, count);
@@ -323,6 +337,7 @@ export const errorLinesOf = (raw: string): string[] => {
   const lines: string[] = [];
   for (const line of strings.flatMap((text) => text.split("\n"))) {
     if (line.trim().length < 8 || !errorLine.test(line)) continue;
+    if (testSummaryLine.test(line)) continue;
     const key = normalizeError(line);
     if (seen.has(key)) continue;
     seen.add(key);
