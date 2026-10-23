@@ -153,7 +153,6 @@ const errorLine = new RegExp(
     String.raw`^\s*[✗✘×]\s`,
     String.raw`^\s*error(?:\[\w+\])?:`,
     String.raw`npm ERR!`,
-    String.raw`Traceback \(most recent call last\)`,
     String.raw`\b\d+ (?:failed|failing)\b`,
     String.raw`\b(?:exit(?:ed)? (?:with )?code|exit status) [1-9]`,
     String.raw`\bCommand failed\b`,
