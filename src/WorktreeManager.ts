@@ -275,6 +275,88 @@ const fastForwardFromOrigin = (
     }
   });
 
+/** Identity for commits Sandcastle makes itself, independent of user config. */
+const SANDCASTLE_IDENTITY = [
+  "-c",
+  "user.name=Sandcastle",
+  "-c",
+  "user.email=sandcastle@localhost",
+];
+
+/**
+ * A branch retained from an earlier attempt can predate work integrated
+ * since; its diff then reverts that work and its agent builds on stale code.
+ * Before reuse, merges `base` into the branch when `base` is not already an
+ * ancestor. Uncommitted work is committed first so the merge cannot lose it.
+ * A conflicting merge is aborted and the worktree is reused without it, with
+ * a warning. Never fatal (ADR 0003): the fallback is the old stale reuse.
+ */
+const mergeBaseIntoRetained = (
+  worktreePath: string,
+  branch: string,
+  base: string,
+): Effect.Effect<void, never> =>
+  Effect.gen(function* () {
+    const headRef = yield* execGit(
+      ["symbolic-ref", "--quiet", "HEAD"],
+      worktreePath,
+    ).pipe(
+      Effect.map((s) => s.trim()),
+      Effect.orElseSucceed(() => ""),
+    );
+    // A detached HEAD (paused rebase) is left exactly as it is.
+    if (headRef !== `refs/heads/${branch}`) return;
+    const upToDate = yield* Effect.either(
+      execGit(["merge-base", "--is-ancestor", base, "HEAD"], worktreePath),
+    );
+    if (upToDate._tag === "Right") return;
+    if (yield* hasUncommittedChanges(worktreePath)) {
+      yield* execGit(["add", "-A"], worktreePath);
+      yield* execGit(
+        [
+          ...NO_CONFIG_LOCK_FLAGS,
+          ...SANDCASTLE_IDENTITY,
+          "commit",
+          "--no-verify",
+          "-m",
+          "WIP: work retained from an earlier attempt",
+        ],
+        worktreePath,
+      );
+    }
+    const merged = yield* Effect.either(
+      execGit(
+        [
+          ...NO_CONFIG_LOCK_FLAGS,
+          ...SANDCASTLE_IDENTITY,
+          "merge",
+          "--no-edit",
+          "--no-verify",
+          base,
+        ],
+        worktreePath,
+      ),
+    );
+    if (merged._tag === "Left") {
+      yield* execGit(["merge", "--abort"], worktreePath).pipe(
+        Effect.orElseSucceed(() => ""),
+      );
+      console.warn(
+        `Retained branch '${branch}' conflicts with base ${base}; reusing it without the base (resolve by merging ${base})`,
+      );
+      return;
+    }
+    console.log(`Merged base ${base} into retained branch '${branch}'`);
+  }).pipe(
+    Effect.catchAll((error) =>
+      Effect.sync(() =>
+        console.warn(
+          `Could not bring retained branch '${branch}' up to ${base}: ${error.message}`,
+        ),
+      ),
+    ),
+  );
+
 /**
  * Creates a git worktree at `.sandcastle/worktrees/<name>/`.
  *
@@ -286,6 +368,8 @@ const fastForwardFromOrigin = (
  *   `origin/<branch>` when it is strictly behind (ADR 0003). A failed fetch
  *   or a diverged branch is non-fatal and falls back to plain reuse.
  * - Dirty (uncommitted changes) → reuses with a console warning, no refresh.
+ * - Either way, with `baseBranch` given and not yet in the branch, merges it
+ *   in (committing uncommitted work first); a conflict aborts the merge.
  *
  * Collisions with the main working tree or external worktrees always throw.
  */
@@ -346,6 +430,12 @@ export const create = (
           } else {
             yield* fastForwardFromOrigin(collision.path, branch);
           }
+          if (opts.baseBranch)
+            yield* mergeBaseIntoRetained(
+              collision.path,
+              branch,
+              opts.baseBranch,
+            );
           // git reports forward slashes even on Windows; return a
           // platform-native path so downstream join/fs calls stay consistent.
           return { path: normalize(collision.path), branch };
