@@ -368,8 +368,9 @@ const mergeBaseIntoRetained = (
  *   `origin/<branch>` when it is strictly behind (ADR 0003). A failed fetch
  *   or a diverged branch is non-fatal and falls back to plain reuse.
  * - Dirty (uncommitted changes) → reuses with a console warning, no refresh.
- * - Either way, with `baseBranch` given and not yet in the branch, merges it
- *   in (committing uncommitted work first); a conflict aborts the merge.
+ * - Either way, with `mergeBase` and a `baseBranch` not yet in the branch,
+ *   merges it in (committing uncommitted work first); a conflict aborts the
+ *   merge. An existing branch without a worktree gets the same merge.
  *
  * Collisions with the main working tree or external worktrees always throw.
  */
@@ -378,6 +379,12 @@ export const create = (
   opts?: {
     branch?: string;
     baseBranch?: string;
+    /**
+     * When `branch` already exists, merge `baseBranch` into it if it lacks
+     * it (retained work from an earlier attempt). Off: `baseBranch` only
+     * forks a new branch.
+     */
+    mergeBase?: boolean;
     name?: string;
   },
 ): Effect.Effect<
@@ -430,7 +437,7 @@ export const create = (
           } else {
             yield* fastForwardFromOrigin(collision.path, branch);
           }
-          if (opts.baseBranch)
+          if (opts.mergeBase && opts.baseBranch)
             yield* mergeBaseIntoRetained(
               collision.path,
               branch,
@@ -451,10 +458,11 @@ export const create = (
           }),
         );
       }
-      yield* execGit(
+      const added = yield* execGit(
         [...NO_CONFIG_LOCK_FLAGS, "worktree", "add", worktreePath, branch],
         repoDir,
       ).pipe(
+        Effect.as("existing" as const),
         Effect.catchAll((e) => {
           if (e.message.includes("invalid reference")) {
             return execGit(
@@ -468,11 +476,14 @@ export const create = (
                 opts?.baseBranch ?? "HEAD",
               ],
               repoDir,
-            );
+            ).pipe(Effect.as("new" as const));
           }
           return Effect.fail(e);
         }),
       );
+      // An existing branch whose worktree was removed is retained work too.
+      if (added === "existing" && opts.mergeBase && opts.baseBranch)
+        yield* mergeBaseIntoRetained(worktreePath, branch, opts.baseBranch);
     } else {
       yield* execGit(
         [

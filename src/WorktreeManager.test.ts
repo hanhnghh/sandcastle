@@ -266,7 +266,7 @@ describe("WorktreeManager.create", () => {
     ).stdout.trim();
 
     const second = await run(
-      create(repoDir, { branch: "task", baseBranch: base }),
+      create(repoDir, { branch: "task", baseBranch: base, mergeBase: true }),
     );
 
     expect(second.path).toBe(first.path);
@@ -290,6 +290,31 @@ describe("WorktreeManager.create", () => {
     await run(remove(first.path));
   });
 
+  it("merges a newer base into an existing branch whose worktree was removed", async () => {
+    const repoDir = await setupRepo();
+    await execAsync("git checkout -b task", { cwd: repoDir });
+    await commitFile(repoDir, "task.txt", "task", "task commit");
+    await execAsync("git checkout main", { cwd: repoDir });
+    await commitFile(repoDir, "blocker.txt", "blocker", "blocker merged");
+    const base = (
+      await execAsync("git rev-parse HEAD", { cwd: repoDir })
+    ).stdout.trim();
+
+    const created = await run(
+      create(repoDir, { branch: "task", baseBranch: base, mergeBase: true }),
+    );
+
+    await execAsync(`git merge-base --is-ancestor ${base} HEAD`, {
+      cwd: created.path,
+    });
+    expect(await readFile(join(created.path, "task.txt"), "utf8")).toBe("task");
+    expect(await readFile(join(created.path, "blocker.txt"), "utf8")).toBe(
+      "blocker",
+    );
+
+    await run(remove(created.path));
+  });
+
   it("leaves a retained branch on its old base when the base conflicts", async () => {
     const repoDir = await setupRepo();
     await execAsync("git checkout -b task", { cwd: repoDir });
@@ -302,7 +327,7 @@ describe("WorktreeManager.create", () => {
     ).stdout.trim();
 
     const second = await run(
-      create(repoDir, { branch: "task", baseBranch: base }),
+      create(repoDir, { branch: "task", baseBranch: base, mergeBase: true }),
     );
 
     expect(await readFile(join(second.path, "hello.txt"), "utf8")).toBe(
@@ -333,7 +358,9 @@ describe("WorktreeManager.create", () => {
     const head = (await execAsync("git rev-parse HEAD", { cwd: first.path }))
       .stdout;
 
-    await run(create(repoDir, { branch: "task", baseBranch: base }));
+    await run(
+      create(repoDir, { branch: "task", baseBranch: base, mergeBase: true }),
+    );
 
     expect(
       (await execAsync("git rev-parse HEAD", { cwd: first.path })).stdout,
@@ -416,6 +443,28 @@ describe("WorktreeManager.create", () => {
     expect(worktreeHead.trim()).toBe(baseSha.trim());
 
     await run(remove(path));
+  });
+
+  it("leaves an existing branch alone without mergeBase, even when the base moved", async () => {
+    const repoDir = await setupRepo();
+    await execAsync("git checkout -b task", { cwd: repoDir });
+    await commitFile(repoDir, "task.txt", "task", "task commit");
+    await execAsync("git checkout main", { cwd: repoDir });
+    const first = await run(create(repoDir, { branch: "task" }));
+    const head = (await execAsync("git rev-parse HEAD", { cwd: first.path }))
+      .stdout;
+    await commitFile(repoDir, "blocker.txt", "blocker", "blocker merged");
+    const base = (
+      await execAsync("git rev-parse HEAD", { cwd: repoDir })
+    ).stdout.trim();
+
+    await run(create(repoDir, { branch: "task", baseBranch: base }));
+
+    expect(
+      (await execAsync("git rev-parse HEAD", { cwd: first.path })).stdout,
+    ).toBe(head);
+
+    await run(remove(first.path));
   });
 
   it("ignores baseBranch when the branch already exists", async () => {
