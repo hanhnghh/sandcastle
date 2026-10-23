@@ -126,6 +126,8 @@ export const workflowConfigSchema = z
                   .strict(),
               )
               .optional(),
+            /** Globs (`*`, `**`) of files the drift signals skip, such as required evidence. */
+            ignore: z.array(z.string().min(1).max(200)).max(50).optional(),
           })
           .strict()
           .optional(),

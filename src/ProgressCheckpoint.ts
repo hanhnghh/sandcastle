@@ -61,6 +61,8 @@ export interface CheckpointPolicy {
   readonly max?: number;
   readonly repeatThreshold?: number;
   readonly defaults?: Readonly<Record<string, CheckpointDefault>>;
+  /** Globs of files the drift signals skip, such as required evidence. */
+  readonly ignore?: readonly string[];
 }
 
 const fallbackDefault: Required<CheckpointDefault> = { minutes: 30, size: "M" };
@@ -184,7 +186,10 @@ export const createDriftDetector = (options: {
   readonly diffLimit: number;
   /** Edit–revert cycles on one file before churn fires. Default 2. */
   readonly churnCycles?: number;
+  /** Globs (`*`, `**`) of files every signal skips, such as required evidence. */
+  readonly ignore?: readonly string[];
 }): DriftDetector => {
+  const ignored = globMatcher(options.ignore ?? []);
   const repeatThreshold = options.repeatThreshold ?? 3;
   const churnCycles = options.churnCycles ?? 2;
   const minChurnLines = 10;
@@ -200,7 +205,8 @@ export const createDriftDetector = (options: {
   return {
     observe(snapshot) {
       const signals: CheckpointSignal[] = [];
-      const outside = snapshot.files
+      const files = snapshot.files.filter((file) => !ignored(file.path));
+      const outside = files
         .map((file) => file.path)
         .filter((path) => !reported.has(path) && briefFiles.length > 0)
         .filter((path) => !inBrief(path, briefFiles));
@@ -231,7 +237,7 @@ export const createDriftDetector = (options: {
         }
       }
 
-      const lines = new Map(snapshot.files.map((f) => [f.path, f.lines]));
+      const lines = new Map(files.map((f) => [f.path, f.lines]));
       for (const path of new Set([...churn.keys(), ...lines.keys()])) {
         const current = lines.get(path) ?? 0;
         const state = churn.get(path) ?? { peak: 0, low: false, cycles: 0 };
@@ -253,7 +259,7 @@ export const createDriftDetector = (options: {
         }
       }
 
-      const total = snapshot.files.reduce((sum, f) => sum + f.lines, 0);
+      const total = files.reduce((sum, f) => sum + f.lines, 0);
       if (total > options.diffLimit * 2 ** diffReports) {
         diffReports++;
         signals.push({
@@ -323,6 +329,28 @@ export const errorLinesOf = (raw: string): string[] => {
     lines.push(line.trim().slice(0, 500));
   }
   return lines;
+};
+
+/**
+ * Match repository paths against globs: `**` spans directories, `*` stays
+ * within one path segment, everything else is literal.
+ */
+export const globMatcher = (globs: readonly string[]) => {
+  const patterns = globs.map(
+    (glob) =>
+      new RegExp(
+        `^${glob
+          .split("**")
+          .map((part) =>
+            part
+              .split("*")
+              .map((text) => text.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+              .join("[^/]*"),
+          )
+          .join(".*")}$`,
+      ),
+  );
+  return (path: string) => patterns.some((pattern) => pattern.test(path));
 };
 
 /** Parse `git diff --numstat` output (plus untracked files as `N\t0\tpath`). */

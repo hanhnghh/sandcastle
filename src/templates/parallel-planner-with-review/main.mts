@@ -1021,6 +1021,7 @@ async function executeWorkflow() {
                   detector: sandcastle.createDriftDetector({
                     briefFiles: approachPlan?.files,
                     repeatThreshold: ADVISOR_CHECKPOINT.repeatThreshold,
+                    ignore: ADVISOR_CHECKPOINT.ignore,
                     diffLimit: sandcastle.diffLineLimit(
                       budget.size,
                       ADVISOR_CHECKPOINT.factor,
