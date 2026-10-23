@@ -305,7 +305,6 @@ describe("errorLinesOf", () => {
       "No errors found; nothing failed.",
       `const failed = results.filter((r) => r.error);`,
       "catch (error) { log(error.message) }",
-      " Tests  2 failed | 10 passed",
       "npm ERR! code ELIFECYCLE",
       "Process exited with code 1",
       "AssertionError: expected 1 to be 2",
@@ -315,6 +314,47 @@ describe("errorLinesOf", () => {
     expect(errorLinesOf(lines.join("\n"))).toEqual(
       lines.slice(3).map((line) => line.trim()),
     );
+  });
+
+  it("skips test-runner tallies, which repeat on every run with a failure", () => {
+    const tallies = [
+      " Tests  2 failed | 10 passed (12)",
+      " Test Files  1 failed | 3 passed (4)",
+      "  1 failed",
+      "  3 failed",
+      "  12 passed (8.4s)",
+      "  1 flaky",
+      "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯",
+      "Tests:       2 failed, 10 passed, 12 total",
+      "  2 failing",
+    ];
+    expect(errorLinesOf(tallies.join("\n"))).toEqual([]);
+    expect(
+      errorLinesOf(
+        ["  1 failed", "Error: expect(locator).toBeVisible() failed"].join(
+          "\n",
+        ),
+      ),
+    ).toEqual(["Error: expect(locator).toBeVisible() failed"]);
+  });
+
+  it("still fires repeated-error when the same failure recurs under changing tallies", () => {
+    const detector = createDriftDetector({
+      diffLimit: diffLineLimit("L", 10),
+      repeatThreshold: 3,
+    });
+    let log = "";
+    const run = (tally: string) => {
+      log += errorLinesOf(
+        [tally, "Error: expect(locator).toHaveCount(1) failed"].join("\n"),
+      )
+        .map((line) => `${line}\n`)
+        .join("");
+      return detector.observe({ files: [], log });
+    };
+    expect(run("  1 failed")).toBeUndefined();
+    expect(run("  2 failed")).toBeUndefined();
+    expect(run("  1 failed")).toMatchObject({ kind: "repeated-error" });
   });
 });
 
