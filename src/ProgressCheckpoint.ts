@@ -171,13 +171,42 @@ const testSummaryLine = new RegExp(
   ].join("|"),
   "i",
 );
-const normalizeError = (line: string) =>
-  line
+/**
+ * The failing test an error belongs to, written after the error as
+ * ` ⟨test: …⟩`. Many tests can fail with the same message ("Timeout 5000ms
+ * exceeded"); only the same test failing again is a repeated error.
+ */
+const testContextSuffix = / ⟨test: (.*)⟩$/;
+const normalizeError = (line: string) => {
+  const context = testContextSuffix.exec(line);
+  const message = (context ? line.slice(0, context.index) : line)
     .toLowerCase()
     .replace(/\d+/g, "N")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200);
+  // Line numbers tell tests in one file apart, so they stay.
+  return context
+    ? `${message} ⟨test: ${context[1]!.toLowerCase().replace(/\s+/g, " ")}⟩`
+    : message;
+};
+const testFile = String.raw`\S+\.(?:spec|test)\.[cm]?[jt]sx?`;
+/**
+ * Lines naming the test whose failure follows: Playwright's
+ * `1) [chromium] › tests/a.spec.ts:12:3 › title ───` and Vitest's
+ * `FAIL src/a.test.ts > suite > title`.
+ */
+const testHeader = new RegExp(
+  [
+    String.raw`^\s*\d+\)\s+(?:\[[^\]]+\]\s+›\s+)?(${testFile}:\d+(?::\d+)?\s+›\s+.+?)[\s─-]*$`,
+    String.raw`^\s*(?:FAIL|[✗✘×])\s+(${testFile}\s+>\s+.+?)\s*$`,
+  ].join("|"),
+);
+/** A stack frame in a test file, which follows the error it belongs to. */
+const testFrame = new RegExp(
+  String.raw`^\s*at\s+(?:.*?\()?(\S+?\.(?:spec|test)\.[cm]?[jt]sx?:\d+)`,
+);
+const frameLookahead = 20;
 
 const inBrief = (path: string, files: readonly string[]) =>
   files.some((entry) => {
@@ -311,7 +340,10 @@ const toolInputKeys = new Set([
  * Error lines in one raw agent stream line (provider JSON or plain text),
  * each reported once per line so a test summary repeating an error does not
  * count twice. Only tool results and command output count, never the agent's
- * narration or tool input. Feed them to the detector's `log`.
+ * narration or tool input. An error under a test header, or followed by a
+ * stack frame in a test file, is tagged with that test so the detector does
+ * not count different tests failing the same way as one repeated error.
+ * Feed them to the detector's `log`.
  */
 export const errorLinesOf = (raw: string): string[] => {
   const strings: string[] = [];
@@ -334,13 +366,27 @@ export const errorLinesOf = (raw: string): string[] => {
   }
   const seen = new Set<string>();
   const lines: string[] = [];
-  for (const line of strings.flatMap((text) => text.split("\n"))) {
-    if (line.trim().length < 8 || !errorLine.test(line)) continue;
-    if (testSummaryLine.test(line)) continue;
-    const key = normalizeError(line);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    lines.push(line.trim().slice(0, 500));
+  for (const text of strings) {
+    const all = text.split("\n");
+    let header: string | undefined;
+    all.forEach((line, index) => {
+      const named = testHeader.exec(line);
+      if (named) header = (named[1] ?? named[2])!.trim();
+      if (line.trim().length < 8 || !errorLine.test(line)) return;
+      if (testSummaryLine.test(line)) return;
+      // A Vitest FAIL header names its own test.
+      let context = named ? undefined : header;
+      for (let next = index + 1; !context && next < all.length; next++) {
+        if (next > index + frameLookahead || testHeader.test(all[next]!)) break;
+        context = testFrame.exec(all[next]!)?.[1];
+      }
+      const entry =
+        line.trim().slice(0, 500) + (context ? ` ⟨test: ${context}⟩` : "");
+      const key = normalizeError(entry);
+      if (seen.has(key)) return;
+      seen.add(key);
+      lines.push(entry);
+    });
   }
   return lines;
 };
