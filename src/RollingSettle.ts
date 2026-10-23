@@ -13,6 +13,16 @@ export interface RollingSettleOptions<T> {
   readonly refill?: (free: number) => Promise<readonly T[]>;
   /** Called when an item settles, before any refill. */
   readonly onSettle?: (issue: T) => void;
+  /**
+   * Refill free slots without waiting for a settle. Every `everyMs`, while
+   * slots are free and items still run, `changed` is asked whether new work
+   * may have appeared (a cheap check, such as a changed backlog); when it
+   * says yes, `refill` runs as it would after a settle.
+   */
+  readonly idleRefill?: {
+    readonly everyMs: number;
+    readonly changed: () => Promise<boolean>;
+  };
 }
 
 /** Outcome of {@link settleRolling}. */
@@ -48,13 +58,42 @@ export const settleRolling = async <T, R>(
   let refillFailed = false;
 
   return new Promise((resolve) => {
+    let checking = false;
+    const idle =
+      options.idleRefill && options.refill
+        ? setInterval(() => {
+            const free = limit - running;
+            if (
+              checking ||
+              refilling ||
+              refillFailed ||
+              queue.length > 0 ||
+              running === 0 ||
+              !(free > 0 && Number.isFinite(free))
+            )
+              return;
+            checking = true;
+            options
+              .idleRefill!.changed()
+              .then((changed) => {
+                if (changed && !refilling) pump(true);
+              })
+              // A failed check is retried on the next tick.
+              .catch(() => undefined)
+              .finally(() => {
+                checking = false;
+              });
+          }, options.idleRefill.everyMs)
+        : undefined;
     const finishIfIdle = () => {
-      if (running === 0 && !refilling && queue.length === 0)
+      if (running === 0 && !refilling && queue.length === 0) {
+        if (idle) clearInterval(idle);
         resolve({
           issues,
           settled,
           ...(refillFailed ? { refillError } : {}),
         });
+      }
     };
     const start = (issue: T) => {
       const index = issues.push(issue) - 1;

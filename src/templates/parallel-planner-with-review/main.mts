@@ -92,6 +92,9 @@ const CONCURRENCY = Number.POSITIVE_INFINITY;
 // "rolling" (per-branch merge only): when a pipeline settles and its branch is
 // integrated, plan more issues for the free slots while the others keep running.
 const SCHEDULE: "batch" | "rolling" = "batch";
+// Rolling: while slots are free, check the backlog this often and plan again
+// when it changed, instead of waiting for a pipeline to settle.
+const IDLE_REFILL_MINUTES = 15;
 function rollingSchedule() {
   return (
     SCHEDULE === "rolling" &&
@@ -224,6 +227,18 @@ const loadPlannerInventory = async (): Promise<unknown[]> =>
     : (JSON.parse(
         await runHost("bash", [".sandcastle/planner-inventory.sh"]),
       ) as unknown[]);
+
+// The planner's candidate rows: readiness-eligible issues, or the inventory.
+const eligibleBacklog = async (): Promise<readonly unknown[]> =>
+  readinessEnabled
+    ? (
+        await sandcastle.inspectGitHubReadinessBacklog({
+          ...readiness,
+          repository: readiness.repository!,
+          cwd: process.cwd(),
+        })
+      ).eligible
+    : loadPlannerInventory();
 
 const currentBranch = async () =>
   (await runHost("git", ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
@@ -648,6 +663,12 @@ async function executeWorkflow() {
     const areas = new Map(
       plan.decisions.map((decision) => [decision.id, decision.likelyAreas]),
     );
+    // Idle refill: the backlog as last planned, without started issues.
+    // A new or unblocked issue changes it and lets free slots fill before
+    // the next pipeline settles.
+    const backlogSignature = (rows: readonly unknown[]) =>
+      JSON.stringify(rows.filter((row) => !started.has(rowIdentity(row))));
+    let plannedBacklog = backlogSignature(planned.inventory);
     const refill = (free: number) => {
       const planning = mergeQueue.then(() => planRefill(free));
       mergeQueue = planning.then(
@@ -673,6 +694,7 @@ async function executeWorkflow() {
         console.warn(
           `  Refill planned ${next.plan.issues.length} issue(s) for ${free} free slot(s); starting the first ${free}.`,
         );
+      plannedBacklog = backlogSignature(next.inventory);
       const chosen = next.plan.issues.slice(0, free);
       for (const decision of next.plan.decisions)
         areas.set(decision.id, decision.likelyAreas);
@@ -695,6 +717,11 @@ async function executeWorkflow() {
         issues: [...issues],
         concurrency: CONCURRENCY,
         refill: rollingSchedule() ? refill : undefined,
+        idleRefill: {
+          everyMs: IDLE_REFILL_MINUTES * 60_000,
+          changed: async () =>
+            backlogSignature(await eligibleBacklog()) !== plannedBacklog,
+        },
         onSettle: (issue) => finished.add(issue.id),
       },
       async (issue) => {

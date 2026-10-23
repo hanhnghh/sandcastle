@@ -125,6 +125,73 @@ describe("settleRolling", () => {
     expect(String(result.refillError)).toContain("2 items for 1 free slot");
   });
 
+  it("fills a free slot when the backlog changes, before anything settles", async () => {
+    const started: string[] = [];
+    let backlogChanged = false;
+    const checks: boolean[] = [];
+    const result = await settleRolling(
+      {
+        issues: ["long"],
+        concurrency: 2,
+        refill: async (free) => {
+          expect(free).toBe(1);
+          backlogChanged = false;
+          return started.includes("new") ? [] : ["new"];
+        },
+        idleRefill: {
+          everyMs: 5,
+          changed: async () => {
+            checks.push(backlogChanged);
+            return backlogChanged;
+          },
+        },
+      },
+      async (item) => {
+        started.push(item);
+        if (item === "long") {
+          await delay(20);
+          // New work appears while the only item still runs.
+          backlogChanged = true;
+          await delay(60);
+        } else await delay(5);
+        return item;
+      },
+    );
+    expect(result.issues).toEqual(["long", "new"]);
+    // "new" started from an idle check, not a settle: "long" was still running.
+    expect(started).toEqual(["long", "new"]);
+    expect(checks).toContain(false);
+    expect(checks).toContain(true);
+  });
+
+  it("does not refill on idle ticks while the backlog is unchanged", async () => {
+    let refills = 0;
+    let checks = 0;
+    await settleRolling(
+      {
+        issues: ["a"],
+        concurrency: 3,
+        refill: async () => {
+          refills++;
+          return [];
+        },
+        idleRefill: {
+          everyMs: 5,
+          changed: async () => {
+            checks++;
+            return false;
+          },
+        },
+      },
+      async () => {
+        await delay(40);
+      },
+    );
+    expect(checks).toBeGreaterThan(2);
+    // Only the settle of "a" asks for a refill.
+    expect(refills).toBe(1);
+  });
+
   it("does not refill without a finite bound, and resolves for no items", async () => {
     let calls = 0;
     const refill = async () => {
