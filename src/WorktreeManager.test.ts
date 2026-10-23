@@ -252,6 +252,99 @@ describe("WorktreeManager.create", () => {
     await run(remove(first.path));
   });
 
+  it("merges a newer base into a retained branch, committing its uncommitted work first", async () => {
+    const repoDir = await setupRepo();
+    await execAsync("git checkout -b task", { cwd: repoDir });
+    await commitFile(repoDir, "task.txt", "task", "task commit");
+    await execAsync("git checkout main", { cwd: repoDir });
+    const first = await run(create(repoDir, { branch: "task" }));
+    await writeFile(join(first.path, "draft.txt"), "uncommitted");
+    // Work integrated since the branch was created.
+    await commitFile(repoDir, "blocker.txt", "blocker", "blocker merged");
+    const base = (
+      await execAsync("git rev-parse HEAD", { cwd: repoDir })
+    ).stdout.trim();
+
+    const second = await run(
+      create(repoDir, { branch: "task", baseBranch: base }),
+    );
+
+    expect(second.path).toBe(first.path);
+    await execAsync(`git merge-base --is-ancestor ${base} HEAD`, {
+      cwd: second.path,
+    });
+    expect(await readFile(join(second.path, "draft.txt"), "utf8")).toBe(
+      "uncommitted",
+    );
+    expect(await readFile(join(second.path, "blocker.txt"), "utf8")).toBe(
+      "blocker",
+    );
+    expect(
+      (await execAsync("git status --porcelain", { cwd: second.path })).stdout,
+    ).toBe("");
+    const log = (
+      await execAsync("git log --format=%s -3", { cwd: second.path })
+    ).stdout;
+    expect(log).toContain("WIP: work retained from an earlier attempt");
+
+    await run(remove(first.path));
+  });
+
+  it("leaves a retained branch on its old base when the base conflicts", async () => {
+    const repoDir = await setupRepo();
+    await execAsync("git checkout -b task", { cwd: repoDir });
+    await commitFile(repoDir, "hello.txt", "task version", "task edits hello");
+    await execAsync("git checkout main", { cwd: repoDir });
+    const first = await run(create(repoDir, { branch: "task" }));
+    await commitFile(repoDir, "hello.txt", "main version", "main edits hello");
+    const base = (
+      await execAsync("git rev-parse HEAD", { cwd: repoDir })
+    ).stdout.trim();
+
+    const second = await run(
+      create(repoDir, { branch: "task", baseBranch: base }),
+    );
+
+    expect(await readFile(join(second.path, "hello.txt"), "utf8")).toBe(
+      "task version",
+    );
+    expect(
+      (await execAsync("git status --porcelain", { cwd: second.path })).stdout,
+    ).toBe("");
+    await expect(
+      execAsync(`git merge-base --is-ancestor ${base} HEAD`, {
+        cwd: second.path,
+      }),
+    ).rejects.toThrow();
+
+    await run(remove(first.path));
+  });
+
+  it("does not touch a retained branch that already contains the base", async () => {
+    const repoDir = await setupRepo();
+    const base = (
+      await execAsync("git rev-parse HEAD", { cwd: repoDir })
+    ).stdout.trim();
+    await execAsync("git checkout -b task", { cwd: repoDir });
+    await commitFile(repoDir, "task.txt", "task", "task commit");
+    await execAsync("git checkout main", { cwd: repoDir });
+    const first = await run(create(repoDir, { branch: "task" }));
+    await writeFile(join(first.path, "draft.txt"), "uncommitted");
+    const head = (await execAsync("git rev-parse HEAD", { cwd: first.path }))
+      .stdout;
+
+    await run(create(repoDir, { branch: "task", baseBranch: base }));
+
+    expect(
+      (await execAsync("git rev-parse HEAD", { cwd: first.path })).stdout,
+    ).toBe(head);
+    expect(
+      (await execAsync("git status --porcelain", { cwd: first.path })).stdout,
+    ).toContain("draft.txt");
+
+    await run(remove(first.path));
+  });
+
   it("parallel runs on different branches work without interference", async () => {
     const repoDir = await setupRepo();
     await execAsync("git checkout -b branch-a", { cwd: repoDir });
