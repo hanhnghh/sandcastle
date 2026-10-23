@@ -377,6 +377,114 @@ describe("errorLinesOf", () => {
   });
 });
 
+describe("repeated errors per test", () => {
+  // Playwright list-reporter output, as an implementer sees it when it
+  // reruns a browser suite full of stale expectations.
+  const playwrightFailure = (index: number, line: number, title: string) =>
+    [
+      `  ${index}) [chromium] › tests/u02/workspace.spec.ts:${line}:3 › ${title} ─────────────`,
+      "",
+      "    Error: expect(locator).toContainText(expected) failed",
+      "",
+      "    Locator: getByRole('status')",
+      '    Expected substring: "Saved"',
+      "",
+      `      at /home/agent/workspace/tests/u02/workspace.spec.ts:${line + 9}:48`,
+    ].join("\n");
+  const observe = (
+    detector: ReturnType<typeof createDriftDetector>,
+    state: { log: string },
+    output: string,
+  ) => {
+    state.log += errorLinesOf(output)
+      .map((line) => `${line}\n`)
+      .join("");
+    return detector.observe({ files: [], log: state.log });
+  };
+
+  it("tags each Playwright failure with its test", () => {
+    expect(
+      errorLinesOf(
+        [
+          playwrightFailure(1, 120, "U05 saves advanced settings"),
+          playwrightFailure(2, 210, "U08 closes the inspector"),
+          "  2 failed",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      "Error: expect(locator).toContainText(expected) failed ⟨test: tests/u02/workspace.spec.ts:120:3 › U05 saves advanced settings⟩",
+      "Error: expect(locator).toContainText(expected) failed ⟨test: tests/u02/workspace.spec.ts:210:3 › U08 closes the inspector⟩",
+    ]);
+  });
+
+  it("takes the test from a following stack frame when no header was printed", () => {
+    expect(
+      errorLinesOf(
+        [
+          "Error: locator.click: Timeout 5000ms exceeded.",
+          "    at clickMenu (/home/agent/workspace/tests/support/editor-frame.ts:40:9)",
+          "    at /home/agent/workspace/tests/designs/designs.spec.ts:77:5",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      "Error: locator.click: Timeout 5000ms exceeded. ⟨test: /home/agent/workspace/tests/designs/designs.spec.ts:77⟩",
+    ]);
+  });
+
+  it("does not count different tests failing the same way as a repeated error", () => {
+    const detector = createDriftDetector({
+      diffLimit: 1000,
+      repeatThreshold: 3,
+    });
+    const state = { log: "" };
+    for (const [index, line] of [120, 210, 305, 410, 515].entries())
+      expect(
+        observe(
+          detector,
+          state,
+          playwrightFailure(index + 1, line, `test ${index}`),
+        ),
+      ).toBeUndefined();
+  });
+
+  it("still fires when the same test keeps failing", () => {
+    const detector = createDriftDetector({
+      diffLimit: 1000,
+      repeatThreshold: 3,
+    });
+    const state = { log: "" };
+    const rerun = () =>
+      observe(
+        detector,
+        state,
+        playwrightFailure(1, 120, "U05 saves advanced settings"),
+      );
+    expect(rerun()).toBeUndefined();
+    expect(rerun()).toBeUndefined();
+    const signal = rerun();
+    expect(signal).toMatchObject({ kind: "repeated-error" });
+    expect(signal!.detail).toContain("U05 saves advanced settings");
+  });
+
+  it("names the test in a Vitest failure block", () => {
+    expect(
+      errorLinesOf(
+        [
+          " FAIL  src/api.test.ts > handler > rejects a bad id",
+          "AssertionError: expected 400 to be 404",
+          " FAIL  src/api.test.ts > handler > accepts a good id",
+          "AssertionError: expected 400 to be 404",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      "FAIL  src/api.test.ts > handler > rejects a bad id",
+      "AssertionError: expected 400 to be 404 ⟨test: src/api.test.ts > handler > rejects a bad id⟩",
+      "FAIL  src/api.test.ts > handler > accepts a good id",
+      "AssertionError: expected 400 to be 404 ⟨test: src/api.test.ts > handler > accepts a good id⟩",
+    ]);
+  });
+});
+
 describe("parseNumstat", () => {
   it("sums added and deleted lines and keeps binary files", () => {
     expect(
