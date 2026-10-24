@@ -60,6 +60,8 @@ export interface CheckpointPolicy {
   readonly factor?: number;
   readonly max?: number;
   readonly repeatThreshold?: number;
+  /** Budget fractions at which time checkpoints fire. Default [0.5, 1]. */
+  readonly fractions?: readonly number[];
   readonly defaults?: Readonly<Record<string, CheckpointDefault>>;
   /** Globs of files the drift signals skip, such as required evidence. */
   readonly ignore?: readonly string[];
