@@ -685,3 +685,10 @@ describe("withProgressCheck", () => {
     ).toMatchObject({ verdict: "invalid", signal: "churn" });
   });
 });
+
+it("binary files in numstat count as zero changed lines", () => {
+  expect(parseNumstat("-\t-\tdocs/mockup.png\n12\t3\tsrc/a.ts")).toEqual([
+    { path: "docs/mockup.png", lines: 0 },
+    { path: "src/a.ts", lines: 15 },
+  ]);
+});
