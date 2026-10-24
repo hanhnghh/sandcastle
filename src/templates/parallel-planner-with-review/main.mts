@@ -1095,7 +1095,7 @@ async function executeWorkflow() {
                   // own git commands never meet a held index.lock.
                   snapshot: async () => {
                     const numstat = await sandbox!.exec(
-                      `export GIT_OPTIONAL_LOCKS=0; git diff --numstat ${batchBaseSha} && git ls-files --others --exclude-standard | while IFS= read -r f; do printf '%s\t0\t%s\n' "$(wc -l < "$f" | tr -d ' ')" "$f"; done`,
+                      `export GIT_OPTIONAL_LOCKS=0; git diff --numstat ${batchBaseSha} && git ls-files --others --exclude-standard | while IFS= read -r f; do if grep -Iq . "$f" 2>/dev/null || [ ! -s "$f" ]; then printf '%s\t0\t%s\n' "$(wc -l < "$f" | tr -d ' ')" "$f"; else printf -- '-\t-\t%s\n' "$f"; fi; done`,
                     );
                     if (numstat.exitCode !== 0)
                       throw new Error("progress snapshot failed");
