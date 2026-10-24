@@ -28,6 +28,18 @@ acceptance criteria, environment/evidence gates, and dependencies.
   independently proven execution/preflight gates and an exact allowlisted program.
   This does not pass its live acceptance or authorize an implementation agent.
 
+A ticket that changes something other code or tests use (shared state, a save
+path, an accessible name or locator, a DOM structure tests reach into) should
+list those consumers, or the search that finds them. When it does not, say so
+in the reason and list the consumers you found at this HEAD. An open product or
+interface question the ticket leaves to interpretation is an unresolved
+decision.
+
+When the project keeps reference-parity audits (`*_AUDIT.md` under its design
+docs), a ticket that changes merchant-visible UI or its mockups must name the
+audit rows it implements, or say its screen has no reference counterpart.
+Otherwise it is `blocked` until it does.
+
 Closed dependencies alone do not prove their code was integrated. A file's
 existence does not prove its claim; synthetic tests do not prove live validation.
 Do not infer product-specific gates from a universal list of gate names. Include

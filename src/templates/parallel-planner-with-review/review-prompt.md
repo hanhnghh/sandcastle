@@ -65,6 +65,11 @@ Review along both axes:
    - Are compatibility, persistence, idempotency, concurrency, and security
      contracts preserved where applicable?
    - Are errors observable without leaking secrets or sensitive local state?
+   - When the project keeps reference-parity audits (`*_AUDIT.md` under its
+     design docs) and the task changes mockups, design docs or merchant UI: open
+     the audit and the sheet that puts each changed state beside its reference
+     screen. A structural difference that the audit neither decides nor
+     justifies, or a missing sheet for a changed state, is a major finding.
 2. **Standards and maintainability**
    - Does the diff follow `@.sandcastle/CODING_STANDARDS.md`?
    - Is the design as simple as the behavior permits, with clear ownership and

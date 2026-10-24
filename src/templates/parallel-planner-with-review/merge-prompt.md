@@ -34,6 +34,23 @@ If a branch cannot be safely merged, stop. Leave all tasks open, record the
 exact conflict or blocker, restore the checkout (below) and emit
 `<promise>BLOCKED</promise>`.
 
+# FAILURES THE BATCH DID NOT CAUSE
+
+Before blocking on a failing check the listed tasks did not cause, check
+whether it reproduces at `{{BATCH_BASE_SHA}}` without them (a temporary
+detached worktree, the same narrow command). If it does, it blocks every batch,
+so file it once as its own task:
+
+1. Search open issues for the failing test name. If one exists, comment your
+   new evidence on it instead of opening another.
+2. Otherwise create an issue titled `Gate blocker: <test file> > <test name>`,
+   labelled `priority:gate` plus the labels your tracker uses for
+   implementation-ready tasks. Give it the root cause, the fix you recommend and
+   its scope, the reproduction command, acceptance criteria (the check passes
+   deterministically and the root cause is fixed rather than the assertion
+   loosened), and references to the blocked tasks. Never use a closing keyword.
+3. Name the issue in your BLOCKED summary.
+
 # CUMULATIVE INTEGRATION GATE
 
 Commit resolutions or repairs before the final cumulative gate. Run the gate
