@@ -7,6 +7,15 @@ export const REVIEW_VERDICT_TAG = "review-verdict";
 const COMPLETE = "<promise>COMPLETE</promise>";
 const BLOCKED = "<promise>BLOCKED</promise>";
 
+/** An owner decision the reviewer cannot make from the contract. */
+export const reviewDecisionSchema = z
+  .object({
+    question: z.string().min(1).max(1000),
+    options: z.array(z.string().min(1).max(500)).min(2).max(4),
+    /** The option the reviewer recommends, with its reason. */
+    recommendation: z.string().min(1).max(500).optional(),
+  })
+  .strict();
 /** One required change reported by the reviewer. */
 export const reviewFindingSchema = z
   .object({
@@ -23,15 +32,11 @@ export const reviewFindingSchema = z
      * unresolved, as listed in the previous findings (for example `R3.F1`).
      */
     repeats: z.string().min(1).max(80).optional(),
-  })
-  .strict();
-/** An owner decision the reviewer cannot make from the contract. */
-export const reviewDecisionSchema = z
-  .object({
-    question: z.string().min(1).max(1000),
-    options: z.array(z.string().min(1).max(500)).min(2).max(4),
-    /** The option the reviewer recommends, with its reason. */
-    recommendation: z.string().min(1).max(500).optional(),
+    /**
+     * Accepted for reviewers that attach the owner decision to the finding it
+     * belongs to; the verdict hoists it to its top-level `decision`.
+     */
+    decision: reviewDecisionSchema.optional(),
   })
   .strict();
 /** Structured reviewer verdict. */
@@ -68,10 +73,22 @@ export const reviewVerdictSchema = z
         path: ["findings"],
         message: "finding ids must be unique",
       });
+  })
+  .transform(({ findings, decision, ...rest }) => {
+    const nested = findings.find((finding) => finding.decision)?.decision;
+    const owner = decision ?? nested;
+    return {
+      ...rest,
+      findings: findings.map(({ decision: _decision, ...finding }) => finding),
+      ...(owner === undefined ? {} : { decision: owner }),
+    };
   });
-export type ReviewFinding = z.infer<typeof reviewFindingSchema>;
+export type ReviewFinding = Omit<
+  z.infer<typeof reviewFindingSchema>,
+  "decision"
+>;
 export type ReviewDecision = z.infer<typeof reviewDecisionSchema>;
-export type ReviewVerdict = z.infer<typeof reviewVerdictSchema>;
+export type ReviewVerdict = z.output<typeof reviewVerdictSchema>;
 const verdictOutput = Output.object({
   tag: REVIEW_VERDICT_TAG,
   schema: reviewVerdictSchema,
