@@ -165,9 +165,11 @@ then emit exactly one verdict as JSON inside the tag:
 - `approve`: the branch is branch-ready; only `minor` findings may be listed.
 - `changes-requested`: list every finding the implementer must repair, each as
   `{"id":"F1","severity":"critical|major|minor","file":"path","line":12,"change":"Required change","repeats":"R2.F1"}`
-  (`file`, `line` and `repeats` are optional; ids are unique). Add
-  `"decision":{"question":"…","options":["…","…"],"recommendation":"…"}` when
-  a finding needs an owner decision (see REVIEW ROUND).
+  (`file`, `line` and `repeats` are optional; ids are unique; a finding has
+  no other fields). When a finding needs an owner decision (see REVIEW ROUND),
+  put one `"decision":{"question":"…","options":["…","…"],"recommendation":"…"}`
+  at the top level of the verdict, next to `findings`, for example:
+  <review-verdict>{"verdict":"changes-requested","summary":"One paragraph.","findings":[{"id":"F1","severity":"major","file":"src/a.ts","line":12,"change":"Required change"}],"decision":{"question":"Modal or flyout?","options":["Flyout","Modal"],"recommendation":"Flyout, as the contract says"}}</review-verdict>
 - `blocked`: the review cannot be completed (missing contract, unavailable
   environment). Explain in `summary` and emit `<promise>BLOCKED</promise>`
   instead of the completion signal.

@@ -211,3 +211,39 @@ test("verdicts carry repeated finding keys and an owner decision", async () => {
     ),
   ).rejects.toThrow();
 });
+
+test("an owner decision attached to a finding is hoisted to the verdict", async () => {
+  const decision = {
+    question: "Where does the header live?",
+    options: ["Inside the first section", "As a fifth section"],
+  };
+  const parsed = await parseReviewVerdict(
+    verdict({
+      verdict: "changes-requested",
+      findings: [{ ...finding, decision }],
+    }),
+  );
+  expect(parsed.decision).toEqual(decision);
+  expect(parsed.findings[0]).not.toHaveProperty("decision");
+});
+
+test("every verdict example in the review prompt templates parses", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = join(import.meta.dirname, "templates");
+  const prompts = readdirSync(root, { recursive: true })
+    .map(String)
+    .filter((file) => file.endsWith("review-prompt.md"))
+    .filter((file) =>
+      readFileSync(join(root, file), "utf8").includes("<review-verdict>"),
+    );
+  expect(prompts.length).toBeGreaterThan(0);
+  for (const file of prompts) {
+    const text = readFileSync(join(root, file), "utf8");
+    const examples = [
+      ...text.matchAll(/<review-verdict>(\{.*?\})<\/review-verdict>/g),
+    ];
+    expect(examples.length, file).toBeGreaterThan(0);
+    for (const [example] of examples) await parseReviewVerdict(example);
+  }
+});
