@@ -47,6 +47,12 @@ const invokeAgent = (
   forkSession?: boolean,
   signal?: AbortSignal,
   pauseSignal?: AbortSignal,
+  onToolDone?: (
+    name: string,
+    formattedArgs: string,
+    seconds: number,
+    exitCode?: number,
+  ) => void,
 ): Effect.Effect<
   { result: string; sessionId?: string; usage?: IterationUsage; paused?: true },
   SandboxError
@@ -239,6 +245,10 @@ const invokeAgent = (
       );
     }
 
+    const runningTools = new Map<
+      string,
+      { name: string; args: string; startedAt: number }
+    >();
     const execEffect = Effect.gen(function* () {
       const printCmd = provider.buildPrintCommand({
         prompt,
@@ -272,7 +282,24 @@ const invokeAgent = (
                 resultText = parsed.result;
                 accumulatedOutput += parsed.result;
               } else if (parsed.type === "tool_call") {
+                if (parsed.id)
+                  runningTools.set(parsed.id, {
+                    name: parsed.name,
+                    args: parsed.args,
+                    startedAt: Date.now(),
+                  });
                 onToolCall(parsed.name, parsed.args);
+              } else if (parsed.type === "tool_done") {
+                const started = runningTools.get(parsed.id);
+                if (started) {
+                  runningTools.delete(parsed.id);
+                  onToolDone?.(
+                    started.name,
+                    started.args,
+                    (Date.now() - started.startedAt) / 1000,
+                    parsed.exitCode,
+                  );
+                }
               } else if (parsed.type === "session_id") {
                 sessionId = parsed.sessionId;
               } else if (parsed.type === "usage") {
@@ -604,6 +631,25 @@ export const orchestrate = (
                     }),
                   );
                 };
+                // One line per finished tool call, so run logs show where the
+                // time went: "Took(12.4s exit 0 · npm test -- foo)".
+                const onToolDone = (
+                  name: string,
+                  formattedArgs: string,
+                  seconds: number,
+                  exitCode?: number,
+                ) => {
+                  if (seconds < 1) return;
+                  const summary = formattedArgs
+                    .replace(/\s+/g, " ")
+                    .slice(0, 160);
+                  Effect.runPromise(
+                    display.toolCall(
+                      "Took",
+                      `${seconds.toFixed(1)}s${exitCode === undefined ? "" : ` exit ${exitCode}`} · ${name === "Bash" ? "" : `${name} `}${summary}`,
+                    ),
+                  );
+                };
                 const onRawLine = (line: string) => {
                   Effect.runPromise(
                     streamEmitter.emit({
@@ -676,6 +722,8 @@ export const orchestrate = (
                       index === 0 ? iterationForkSession : undefined,
                       options.signal,
                       options.pauseSignal,
+                      (name, formattedArgs, seconds, exitCode) =>
+                        onToolDone(name, formattedArgs, seconds, exitCode),
                     ),
                   );
                   if (Either.isRight(attempt)) {

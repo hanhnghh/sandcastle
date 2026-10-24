@@ -99,6 +99,46 @@ describe("claudeCode factory", () => {
     ]);
   });
 
+  it("parseStreamLine pairs tool_use and tool_result by id", () => {
+    const provider = claudeCode("claude-opus-4-8");
+    expect(
+      provider.parseStreamLine(
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_1",
+                name: "Bash",
+                input: { command: "npm test" },
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual([
+      { type: "tool_call", name: "Bash", args: "npm test", id: "toolu_1" },
+    ]);
+    expect(
+      provider.parseStreamLine(
+        JSON.stringify({
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_1",
+                is_error: true,
+                content: "x",
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual([{ type: "tool_done", id: "toolu_1", exitCode: 1 }]);
+  });
+
   it("parseStreamLine bakes model into each provider instance independently", () => {
     const provider1 = claudeCode("model-a");
     const provider2 = claudeCode("model-b");
@@ -854,6 +894,37 @@ describe("codex factory", () => {
     expect(provider.parseStreamLine(line)).toEqual([
       { type: "tool_call", name: "Bash", args: "npm test" },
     ]);
+  });
+
+  it("parseStreamLine pairs command start and completion by item id", () => {
+    const provider = codex("gpt-5.4-mini");
+    expect(
+      provider.parseStreamLine(
+        JSON.stringify({
+          type: "item.started",
+          item: {
+            id: "item_3",
+            type: "command_execution",
+            command: "npm test",
+          },
+        }),
+      ),
+    ).toEqual([
+      { type: "tool_call", name: "Bash", args: "npm test", id: "item_3" },
+    ]);
+    expect(
+      provider.parseStreamLine(
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            id: "item_3",
+            type: "command_execution",
+            command: "npm test",
+            exit_code: 1,
+          },
+        }),
+      ),
+    ).toEqual([{ type: "tool_done", id: "item_3", exitCode: 1 }]);
   });
 
   it("parseStreamLine skips turn.completed events without usage", () => {
