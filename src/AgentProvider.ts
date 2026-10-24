@@ -35,7 +35,9 @@ const fileExists = async (path: string): Promise<boolean> => {
 export type ParsedStreamEvent =
   | { type: "text"; text: string }
   | { type: "result"; result: string }
-  | { type: "tool_call"; name: string; args: string }
+  | { type: "tool_call"; name: string; args: string; id?: string }
+  /** A tool call finished; `id` matches the tool_call that started it. */
+  | { type: "tool_done"; id: string; exitCode?: number }
   | { type: "session_id"; sessionId: string }
   | { type: "usage"; usage: IterationUsage }
   /** A provider-reported failure (API error, overload, auth), kept apart from agent text. */
@@ -78,6 +80,7 @@ const parseStreamJsonLine = (line: string): ParsedStreamEvent[] => {
         type: string;
         text?: string;
         name?: string;
+        id?: string;
         input?: Record<string, unknown>;
       }[]) {
         if (block.type === "text" && typeof block.text === "string") {
@@ -99,6 +102,7 @@ const parseStreamJsonLine = (line: string): ParsedStreamEvent[] => {
             type: "tool_call",
             name: block.name,
             args: argValue,
+            ...(typeof block.id === "string" ? { id: block.id } : {}),
           });
         }
       }
@@ -106,6 +110,25 @@ const parseStreamJsonLine = (line: string): ParsedStreamEvent[] => {
         events.push({ type: "text", text: texts.join("") });
       }
       return events;
+    }
+    if (obj.type === "user" && Array.isArray(obj.message?.content)) {
+      return (
+        obj.message.content as {
+          type?: string;
+          tool_use_id?: string;
+          is_error?: boolean;
+        }[]
+      )
+        .filter(
+          (block) =>
+            block.type === "tool_result" &&
+            typeof block.tool_use_id === "string",
+        )
+        .map((block) => ({
+          type: "tool_done" as const,
+          id: block.tool_use_id!,
+          ...(block.is_error ? { exitCode: 1 } : {}),
+        }));
     }
     if (obj.type === "result" && typeof obj.result === "string") {
       return [{ type: "result", result: obj.result }];
@@ -736,7 +759,31 @@ const parseCodexStreamLine = (line: string): ParsedStreamEvent[] => {
       obj.item?.type === "command_execution" &&
       typeof obj.item.command === "string"
     ) {
-      return [{ type: "tool_call", name: "Bash", args: obj.item.command }];
+      return [
+        {
+          type: "tool_call",
+          name: "Bash",
+          args: obj.item.command,
+          ...(typeof obj.item.id === "string" ? { id: obj.item.id } : {}),
+        },
+      ];
+    }
+
+    // item.completed with command_execution → the command finished
+    if (
+      obj.type === "item.completed" &&
+      obj.item?.type === "command_execution" &&
+      typeof obj.item.id === "string"
+    ) {
+      return [
+        {
+          type: "tool_done",
+          id: obj.item.id,
+          ...(typeof obj.item.exit_code === "number"
+            ? { exitCode: obj.item.exit_code }
+            : {}),
+        },
+      ];
     }
 
     // Codex emits error events on stdout (not stderr) for auth failures,
