@@ -197,6 +197,23 @@ is done and green (a normal commit, not the completion commit), add one tracker
 comment titled `Split proposal:` with the minimal remaining scope and the
 follow-up ticket's text, and emit `<promise>BLOCKED</promise>`.
 
+# REFERENCE PARITY
+
+A ticket that follows a reference app (titles starting `Design:`, diffs under
+`docs/design/`, or pixel criteria against reference screens) is measured, not
+eyeballed. Before the completion gate, for every changed state:
+
+1. Open the compare sheet that puts the state beside its reference screen and
+   list every element visible on either side. Each one is drawn, or omitted
+   with a decision in the area's audit (`Kept on purpose` or an owner row).
+2. Measure the reference image. Use a pixel scan for edges, not an estimate,
+   and record x, y, width, height, gaps and padding for each region the ticket
+   owns. Put ours beside it in a `Reference measurements` table in the ledger.
+3. Fix any difference over 2 px, or decide it in the audit with a reason.
+
+A review round should never be the first to find an element or a spacing
+difference that is visible in the sheet.
+
 # RESUME BRIEF
 
 Whenever you stop (complete, blocked, or interrupted by a checkpoint), write
@@ -218,6 +235,8 @@ The branch is branch-ready for review only when all of the following are true:
 - every branch-required row is `pass` or justified `not-applicable`; only the
   integration owner's future checks may be `pending-integration`;
 - changed behavior has focused regression evidence at an approved public seam;
+- for a reference-parity ticket, the `Reference measurements` table covers every
+  owned region of every changed state (see REFERENCE PARITY);
 - focused behavior evidence and affected branch checks are green;
 - the final diff is task-scoped and contains no unrelated churn, secrets,
   local state, generated-file mistakes, or undocumented compatibility change;
