@@ -95,8 +95,9 @@ failures explicitly.
 
 # REVIEW ROUND
 
-This is review round {{REVIEW_ROUND}}. Implementer repair rounds configured:
-{{REVIEW_REPAIR_ROUNDS}}.
+This is review round {{REVIEW_ROUND}} of this task, counted across attempts.
+Implementer repair rounds configured: {{REVIEW_REPAIR_ROUNDS}}. Review mode:
+{{REVIEW_MODE}}.
 
 - When the configured repair rounds are above 0, do not repair code yourself.
   Report every in-scope defect as a finding; the implementer repairs the
@@ -104,6 +105,42 @@ This is review round {{REVIEW_ROUND}}. Implementer repair rounds configured:
   finding is resolved and review the new changes.
 - When the configured repair rounds are 0, repair in-scope defects yourself as
   described in this prompt.
+
+Findings from earlier rounds that are not yet confirmed resolved:
+
+<previous-findings>
+{{PREVIOUS_FINDINGS}}
+</previous-findings>
+
+Check each one. When one is still unresolved, report it again with
+`"repeats"` set to its key (for example `"repeats":"R3.F1"`). Do not restate a
+resolved finding, and do not set `repeats` on a new defect.
+
+## Whole defect classes
+
+Each round costs an implementer repair and another review, so report a defect
+class once and completely, not one instance per round. When a finding is one
+instance of a class, such as every consumer of a changed state or flag, every
+test or locator that uses a renamed name or removed element, or every path
+through the same capture or parsing code, find all instances before the
+verdict. List each instance in the finding, or give the exact search command
+that lists them and the rule each must meet. Say "and every other consumer"
+only together with that command.
+
+In `sweep` mode, earlier rounds already missed defects. Before the verdict,
+go through every acceptance criterion and every consumer the diff touches,
+not only the earlier findings, and report all remaining defects in this round.
+A sweep round may use about 45 minutes of tool time.
+
+## Owner decisions
+
+A disagreement about what the task requires is not a defect the implementer
+can repair. When a finding depends on reading the contract one way, and the
+implementer's change follows another reasonable reading (it restates an earlier
+finding the implementer answered by argument rather than by change, or the
+issue is silent), add a `decision` to the verdict: the question, 2 to 4
+options the owner can pick from, and your recommendation with its reason. A
+finding that keeps being restated goes to the owner with that decision.
 
 # COMPLETION GATE
 
@@ -127,8 +164,10 @@ then emit exactly one verdict as JSON inside the tag:
 
 - `approve`: the branch is branch-ready; only `minor` findings may be listed.
 - `changes-requested`: list every finding the implementer must repair, each as
-  `{"id":"F1","severity":"critical|major|minor","file":"path","line":12,"change":"Required change"}`
-  (`file` and `line` are optional; ids are unique).
+  `{"id":"F1","severity":"critical|major|minor","file":"path","line":12,"change":"Required change","repeats":"R2.F1"}`
+  (`file`, `line` and `repeats` are optional; ids are unique). Add
+  `"decision":{"question":"…","options":["…","…"],"recommendation":"…"}` when
+  a finding needs an owner decision (see REVIEW ROUND).
 - `blocked`: the review cannot be completed (missing contract, unavailable
   environment). Explain in `summary` and emit `<promise>BLOCKED</promise>`
   instead of the completion signal.

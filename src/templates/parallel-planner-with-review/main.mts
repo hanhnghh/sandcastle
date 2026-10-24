@@ -27,6 +27,7 @@ import { execFile } from "node:child_process";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 // @ts-expect-error scaffold copies the shared helper beside main.mts.
 import { validatePlannerBatch } from "./planner-batch.js";
 
@@ -65,6 +66,31 @@ const MAX_ITERATIONS = 10;
 const MAX_PLANNER_ATTEMPTS = 3;
 // Implementer repair rounds after a changes-requested review; 0 = single-pass review.
 const MAX_REPAIR_ROUNDS = 2;
+// Review rounds of one issue are counted across attempts and runs. From round
+// REVIEW_SWEEP_FROM the reviewer sweeps whole defect classes at
+// REVIEW_SWEEP_EFFORT; a major finding restated REVIEW_REPEAT_LIMIT times, or
+// REVIEW_ROUND_CAP rounds without approval, hands the issue to the owner. 0 disables.
+const REVIEW_SWEEP_FROM = 3;
+const REVIEW_SWEEP_EFFORT = "high";
+const REVIEW_ROUND_CAP = 7;
+const REVIEW_REPEAT_LIMIT = 2;
+// Label that keeps the planner away from an issue until the owner removes it.
+const OWNER_LABEL = "needs-owner";
+// Kept in the shared git directory, beside the readiness audit, so every
+// worktree and run of this repository sees the same counts.
+const reviewHistory = sandcastle.reviewHistoryStore(
+  join(
+    (
+      await runHost("git", [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      ])
+    ).trim(),
+    "sandcastle",
+    "review-history.json",
+  ),
+);
 // Extra attempts for provider/infrastructure failures of one issue pipeline.
 const TASK_RETRIES = 1;
 // Stop starting pipelines after this many consecutive provider failures.
@@ -1302,19 +1328,75 @@ async function executeWorkflow() {
               // Retained commits still require a fresh completed review before merging.
               if (sandbox && implementationCommits.length > 0) {
                 // Bounded review→repair loop: only an approved verdict is merged.
-                const reviewLoop = () =>
-                  sandcastle.runReviewLoop({
+                const reviewPolicy = {
+                  sweepFrom: REVIEW_SWEEP_FROM,
+                  roundCap: REVIEW_ROUND_CAP,
+                  repeatLimit: REVIEW_REPEAT_LIMIT,
+                };
+                const escalateReview = async (
+                  round: sandcastle.ReviewRound,
+                ): Promise<"continue" | "escalate"> => {
+                  const history = reviewHistory.record(issue.id, round);
+                  const escalation = sandcastle.reviewEscalation(
+                    history,
+                    reviewPolicy,
+                  );
+                  if (!escalation) return "continue";
+                  reviewHistory.markEscalated(issue.id);
+                  console.warn(
+                    `Review escalated for issue ${issue.id} (${escalation.reason} after ${escalation.openRounds} round(s)); branch retained for the owner.`,
+                  );
+                  try {
+                    await runHost("gh", [
+                      "issue",
+                      "edit",
+                      issue.id,
+                      "--add-label",
+                      OWNER_LABEL,
+                    ]);
+                    await runHost(
+                      "gh",
+                      ["issue", "comment", issue.id, "--body-file", "-"],
+                      {
+                        input: sandcastle.reviewEscalationComment(
+                          escalation,
+                          round.summary,
+                        ),
+                      },
+                    );
+                  } catch (error) {
+                    console.warn(
+                      `  ! could not hand issue ${issue.id} to the owner: ${error}`,
+                    );
+                  }
+                  return "escalate";
+                };
+                const reviewLoop = () => {
+                  const priorRounds = sandcastle.openReviewRounds(
+                    reviewHistory.read(issue.id),
+                  ).length;
+                  return sandcastle.runReviewLoop({
                     maxRepairRounds: MAX_REPAIR_ROUNDS,
-                    review: (round) =>
-                      agentMap.track(
+                    onVerdict: escalateReview,
+                    review: (round) => {
+                      const openRound = priorRounds + round;
+                      const sweep = sandcastle.isSweepRound(
+                        openRound,
+                        reviewPolicy,
+                      );
+                      // Raises the configured effort for sweep rounds where the provider accepts it.
+                      const reviewerEffort = sweep
+                        ? REVIEW_SWEEP_EFFORT
+                        : undefined;
+                      return agentMap.track(
                         {
                           batch: iteration,
                           role: "reviewer",
                           issueId: issue.id,
                           title:
-                            round === 1
+                            openRound === 1
                               ? issue.title
-                              : `${issue.title} (re-review ${round})`,
+                              : `${issue.title} (re-review ${openRound}${reviewerEffort ? `, sweep at ${reviewerEffort}` : ""})`,
                           branch: issue.branch,
                         },
                         (logging) =>
@@ -1334,12 +1416,18 @@ async function executeWorkflow() {
                                 ISSUE_TITLE: issue.title,
                                 BRANCH: issue.branch,
                                 REVIEW_BASE_SHA: batchBaseSha,
-                                REVIEW_ROUND: String(round),
+                                REVIEW_ROUND: String(openRound),
                                 REVIEW_REPAIR_ROUNDS: String(MAX_REPAIR_ROUNDS),
+                                REVIEW_MODE: sweep ? "sweep" : "standard",
+                                PREVIOUS_FINDINGS:
+                                  sandcastle.formatPreviousFindings(
+                                    reviewHistory.read(issue.id),
+                                  ),
                               },
                             }),
                           ),
-                      ),
+                      );
+                    },
                     repair: (findings, round) =>
                       agentMap.track(
                         {
@@ -1356,6 +1444,7 @@ async function executeWorkflow() {
                           ),
                       ),
                   });
+                };
                 const reviewCommits: { sha: string }[] = [];
                 let loop = await reviewLoop();
                 reviewCommits.push(...loop.commits);

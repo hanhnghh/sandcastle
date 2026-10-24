@@ -174,3 +174,40 @@ test("verdict parsing takes the last tag and findings render as repair input", a
     "- [F1] (major) src/a.ts:4: Handle empty input\n- [F2] (minor): Rename x",
   );
 });
+
+test("onVerdict sees every valid verdict and can escalate instead of repairing", async () => {
+  const seen: string[] = [];
+  const s = script([run(verdict(changes)), run(verdict(changes))]);
+  const result = await runReviewLoop({
+    review: s.review,
+    repair: s.repair,
+    onVerdict: (round) => {
+      seen.push(`${round.round}:${round.verdict}`);
+      return round.round === 2 ? "escalate" : "continue";
+    },
+  });
+  expect(result.outcome).toBe("escalated");
+  expect(seen).toEqual(["1:changes-requested", "2:changes-requested"]);
+  expect(s.calls).toEqual(["review:1", "repair:1", "review:2"]);
+  expect(result.rounds.at(-1)?.repaired).toBe(false);
+});
+
+test("verdicts carry repeated finding keys and an owner decision", async () => {
+  const value = {
+    verdict: "changes-requested",
+    findings: [{ ...finding, repeats: "R2.F1" }],
+    decision: {
+      question: "Modal or flyout History?",
+      options: ["Flyout", "Modal"],
+      recommendation: "Flyout, as the contract says",
+    },
+  };
+  const parsed = await parseReviewVerdict(verdict(value));
+  expect(parsed.decision?.options).toEqual(["Flyout", "Modal"]);
+  expect(formatReviewFindings(parsed.findings)).toContain("(repeats R2.F1)");
+  await expect(
+    parseReviewVerdict(
+      verdict({ ...value, decision: { question: "q", options: ["only"] } }),
+    ),
+  ).rejects.toThrow();
+});

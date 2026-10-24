@@ -276,7 +276,23 @@ export type {
   ReviewRound,
   ReviewRunEvidence,
   ReviewVerdict,
+  ReviewDecision,
 } from "./ReviewLoop.js";
+export {
+  formatPreviousFindings,
+  isSweepRound,
+  openReviewRounds,
+  reviewEscalation,
+  reviewEscalationComment,
+  reviewFindingKey,
+  reviewHistoryStore,
+} from "./ReviewHistory.js";
+export type {
+  IssueReviewHistory,
+  ReviewEscalation,
+  ReviewHistoryRound,
+  ReviewRoundPolicy,
+} from "./ReviewHistory.js";
 export {
   withAgentFallback,
   agentChainOf,

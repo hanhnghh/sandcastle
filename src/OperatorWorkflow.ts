@@ -191,6 +191,24 @@ export const workflowConfigSchema = z
          * Default 2; 0 restores single-pass review.
          */
         maxRepairRounds: z.number().int().min(0).max(5).optional(),
+        /**
+         * Review round of an issue, counted across attempts and runs, from
+         * which the reviewer sweeps whole defect classes at `sweepEffort`.
+         * Default 3; 0 disables.
+         */
+        sweepFrom: z.number().int().min(0).max(20).optional(),
+        /** Reviewer effort for sweep rounds. Default "high". */
+        sweepEffort: z.string().min(1).max(20).optional(),
+        /**
+         * Review rounds without approval after which the issue is handed to
+         * the owner. Default 7; 0 disables.
+         */
+        roundCap: z.number().int().min(0).max(50).optional(),
+        /**
+         * Times one unresolved major finding may be restated before the owner
+         * decides. Default 2; 0 disables.
+         */
+        repeatLimit: z.number().int().min(0).max(10).optional(),
       })
       .strict()
       .optional(),

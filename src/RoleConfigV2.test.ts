@@ -312,3 +312,25 @@ test("the optional advisor role exists only in version 2 and the runtime builds 
   await saveRoleConfig({ cwd, config: v2({}) });
   expect((await createProjectRuntime(options)).advisor()).toBeNull();
 });
+
+test("an invocation effort overrides the configured one where the provider accepts it", () => {
+  const raised = buildRoleAgent(
+    { provider: "claudeCode", model: "claude-opus-5-5", effort: "medium" },
+    { effort: "high" },
+  );
+  expect(print(raised)).toContain("high");
+  expect(print(raised)).not.toContain("medium");
+  const codexRaised = buildRoleAgent(
+    { provider: "codex", model: "gpt-6.1-sol", effort: "low" },
+    { effort: "high" },
+  );
+  expect(print(codexRaised)).toContain('model_reasoning_effort="high"');
+  // Copilot has no "max": its configured effort stays.
+  const kept = buildRoleAgent(
+    { provider: "copilot", model: "m", effort: "low" },
+    { effort: "max" },
+  );
+  expect(print(kept)).toBe(
+    print(buildRoleAgent({ provider: "copilot", model: "m", effort: "low" })),
+  );
+});
