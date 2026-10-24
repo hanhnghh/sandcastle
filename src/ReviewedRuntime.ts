@@ -178,6 +178,15 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
         return `agent: runtime.agent("${role}"${session}),`;
       },
     );
+    // Sweep review rounds may raise the reviewer's configured effort.
+    if (content.includes("const reviewerEffort ="))
+      content = content.replace(
+        /agent: runtime\.agent\("reviewer"(, \{)?/,
+        (_call, options?: string) =>
+          options
+            ? 'agent: runtime.agent("reviewer", { effort: reviewerEffort,'
+            : 'agent: runtime.agent("reviewer", { effort: reviewerEffort }',
+      );
     if (index !== roles.length || !supported)
       return yield* Effect.fail(
         new InitError({
@@ -342,6 +351,16 @@ export const wireReviewedRuntime = (original: string, provider: string) =>
       "const MAX_REPAIR_ROUNDS = 2;",
       "const MAX_REPAIR_ROUNDS = runtime.workflow.config.review?.maxRepairRounds ?? 2;",
     );
+    for (const [constant, field, fallback] of [
+      ["REVIEW_SWEEP_FROM", "sweepFrom", "3"],
+      ["REVIEW_SWEEP_EFFORT", "sweepEffort", '"high"'],
+      ["REVIEW_ROUND_CAP", "roundCap", "7"],
+      ["REVIEW_REPEAT_LIMIT", "repeatLimit", "2"],
+    ])
+      content = content.replace(
+        `const ${constant} = ${fallback};`,
+        `const ${constant} = runtime.workflow.config.review?.${field} ?? ${fallback};`,
+      );
     content = content.replace(
       /const readiness = z[\s\S]*?\.parse\(JSON\.parse\(readFileSync\("\.sandcastle\/readiness\.json", "utf8"\)\)\);/,
       "const readiness = runtime.readiness;",

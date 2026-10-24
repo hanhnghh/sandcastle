@@ -114,6 +114,15 @@ describe("InitService scaffold", () => {
       expect(main).not.toContain("codexAgent(");
       expect(main).toContain("admitGitHubReadinessBatch");
       expect(main).toContain("Merge did not complete");
+      expect(main).toContain(
+        "const REVIEW_ROUND_CAP = runtime.workflow.config.review?.roundCap ?? 7;",
+      );
+      expect(main).toContain(
+        'const REVIEW_SWEEP_EFFORT = runtime.workflow.config.review?.sweepEffort ?? "high";',
+      );
+      expect(main).toContain(
+        'agent: runtime.agent("reviewer", { effort: reviewerEffort',
+      );
     },
   );
 

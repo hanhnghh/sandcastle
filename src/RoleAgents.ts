@@ -15,15 +15,26 @@ import {
 } from "./AgentProvider.js";
 import { withAgentFallback, type AgentChainEntry } from "./AgentFallback.js";
 import { withCredentialScope } from "./CredentialScope.js";
-import type { RoleProvider, RoleSetting, RoleTarget } from "./Operator.js";
+import {
+  providerCapabilities,
+  type RoleProvider,
+  type RoleSetting,
+  type RoleTarget,
+} from "./Operator.js";
 
 /**
  * Project-owned provider options (sessions, env, permission modes). Top-level
  * fields are Codex options, preserving the original `agent(role, options)`
  * contract; other providers read their own entry under `providers`. Effort is
- * always taken from the role configuration.
+ * taken from the role configuration unless `effort` raises it for one
+ * invocation.
  */
 export type RoleAgentOptions = Omit<CodexOptions, "effort"> & {
+  /**
+   * Effort for this invocation in place of the configured one, applied to the
+   * primary target and each fallback whose provider accepts the value.
+   */
+  readonly effort?: string;
   readonly providers?: {
     readonly claudeCode?: Omit<ClaudeCodeOptions, "effort">;
     readonly pi?: Omit<PiOptions, "thinking">;
@@ -73,23 +84,43 @@ const builders: {
 export const buildRoleAgent = (
   target: RoleTarget,
   options?: RoleAgentOptions,
-): AgentProvider =>
-  withCredentialScope(
-    builders[target.provider](target, options),
+): AgentProvider => {
+  const { effort: _effort, ...providerOptions } = options ?? {};
+  return withCredentialScope(
+    builders[target.provider](
+      withEffort(target, options?.effort),
+      providerOptions,
+    ),
     target.provider,
   );
+};
+
+/** The target with `effort` applied when its provider accepts that value. */
+const withEffort = (
+  target: RoleTarget,
+  effort: string | undefined,
+): RoleTarget => {
+  const efforts: readonly string[] | null =
+    providerCapabilities[target.provider].efforts;
+  return effort !== undefined && (efforts === null || efforts.includes(effort))
+    ? { ...target, effort }
+    : target;
+};
 
 const entry = (
   target: RoleTarget,
   options: RoleAgentOptions | undefined,
-): AgentChainEntry => ({
-  agent: buildRoleAgent(target, options),
-  target: {
-    provider: target.provider,
-    model: target.model,
-    ...(target.effort === undefined ? {} : { effort: target.effort }),
-  },
-});
+): AgentChainEntry => {
+  const effective = withEffort(target, options?.effort);
+  return {
+    agent: buildRoleAgent(target, options),
+    target: {
+      provider: effective.provider,
+      model: effective.model,
+      ...(effective.effort === undefined ? {} : { effort: effective.effort }),
+    },
+  };
+};
 
 /**
  * Build the role's primary provider with its configured fallback chain

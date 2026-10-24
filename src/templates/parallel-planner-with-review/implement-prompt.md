@@ -158,7 +158,17 @@ When the list above is empty, this is the first implementation. Otherwise this
 is a review repair round: resolve every listed finding, keep the change scoped
 to those findings, rerun the affected checks and commit. If a finding is out of
 scope or incorrect, say why in the commit body instead of changing unrelated
-code.
+code; a finding the reviewer restates after that goes to the owner, so argue
+only about what the task's contract actually says.
+
+Repair the defect class, not just the instance the finding names. Before you
+commit a repair, search for every other place with the same cause (other
+consumers of the changed state or flag, other tests or locators using a renamed
+name or removed element, other paths through the same code) and repair them as
+well. Record the search command and what it found in the ledger next to the
+finding. The same rule applies to the first implementation: when a change
+renames, removes or changes the meaning of something other code or tests use,
+find and update every consumer in the same change.
 
 # COMPLETION GATE
 

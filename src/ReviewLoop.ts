@@ -18,6 +18,20 @@ export const reviewFindingSchema = z
     line: z.number().int().positive().optional(),
     /** The change the implementer must make. */
     change: z.string().min(1).max(4000),
+    /**
+     * Key of an earlier finding this one restates because it is still
+     * unresolved, as listed in the previous findings (for example `R3.F1`).
+     */
+    repeats: z.string().min(1).max(80).optional(),
+  })
+  .strict();
+/** An owner decision the reviewer cannot make from the contract. */
+export const reviewDecisionSchema = z
+  .object({
+    question: z.string().min(1).max(1000),
+    options: z.array(z.string().min(1).max(500)).min(2).max(4),
+    /** The option the reviewer recommends, with its reason. */
+    recommendation: z.string().min(1).max(500).optional(),
   })
   .strict();
 /** Structured reviewer verdict. */
@@ -27,6 +41,8 @@ export const reviewVerdictSchema = z
     /** One-paragraph summary for logs and Agent Map. */
     summary: z.string().max(2000).optional(),
     findings: z.array(reviewFindingSchema).max(50),
+    /** Set when a finding is a contract or scope question for the owner. */
+    decision: reviewDecisionSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -54,6 +70,7 @@ export const reviewVerdictSchema = z
       });
   });
 export type ReviewFinding = z.infer<typeof reviewFindingSchema>;
+export type ReviewDecision = z.infer<typeof reviewDecisionSchema>;
 export type ReviewVerdict = z.infer<typeof reviewVerdictSchema>;
 const verdictOutput = Output.object({
   tag: REVIEW_VERDICT_TAG,
@@ -81,7 +98,7 @@ export const formatReviewFindings = (
   findings
     .map(
       (finding) =>
-        `- [${finding.id}] (${finding.severity})${finding.file ? ` ${finding.file}${finding.line ? `:${finding.line}` : ""}` : ""}: ${finding.change}`,
+        `- [${finding.id}] (${finding.severity})${finding.file ? ` ${finding.file}${finding.line ? `:${finding.line}` : ""}` : ""}: ${finding.change}${finding.repeats ? ` (repeats ${finding.repeats})` : ""}`,
     )
     .join("\n");
 
@@ -91,6 +108,7 @@ export interface ReviewRound {
   readonly verdict: ReviewVerdict["verdict"] | "invalid";
   readonly summary?: string;
   readonly findings: readonly ReviewFinding[];
+  readonly decision?: ReviewDecision;
   /** Validation message when the reviewer output was malformed. */
   readonly error?: string;
   /** True when the implementer ran a repair after this round. */
@@ -108,6 +126,14 @@ export interface ReviewLoopOptions<R extends ReviewLoopRun> {
   review(round: number): Promise<R>;
   /** Run the implementer with the previous round's findings. */
   repair(findings: readonly ReviewFinding[], round: number): Promise<R>;
+  /**
+   * Called with every valid verdict before the loop acts on it. Returning
+   * `"escalate"` for a `changes-requested` round ends the loop with outcome
+   * `escalated` instead of repairing.
+   */
+  onVerdict?(
+    round: ReviewRound,
+  ): "continue" | "escalate" | Promise<"continue" | "escalate">;
 }
 
 export interface ReviewLoopResult<R extends ReviewLoopRun> {
@@ -116,6 +142,7 @@ export interface ReviewLoopResult<R extends ReviewLoopRun> {
     | "approved"
     | "changes-requested"
     | "blocked"
+    | "escalated"
     | "invalid-review";
   readonly rounds: readonly ReviewRound[];
   /** Findings of the last round (empty when approved without findings). */
@@ -183,7 +210,10 @@ export const runReviewLoop = async <R extends ReviewLoopRun>(
       verdict: verdict.verdict,
       ...(verdict.summary === undefined ? {} : { summary: verdict.summary }),
       findings: verdict.findings,
+      ...(verdict.decision === undefined ? {} : { decision: verdict.decision }),
     };
+    const escalate =
+      (await options.onVerdict?.({ ...base, repaired: false })) === "escalate";
     if (verdict.verdict === "blocked" || signal.includes(BLOCKED)) {
       rounds.push({ ...base, repaired: false });
       return finish("blocked", review);
@@ -195,6 +225,10 @@ export const runReviewLoop = async <R extends ReviewLoopRun>(
         signal.includes(COMPLETE) ? "approved" : "invalid-review",
         review,
       );
+    }
+    if (escalate) {
+      rounds.push({ ...base, repaired: false });
+      return finish("escalated", review);
     }
     if (round > maxRepairRounds) {
       rounds.push({ ...base, repaired: false });
@@ -213,6 +247,7 @@ export interface ReviewRunEvidence {
   readonly verdict: ReviewVerdict["verdict"] | "invalid";
   readonly summary?: string;
   readonly findings: readonly ReviewFinding[];
+  readonly decision?: ReviewDecision;
   readonly error?: string;
 }
 
@@ -233,6 +268,9 @@ export const withReviewVerdict = async <R extends ReviewLoopRun>(
         verdict: verdict.verdict,
         ...(verdict.summary === undefined ? {} : { summary: verdict.summary }),
         findings: verdict.findings,
+        ...(verdict.decision === undefined
+          ? {}
+          : { decision: verdict.decision }),
       },
     };
   } catch (error) {
