@@ -106,6 +106,12 @@ export const workflowConfigSchema = z
             mode: z.enum(["off", "on"]),
             /** Budget = estimate × factor (1–10). Default 1.5. */
             factor: z.number().min(1).max(10).optional(),
+            /** Budget fractions at which time checkpoints fire, ascending (0–1]. Default [0.5, 1]. */
+            fractions: z
+              .array(z.number().gt(0).max(1))
+              .min(1)
+              .max(10)
+              .optional(),
             /** Checkpoints per implementation (0–10). Default 2. */
             max: z.number().int().min(0).max(10).optional(),
             /** Repeats of the same error before a checkpoint (2–20). Default 3. */

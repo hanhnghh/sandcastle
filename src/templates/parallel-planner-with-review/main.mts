@@ -1077,6 +1077,7 @@ async function executeWorkflow() {
                   );
                 const checkpointed = await sandcastle.runWithCheckpoints({
                   budgetMinutes: budget.budgetMinutes,
+                  fractions: ADVISOR_CHECKPOINT.fractions,
                   max: ADVISOR_CHECKPOINT.max,
                   budget: advisorBudget,
                   detector: sandcastle.createDriftDetector({

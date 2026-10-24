@@ -461,3 +461,15 @@ test("legacy frozen role records reopen without inventing workflow policy", asyn
   expect(reopened.record.id).toBe(runtime.record.id);
   expect(() => reopened.readiness).toThrow("workflow snapshot");
 });
+
+test("checkpoint fractions are accepted in (0, 1] and rejected outside", async () => {
+  const { workflowConfigSchema } = await import("./OperatorWorkflow.js");
+  const checkpoint = (workflowConfigSchema as any).shape.advisor.unwrap().shape
+    .checkpoint;
+  expect(
+    checkpoint.safeParse({ mode: "on", fractions: [0.33, 0.67, 1] }).success,
+  ).toBe(true);
+  expect(
+    checkpoint.safeParse({ mode: "on", fractions: [0, 1.5] }).success,
+  ).toBe(false);
+});
