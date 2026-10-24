@@ -1161,14 +1161,36 @@ async function executeWorkflow() {
                     return {
                       mode: "session",
                       segment: segmentOf(async (pauseSignal) => {
-                        const resumed = await paused.resume!(
-                          [
-                            "A progress checkpoint paused you so the advisor could check your work against the task and approach.",
-                            progressCheck,
-                            "Continue from the current worktree; your uncommitted changes are intact. Follow the direction, or write `Disputed direction:` with your reason and continue your approach. Finish with the completion signal from your instructions.",
-                          ].join("\n\n"),
-                          { logging: observed, pauseSignal },
-                        );
+                        let resumed: Awaited<
+                          ReturnType<NonNullable<typeof paused.resume>>
+                        >;
+                        try {
+                          resumed = await paused.resume!(
+                            [
+                              "A progress checkpoint paused you so the advisor could check your work against the task and approach.",
+                              progressCheck,
+                              "Continue from the current worktree; your uncommitted changes are intact. Follow the direction, or write `Disputed direction:` with your reason and continue your approach. Finish with the completion signal from your instructions.",
+                            ].join("\n\n"),
+                            { logging: observed, pauseSignal },
+                          );
+                        } catch (error) {
+                          // The provider could not reopen the session (for example
+                          // Codex `thread/resume` on a compacted session): continue
+                          // fresh on the same worktree with the check as input.
+                          console.warn(
+                            `  ! ${issue.id} session resume failed; continuing fresh: ${String(error).split("\n").slice(0, 2).join(" ")}`,
+                          );
+                          return runImplementer(
+                            observed,
+                            "",
+                            undefined,
+                            "None.",
+                            {
+                              progressCheck,
+                              pauseSignal,
+                            },
+                          );
+                        }
                         // A resume is one iteration; continue fresh if unfinished.
                         if (resumed.paused || resumed.completionSignal)
                           return resumed;
