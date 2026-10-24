@@ -35,6 +35,10 @@ in the reason and list the consumers you found at this HEAD. An open product or
 interface question the ticket leaves to interpretation is an unresolved
 decision.
 
+A ticket labelled `size:L`, or whose acceptance criteria span more than one
+independently shippable outcome, is `blocked` with a proposed split: name the
+smaller tickets, the criteria each owns and their order.
+
 When the project keeps reference-parity audits (`*_AUDIT.md` under its design
 docs), a ticket that changes merchant-visible UI or its mockups must name the
 audit rows it implements, or say its screen has no reference counterpart.

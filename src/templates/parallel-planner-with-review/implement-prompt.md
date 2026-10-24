@@ -65,6 +65,20 @@ Before editing:
 Read `.sandcastle/FEEDBACK_LOOPS.md` for role-owned executable checks and
 `.sandcastle/EVIDENCE_POLICY.md` before planning evidence or reusing receipts.
 
+**Resuming a branch.** If `docs/evidence/{{TASK_ID}}/resume.md` exists, an
+earlier run left it, and it replaces re-reading everything:
+
+- Read it first. Then read only the ledger's `## Summary` and the rows or files
+  it points to.
+- Re-read a policy document only when
+  `git diff <policy commit in resume.md> HEAD -- .sandcastle/` shows that it
+  changed.
+- Do not rerun a check that resume.md records as passing when
+  `git diff --stat <its commit> HEAD -- <paths it covers>` is empty. Cite it as
+  a reused receipt instead.
+- Start from its "Next steps", using the narrowest command that answers the
+  question.
+
 # EXPLORATION
 
 Exploration is complete only when the current behavior, required behavior,
@@ -75,7 +89,11 @@ contracts and behavior.
 
 # REQUIREMENT LEDGER
 
-Before production edits, create and maintain this matrix:
+Before production edits, create and maintain this matrix in
+`docs/evidence/{{TASK_ID}}/ledger.md`. Keep a `## Summary` of at most 40 lines at
+the top: one line per acceptance criterion with its status and evidence path,
+then open risks. Put the detailed rows below. Record each command once with its
+result; do not narrate history.
 
 `ID | source | requirement | public seam | exact test | command | evidence (new/reused) | receipt/applicability | owner | status`
 
@@ -169,6 +187,29 @@ well. Record the search command and what it found in the ledger next to the
 finding. The same rule applies to the first implementation: when a change
 renames, removes or changes the meaning of something other code or tests use,
 find and update every consumer in the same change.
+
+# SCOPE
+
+The task's acceptance criteria are the whole scope. If finishing needs work they
+do not ask for (new tooling, repairing unrelated suites, another feature's
+behaviour), stop and propose a split instead of widening the branch. Commit what
+is done and green (a normal commit, not the completion commit), add one tracker
+comment titled `Split proposal:` with the minimal remaining scope and the
+follow-up ticket's text, and emit `<promise>BLOCKED</promise>`.
+
+# RESUME BRIEF
+
+Whenever you stop (complete, blocked, or interrupted by a checkpoint), write
+`docs/evidence/{{TASK_ID}}/resume.md`, at most 60 lines, with:
+
+- `HEAD:` the commit sha;
+- `Policy commit:` `git log -1 --format=%H -- .sandcastle/`;
+- one line per acceptance criterion: done (evidence path) or open;
+- the checks that passed, each with the commit it ran on and the paths it covers;
+- `Next steps:` at most three;
+- `Traps:` commands that hang, flaky tests, environment limits, with workarounds.
+
+Commit it with your work; when blocked, leave it in the worktree.
 
 # COMPLETION GATE
 

@@ -50,3 +50,10 @@ the runner supports crash-resume or adoption of surviving containers. Move to
 the next independent in-scope cell/task only after cleanup is verified.
 A changed contract, invalid receipt or explicit acceptance requirement
 determines what must rerun; missing evidence remains incomplete.
+
+## Ledger size
+
+A ledger starts with a `## Summary` of at most 40 lines: one line per acceptance
+criterion with status and evidence path, then open risks. Detail rows follow.
+Record each command once with its result; commits and `resume.md` hold the
+history.
