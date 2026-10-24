@@ -1754,6 +1754,9 @@ async function executeWorkflow() {
         completionSignal: "<promise>COMPLETE</promise>",
       });
       integrationHead = integratedHead;
+      // continuous.mts publishes (and may merge) this commit. Print it only
+      // when a cumulative gate ran and passed on it.
+      if (MERGE_GATE) console.log(`Gated integration head ${integratedHead}`);
     }
     await agentMap.finishBatch(iteration);
 

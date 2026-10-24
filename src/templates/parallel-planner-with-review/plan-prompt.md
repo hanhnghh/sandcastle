@@ -49,7 +49,9 @@ documentation, environment examples, and package-manager lockfiles alone are
 incidental overlap and must not prevent parallel execution.
 
 When eligible tasks conflict with each other, deterministically select one and
-defer the others to a later planning cycle. Prefer explicit tracker priority;
+defer the others to a later planning cycle. A task labelled `priority:gate`
+fixes a failure that blocks every integration gate: always select it, ahead of
+any task it conflicts with. Otherwise prefer explicit tracker priority;
 when priority is absent or tied, prefer the lowest numeric task ID, then lexical
 ID. Deferral due to batch overlap does not make a task blocked.
 
