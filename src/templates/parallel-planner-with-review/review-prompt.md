@@ -6,7 +6,8 @@ in-scope defect you find, and leave the branch at a verified commit. Do not
 expand product scope or close the task.
 
 Load the task exactly once using `{{VIEW_TASK_COMMAND}}`; replace `<ID>` with
-`{{TASK_ID}}`. Read only parent-spec sections referenced by the task or needed
+`{{TASK_ID}}`. Comments carry owner decisions; judge against the latest one.
+Read only parent-spec sections referenced by the task or needed
 to interpret an acceptance criterion. Read
 `@.sandcastle/CODING_STANDARDS.md` completely before judging the change.
 

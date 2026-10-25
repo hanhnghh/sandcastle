@@ -6,7 +6,8 @@ repository and its existing public contracts are the source of implementation
 truth. Resolve questions from those sources before treating them as blockers.
 
 Load the task exactly once at the start using `{{VIEW_TASK_COMMAND}}`. Replace
-`<ID>` in that command with `{{TASK_ID}}`. If the task references a parent spec
+`<ID>` in that command with `{{TASK_ID}}`. Comments carry owner decisions and
+scope changes; a later decision overrides the body. If the task references a parent spec
 or PRD, read only the sections it names plus sections strictly necessary to
 interpret an acceptance criterion. Work on this task only. Preserve unrelated
 working-tree changes and accumulated branch progress. Do not close the task;

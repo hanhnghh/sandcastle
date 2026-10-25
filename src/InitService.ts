@@ -566,7 +566,7 @@ const ISSUE_TRACKER_REGISTRY: IssueTrackerEntry[] = [
     templateArgs: {
       LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --limit 100 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
       PLANNER_LIST_TASKS_COMMAND: `node .sandcastle/github-planner-inventory.cjs --label Sandcastle`,
-      VIEW_TASK_COMMAND: "gh issue view <ID>",
+      VIEW_TASK_COMMAND: "gh issue view <ID> --comments",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
       ISSUE_TRACKER_TOOLS: GITHUB_CLI_TOOLS,
     },
