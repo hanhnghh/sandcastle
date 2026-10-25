@@ -1103,12 +1103,15 @@ async function executeWorkflow() {
                     ),
                   }),
                   start: () => fresh("None."),
-                  // Committed and uncommitted changes against the batch base,
-                  // read without optional locks so the running implementer's
-                  // own git commands never meet a held index.lock.
+                  // Committed and uncommitted changes since the branch's merge
+                  // base with the batch base, so a retained branch that could not
+                  // take the newer base does not count the base's own changes
+                  // (they show as deletions against it). Read without optional
+                  // locks so the running implementer's own git commands never
+                  // meet a held index.lock.
                   snapshot: async () => {
                     const numstat = await sandbox!.exec(
-                      `export GIT_OPTIONAL_LOCKS=0; git diff --numstat ${batchBaseSha} && git ls-files --others --exclude-standard | while IFS= read -r f; do if grep -Iq . "$f" 2>/dev/null || [ ! -s "$f" ]; then printf '%s\t0\t%s\n' "$(wc -l < "$f" | tr -d ' ')" "$f"; else printf -- '-\t-\t%s\n' "$f"; fi; done`,
+                      `export GIT_OPTIONAL_LOCKS=0; git diff --numstat "$(git merge-base ${batchBaseSha} HEAD 2>/dev/null || echo ${batchBaseSha})" && git ls-files --others --exclude-standard | while IFS= read -r f; do if grep -Iq . "$f" 2>/dev/null || [ ! -s "$f" ]; then printf '%s\t0\t%s\n' "$(wc -l < "$f" | tr -d ' ')" "$f"; else printf -- '-\t-\t%s\n' "$f"; fi; done`,
                     );
                     if (numstat.exitCode !== 0)
                       throw new Error("progress snapshot failed");
