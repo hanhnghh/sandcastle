@@ -227,11 +227,14 @@ const hooks = {
 const copyToWorktree = ["node_modules"];
 
 // The merger runs the cumulative gate with GATE_TEST_WORKERS test workers and,
-// with more than one, provisions isolated test resources first.
+// with more than one, provisions isolated test resources first. Sandcastle runs
+// onSandboxReady hooks concurrently, so provisioning is chained after the ready
+// hooks in one command: it needs the dependencies the ready hooks may reinstall.
 const gateEnvironment = {
   ...trackerEnvironment,
   SANDCASTLE_TEST_WORKERS: String(GATE_TEST_WORKERS),
 };
+const readyHooks = hooks.sandbox?.onSandboxReady ?? [];
 const gateHooks =
   GATE_TEST_WORKERS > 1
     ? {
@@ -239,10 +242,12 @@ const gateHooks =
         sandbox: {
           ...hooks.sandbox,
           onSandboxReady: [
-            ...(hooks.sandbox?.onSandboxReady ?? []),
             {
-              command: `if [ -f .sandcastle/scripts/test-isolation.sh ]; then bash .sandcastle/scripts/test-isolation.sh ${GATE_TEST_WORKERS}; fi`,
-              timeoutMs: 600_000,
+              command: [
+                ...readyHooks.map((hook) => `( ${hook.command} )`),
+                `if [ -f .sandcastle/scripts/test-isolation.sh ]; then bash .sandcastle/scripts/test-isolation.sh ${GATE_TEST_WORKERS}; fi`,
+              ].join(" && "),
+              timeoutMs: readyHooks.reduce((sum, hook) => sum + (hook.timeoutMs ?? 60_000), 600_000),
             },
           ],
         },
