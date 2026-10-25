@@ -167,6 +167,19 @@ function runHost(
   });
 }
 
+// An escalated stall goes to the owner the same way an escalated review does:
+// the owner label keeps the planner away, and the comment carries the advice.
+async function handToOwner(issueId: string, body: string): Promise<void> {
+  try {
+    await runHost("gh", ["issue", "edit", issueId, "--add-label", OWNER_LABEL]);
+    await runHost("gh", ["issue", "comment", issueId, "--body-file", "-"], {
+      input: body,
+    });
+  } catch (error) {
+    console.warn(`  ! could not hand issue ${issueId} to the owner: ${error}`);
+  }
+}
+
 // Set an explicit fork repository and stable scope label before enabling.
 // Null repository leaves existing tracker workflows unchanged (no GitHub calls).
 const readiness = z
@@ -1325,6 +1338,11 @@ async function executeWorkflow() {
                     };
                   },
                 );
+                if (stuck.outcome === "escalated")
+                  await handToOwner(
+                    issue.id,
+                    `Sandcastle stopped: implementation stalled (${trigger}) and the stuck advisor escalated it to the owner. The branch is retained.${stuckReport(stuck)}`,
+                  );
                 if (stuck.outcome !== "resolved")
                   throw new Error(
                     `Implementation stalled for issue ${issue.id} (${trigger}; advisor ${stuck.outcome}); retain the branch and leave its issue open.${stuckReport(stuck)}`,
@@ -1513,6 +1531,13 @@ async function executeWorkflow() {
                       };
                     },
                   );
+                  if (stuck.outcome === "escalated") {
+                    reviewHistory.markEscalated(issue.id);
+                    await handToOwner(
+                      issue.id,
+                      `Sandcastle stopped: the review is still unapproved and the stuck advisor escalated it to the owner. The branch is retained.${stuckReport(stuck)}`,
+                    );
+                  }
                   if (stuck.outcome !== "resolved")
                     console.warn(
                       `  ! ${issue.id} review still unapproved after the advisor (${stuck.outcome}).${stuckReport(stuck)}`,
