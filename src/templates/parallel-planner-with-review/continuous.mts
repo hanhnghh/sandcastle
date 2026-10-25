@@ -26,7 +26,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const { classify, issueOutcomes, nextStrikes, delayMinutes, ownerComment, gatedHead, referencedIssues, integrationBody, releaseComment } = require(join(dirname(fileURLToPath(import.meta.url)), 'continuous-core.cjs'));
+const { branchSync, classify, issueOutcomes, nextStrikes, delayMinutes, ownerComment, gatedHead, referencedIssues, integrationBody, releaseComment } = require(join(dirname(fileURLToPath(import.meta.url)), 'continuous-core.cjs'));
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 process.chdir(ROOT);
@@ -139,6 +139,16 @@ const SELF = ['.sandcastle/continuous.mts', '.sandcastle/continuous-core.cjs'];
 const selfDigest = () => createHash('sha256').update(SELF.map((file) => { try { return readFileSync(file, 'utf8'); } catch { return ''; } }).join('\0')).digest('hex');
 const loadedSelf = selfDigest();
 
+/** Fast-forward to the remote integration branch when someone else pushed to it. */
+function followRemoteBranch(isAncestor) {
+  let remoteExists = true;
+  try { git('fetch', '--quiet', 'origin', config.branch); } catch { remoteExists = false; }
+  const remote = `origin/${config.branch}`;
+  const sync = branchSync({ remoteExists, localInRemote: remoteExists && isAncestor('HEAD', remote), remoteInLocal: remoteExists && isAncestor(remote, 'HEAD') });
+  if (sync === 'fast-forward') { git('merge', '--quiet', '--ff-only', remote); log(`Fast-forwarded to ${remote}.`); }
+  if (sync === 'diverged') throw new Error(`${config.branch} and ${remote} have diverged; reconcile them in this worktree.`);
+}
+
 function mergeBase() {
   if (git('branch', '--show-current') !== config.branch)
     throw new Error(`Run the supervisor on branch ${config.branch}.`);
@@ -146,9 +156,10 @@ function mergeBase() {
     log('Tracked changes in the working tree; skipping the base sync this round.');
     return;
   }
+  const isAncestor = (a, b) => { try { git('merge-base', '--is-ancestor', a, b); return true; } catch { return false; } };
+  followRemoteBranch(isAncestor);
   git('fetch', '--quiet', 'origin', config.base);
   const remote = `origin/${config.base}`;
-  const isAncestor = (a, b) => { try { git('merge-base', '--is-ancestor', a, b); return true; } catch { return false; } };
   if (isAncestor(remote, 'HEAD')) return;
   if (isAncestor('HEAD', remote)) { git('merge', '--quiet', '--ff-only', remote); log(`Fast-forwarded to ${remote}.`); return; }
   try {
