@@ -119,6 +119,16 @@ function gatedHead(output) {
 }
 
 /** Issues referenced as `Refs #N` in commit messages, ascending. */
+/**
+ * How the local integration branch follows its remote copy, which someone else
+ * may have advanced (for example by resolving a base-merge conflict and pushing).
+ */
+function branchSync({ remoteExists, localInRemote, remoteInLocal }) {
+  if (!remoteExists || remoteInLocal) return 'current';
+  if (localInRemote) return 'fast-forward';
+  return 'diverged';
+}
+
 function referencedIssues(log) {
   return [...new Set([...log.matchAll(/\bRefs #(\d+)/g)].map((match) => Number(match[1])))].sort((a, b) => a - b);
 }
@@ -146,4 +156,4 @@ function releaseComment(pr, sha, when) {
   return `Released to the base branch in #${pr} (merge ${sha.slice(0, 12)}, ${when}).`;
 }
 
-module.exports = { classify, issueOutcomes, nextStrikes, delayMinutes, ownerComment, gatedHead, referencedIssues, integrationBody, releaseComment };
+module.exports = { branchSync, classify, issueOutcomes, nextStrikes, delayMinutes, ownerComment, gatedHead, referencedIssues, integrationBody, releaseComment };

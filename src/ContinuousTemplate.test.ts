@@ -6,6 +6,7 @@ import { test } from "vitest";
 
 const require = createRequire(import.meta.url);
 const {
+  branchSync,
   classify,
   issueOutcomes,
   nextStrikes,
@@ -158,4 +159,14 @@ test("the last gated integration head is published, partial or other lines are n
   );
   assert.equal(gatedHead(`  Gated integration head ${a}`), null);
   assert.equal(gatedHead(`Gated integration head ${a.slice(0, 12)}`), null);
+});
+
+test("the integration branch follows a remote copy that someone else advanced", () => {
+  const sync = (remoteExists, localInRemote, remoteInLocal) =>
+    branchSync({ remoteExists, localInRemote, remoteInLocal });
+  assert.equal(sync(false, false, false), "current");
+  assert.equal(sync(true, true, true), "current");
+  assert.equal(sync(true, false, true), "current");
+  assert.equal(sync(true, true, false), "fast-forward");
+  assert.equal(sync(true, false, false), "diverged");
 });
